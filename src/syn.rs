@@ -101,7 +101,7 @@ impl Expect {
     }
 }
 
-const INLINE_LEN: usize = 15; // Number of `usize` values.
+const INLINE_LEN: usize = 3; // Number of `usize` values.
 
 #[derive(Clone, Debug)]
 enum StructContext {
