@@ -1,7 +1,8 @@
 use crate::lex;
 use bitvec::prelude::*;
-use std::sync::Arc;
+use std::iter::Take;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 pub use crate::lex::{Pos, Token};
 
@@ -157,6 +158,62 @@ impl StructContext {
             StructContext::Heap(v) => v.last().map(Into::<Struct>::into),
         }
     }
+
+    fn len(&self) -> usize {
+        match self {
+            StructContext::Inline(len, _) => *len,
+            StructContext::Heap(v) => v.len(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn iter(&self) -> StructIter<bitvec::slice::Iter<'_, usize, Lsb0>> {
+        StructIter(match self {
+            StructContext::Inline(len, array) => array[0..*len].iter(),
+            StructContext::Heap(v) => v.iter(),
+        })
+    }
+}
+
+impl IntoIterator for StructContext {
+    type Item = bool;
+    type IntoIter = StructContextIntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Self::Inline(len, array) => StructContextIntoIter::Inline(array.into_iter().take(len)),
+            Self::Heap(v) => StructContextIntoIter::Heap(v.into_iter()),
+        }
+    }
+}
+
+#[doc(hidden)]
+pub enum StructContextIntoIter {
+    Inline(Take<<BitArray<[usize; INLINE_LEN]> as IntoIterator>::IntoIter>),
+    Heap(<BitVec as IntoIterator>::IntoIter),
+}
+
+impl Iterator for StructContextIntoIter {
+    type Item = bool;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            StructContextIntoIter::Inline(i) => i.next(),
+            StructContextIntoIter::Heap(i) => i.next(),
+        }
+    }
+}
+
+impl ExactSizeIterator for StructContextIntoIter {
+    fn len(&self) -> usize {
+        match self {
+            StructContextIntoIter::Inline(i) => i.len(),
+            StructContextIntoIter::Heap(i) => i.len(),
+        }
+    }
 }
 
 impl Default for StructContext {
@@ -167,11 +224,67 @@ impl Default for StructContext {
 
 #[derive(Clone, Debug, Default)]
 pub struct Context {
-    struct_context: StructContext,
+    inner: StructContext,
     expect: Expect,
 }
 
-// TODO: Implement iterator and into iterator for context.
+impl Context {
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    pub fn iter(&self) -> StructIter<bitvec::slice::Iter<'_, usize, Lsb0>> {
+        self.inner.iter()
+    }
+
+    pub fn expect(&self) -> Expect {
+        self.expect
+    }
+}
+
+impl IntoIterator for Context {
+    type Item = Struct;
+    type IntoIter = StructIter<StructContextIntoIter>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        StructIter(self.inner.into_iter())
+    }
+}
+
+pub struct StructIter<I>(I);
+
+impl<I> Iterator for StructIter<I>
+where
+    I: Iterator,
+    I::Item: Into<Struct>
+{
+    type Item = Struct;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0
+            .next()
+            .map(Into::<Struct>::into)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+
+impl<I> ExactSizeIterator for StructIter<I>
+where
+    I: ExactSizeIterator,
+    I::Item: Into<Struct>,
+{
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 
 enum Value {
     Lazy,
@@ -224,12 +337,12 @@ impl<'a, L: lex::Lexer<'a>> Parser<'a, L> {
         if token.is_some() {
             match (self.context.expect, token) {
                 (e, Some(Token::BraceOpen)) if e == Expect::Value || e == Expect::ArrayValueOrEnd => {
-                    self.context.struct_context.push(Struct::Object);
+                    self.context.inner.push(Struct::Object);
                     self.context.expect = Expect::ObjectKeyOrEnd;
                 },
 
                 (e, Some(Token::BracketOpen)) if e == Expect::Value || e == Expect::ArrayValueOrEnd => {
-                    self.context.struct_context.push(Struct::Array);
+                    self.context.inner.push(Struct::Array);
                     self.context.expect = Expect::ArrayValueOrEnd;
                 },
 
@@ -342,9 +455,9 @@ impl<'a, L: lex::Lexer<'a>> Parser<'a, L> {
 
     fn got_value(&mut self, pop: bool) {
         let s = if pop {
-            self.context.struct_context.pop()
+            self.context.inner.pop()
         } else {
-            self.context.struct_context.peek()
+            self.context.inner.peek()
         };
 
         match s {
