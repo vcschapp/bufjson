@@ -453,6 +453,10 @@ impl<'a, L: lex::Lexer<'a>> Parser<'a, L> {
         self.context.clone()
     }
 
+    pub fn into_inner(self) -> L {
+        self.lexer
+    }
+
     fn got_value(&mut self, pop: bool) {
         let s = if pop {
             self.context.inner.pop()

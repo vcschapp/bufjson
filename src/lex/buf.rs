@@ -96,6 +96,10 @@ impl<'a, B: Deref<Target = [u8]>> BufLexer<'a, B> {
         }
     }
 
+    pub fn into_inner(self) -> B {
+        self.buf
+    }
+
     fn set_value(&mut self, escaped: bool) {
         self.value = StoredValue::Range(self.value_pos.offset..self.pos.offset, escaped);
     }
