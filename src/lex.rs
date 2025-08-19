@@ -23,6 +23,8 @@ pub enum Token {
 pub trait Value {
     fn literal(&self) -> &str;
 
+    fn is_escaped(&self) -> bool;
+
     fn unescaped(&mut self) -> &str;
 }
 
@@ -128,12 +130,12 @@ pub struct Error {
     pub pos: Pos,
 }
 
-pub trait Lexer<'a> {
-    type Value: Value + 'a;
+pub trait Lexer {
+    type Value: Value;
 
     fn next(&mut self) -> Option<Token>;
 
-    fn value(&'a self) -> Option<Result<Self::Value, Error>>;
+    fn value(& self) -> Option<Result<Self::Value, Error>>;
 
     fn pos(&self) -> Pos;
 }

@@ -1,68 +1,130 @@
 use std::ops::Deref;
 use std::ops::Range;
-use std::marker::PhantomData;
+use std::sync::Arc;
+
+use crate::lex;
 
 use super::{Error, ErrorKind, Lexer, Pos, Token};
 
-#[derive(Debug, Default, Eq, PartialEq)]
-enum Escaping {
-    #[default]
-    NotEscaped,
-    Escaped,
-    DeEscaped(String),
+#[derive(Debug)]
+struct Ref<B> {
+    buf: Arc<B>,
+    rng: Range<usize>,
 }
 
-impl Escaping {
-    fn de_escaped(&self) -> &str {
-        if let Escaping::DeEscaped(s) = self {
-            &s
+impl<B> Clone for  Ref<B> {
+    fn clone(&self) -> Self {
+        Self {
+            buf: Arc::clone(&self.buf),
+            rng: self.rng.clone(),
+        }
+    }
+}
+
+impl<B: Deref<Target=[u8]>> Ref<B> {
+    fn new(buf: Arc<B>, rng: Range<usize>) -> Ref<B> {
+        Self { buf, rng }
+    }
+
+    fn as_str(&self) -> &str {
+        unsafe { std::str::from_utf8_unchecked(&self.buf[self.rng.start..self.rng.end]) }
+    }
+}
+
+const INLINE_LEN: usize = 39;
+
+type InlineBuf = [u8; INLINE_LEN];
+
+#[derive(Clone, Debug)]
+enum InnerValue<B: Deref<Target=[u8]>> {
+    Static(&'static str),
+    Inline(u8, InlineBuf),
+    NotEscaped(Ref<B>),
+    Escaped(Ref<B>),
+    DeEscaped(Ref<B>, String),
+}
+
+impl<B: Deref<Target=[u8]>> Default for InnerValue<B> {
+    fn default() -> Self {
+        Self::Static("")
+    }
+}
+
+pub struct Value<B: Deref<Target=[u8]>>(InnerValue<B>);
+
+impl<B: Deref<Target=[u8]>> Value<B> {
+    fn from_static(s: &'static str) -> Self {
+        Self(InnerValue::Static(s))
+    }
+
+    fn from_buf(buf: &Arc<B>, r: Range<usize>, escaped: bool) -> Self {
+        debug_assert!(r.start <= r.end);
+        debug_assert!(r.end <= buf.len());
+
+        let len = r.end - r.start;
+
+        if len <= INLINE_LEN && !escaped {
+            let mut inner: InlineBuf = [0; INLINE_LEN];
+            inner[..len].copy_from_slice(&buf[r]);
+
+            Self(InnerValue::Inline(len as u8, inner))
         } else {
-            panic!("not de-escaped: {self:?}")
-        }
-    }
-}
+            let r = Ref::new(Arc::clone(buf), r);
 
-pub struct Value<'a> {
-    literal: &'a str,
-    escaping: Escaping,
-}
-
-impl<'a> Value<'a> {
-    fn literal(literal: &'a str) -> Self {
-        Self {
-            literal,
-            escaping: Escaping::NotEscaped,
+            return Self(if !escaped { InnerValue::NotEscaped(r) } else { InnerValue::Escaped(r) })
         }
     }
 
-    fn escaped(literal: &'a str) -> Self {
-        Self {
-            literal,
-            escaping: Escaping::Escaped,
-        }
+    fn inline_str(len: u8, buf: &InlineBuf) -> &str {
+        unsafe { std::str::from_utf8_unchecked(&buf[0..len as usize]) }
     }
 }
 
-impl<'a> super::Value for Value<'a> {
+impl<B: Deref<Target=[u8]>> super::Value for Value<B> {
     fn literal(&self) -> &str {
-        self.literal
+        match &self.0 {
+            InnerValue::Static(s) => s,
+            InnerValue::Inline(len, buf) => Self::inline_str(*len, buf),
+            InnerValue::NotEscaped(r) | InnerValue::Escaped(r) | InnerValue::DeEscaped(r, _) => r.as_str(),
+        }
+    }
+
+    fn is_escaped(&self) -> bool {
+        matches!(self.0, InnerValue::Escaped(_) | InnerValue::DeEscaped(_, _))
     }
 
     fn unescaped(&mut self) -> &str {
-        if self.escaping == Escaping::NotEscaped {
-            self.literal
-        } else {
-            if self.escaping == Escaping::Escaped {
-                let mut buf = Vec::new();
-                super::de_escape(self.literal, &mut buf);
-                // Safety: `str` was valid UTF-8 on the way in. Its bytes have been literally copied to these
-                // positions in `buf` except where escape sequences were replaced with validated safe UTF-8.
-                self.escaping = Escaping::DeEscaped(unsafe { String::from_utf8_unchecked(buf) });
+        if let InnerValue::Escaped(_) = &self.0 {
+            match std::mem::take(&mut self.0) {
+                InnerValue::Escaped(r) => {
+                    let mut buf = Vec::new();
+                    lex::de_escape(r.as_str(), &mut buf);
+
+                    // SAFETY: `r` was valid UTF-8 before it was de-escaped, and the de-escaping process
+                    //         maintains UTF-8 safety.
+                    let s = unsafe { String::from_utf8_unchecked(buf) };
+
+                    self.0 = InnerValue::DeEscaped(r, s);
+
+                },
+                _ => unreachable!(),
             }
-            self.escaping.de_escaped()
+        }
+
+        match &self.0 {
+            InnerValue::Static(s) => s,
+            InnerValue::Inline(len, buf) => Self::inline_str(*len, buf),
+            InnerValue::NotEscaped(r) => r.as_str(),
+            InnerValue::DeEscaped(_, s) => s,
+            InnerValue::Escaped(_) => unreachable!()
         }
     }
+
+
 }
+
+// Assert that `Value` does not grow beyond 48 bytes (six 64-bit words).
+const _: [(); 48] = [(); std::mem::size_of::<Value<Vec<u8>>>()];
 
 enum StoredValue {
     None,
@@ -72,31 +134,29 @@ enum StoredValue {
     Eof,
 }
 
-pub struct BufLexer<'a, B: Deref<Target = [u8]>> {
-    buf: B,
+pub struct BufLexer<B: Deref<Target = [u8]>> {
+    buf: Arc<B>,
     pos: Pos,
     value: StoredValue,
     value_pos: Pos,
-    _lifetime: PhantomData<&'a ()>,
 }
 
-impl<'a, B: Deref<Target = [u8]>> BufLexer<'a, B> {
+impl<B: Deref<Target = [u8]>> BufLexer<B> {
     pub fn new(buf: B) -> Self {
+        let buf = Arc::new(buf);
         let pos = Pos::default();
         let value = StoredValue::None;
         let value_pos = Pos::default();
-        let _lifetime = PhantomData;
 
         Self {
             buf,
             pos,
             value,
             value_pos,
-            _lifetime,
         }
     }
 
-    pub fn into_inner(self) -> B {
+    pub fn into_inner(self) -> Arc<B> {
         self.buf
     }
 
@@ -473,8 +533,8 @@ impl<'a, B: Deref<Target = [u8]>> BufLexer<'a, B> {
     }
 }
 
-impl<'a, B: Deref<Target = [u8]>> Lexer<'a> for BufLexer<'a, B> {
-    type Value = Value<'a>;
+impl<B: Deref<Target = [u8]>> Lexer for BufLexer<B> {
+    type Value = Value<B>;
 
     fn next(&mut self) -> Option<Token> {
         if self.pos.offset >= self.buf.len() {
@@ -569,17 +629,10 @@ impl<'a, B: Deref<Target = [u8]>> Lexer<'a> for BufLexer<'a, B> {
         }
     }
 
-    fn value(&'a self) -> Option<Result<Self::Value, Error>> {
+    fn value(&self) -> Option<Result<Self::Value, Error>> {
         match &self.value {
-            StoredValue::Literal(s) => Some(Ok(Value::literal(s))),
-            StoredValue::Range(r, escaped) => {
-                let s = unsafe { std::str::from_utf8_unchecked(&self.buf[r.clone()]) };
-                if !escaped {
-                    Some(Ok(Value::literal(s)))
-                } else {
-                    Some(Ok(Value::escaped(s)))
-                }
-            },
+            StoredValue::Literal(s) => Some(Ok(Value::from_static(s))),
+            StoredValue::Range(r, escaped) => Some(Ok(Value::from_buf(&self.buf, r.clone(), *escaped))),
             StoredValue::Err(err) => Some(Err(err.clone())),
             _ => None,
         }

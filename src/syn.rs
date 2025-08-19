@@ -1,7 +1,6 @@
 use crate::lex;
 use bitvec::prelude::*;
 use std::iter::Take;
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 pub use crate::lex::{Pos, Token};
@@ -308,24 +307,22 @@ pub struct Error {
     pub pos: lex::Pos,
 }
 
-pub struct Parser<'a, L: lex::Lexer<'a>> {
+pub struct Parser<L: lex::Lexer> {
     lexer: L,
     context: Context,
     value: Value,
-    _lifetime: PhantomData<&'a ()>,
 }
 
-impl<'a, L: lex::Lexer<'a>> Parser<'a, L> {
+impl<L: lex::Lexer> Parser<L> {
     pub fn new(lexer: L) -> Self {
         Self {
             lexer,
             context: Context::default(),
             value: Value::Lazy,
-            _lifetime: PhantomData,
         }
     }
 
-    pub fn next(&'a mut self) -> Option<Token> {
+    pub fn next(&mut self) -> Option<Token> {
         match self.value {
             Value::Eof | Value::Err(_) => return None,
             _ => (),
@@ -433,7 +430,7 @@ impl<'a, L: lex::Lexer<'a>> Parser<'a, L> {
         token
     }
 
-    pub fn value(&'a self) -> Option<Result<L::Value, Error>> {
+    pub fn value(&self) -> Option<Result<L::Value, Error>> {
         match &self.value {
             Value::Lazy => match self.lexer.value() {
                 Some(Ok(v)) => Some(Ok(v)),
@@ -445,7 +442,7 @@ impl<'a, L: lex::Lexer<'a>> Parser<'a, L> {
         }
     }
 
-    pub fn pos(&'a self) -> Pos {
+    pub fn pos(&self) -> Pos {
         self.lexer.pos()
     }
 
