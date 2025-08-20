@@ -227,16 +227,56 @@ impl<B: Deref<Target = [u8]>> BufLexer<B> {
     }
 
     fn esc_unicode(&mut self) -> bool {
+        let hi = match self.esc_unicode_seq() {
+            Some(0x0000..=0xd7ff) | Some(0xe000..0xefff) => return true,
+            Some(x) if (0xdc00..=0xdfff).contains(&x) => {
+                self.set_error(ErrorKind::BadSurrogatePair(x, None));
+                return false;
+            },
+            Some(x) => x,
+            None => return false,
+        };
+
+        if self.pos.offset >= self.buf.len() {
+            self.set_error(ErrorKind::UnexpectedEof(Token::String));
+            return false;
+        } else if self.buf[self.pos.offset] != b'\\' {
+            self.set_error(ErrorKind::expect_char(Token::String, self.buf[self.pos.offset], b'\\'));
+            return false;
+        }
+
+        self.pos.advance_col();
+
+        if self.pos.offset >= self.buf.len() {
+            self.set_error(ErrorKind::UnexpectedEof(Token::String));
+            return false;
+        } else if self.buf[self.pos.offset] != b'u' {
+            self.set_error(ErrorKind::expect_char(Token::String, self.buf[self.pos.offset], b'u'));
+            return false;
+        }
+
+        match self.esc_unicode_seq() {
+            Some(0xdc00..=0xdfff) => true,
+            Some(lo) => {
+                self.set_error(ErrorKind::BadSurrogatePair(hi, Some(lo)));
+
+                false
+            },
+            None => false,
+        }
+    }
+
+    fn esc_unicode_seq(&mut self) -> Option<u32> {
         self.pos.advance_col(); // Advance past the leading 'u'.
 
-        let mut c = 0u32; // Collect hex digits to make a candidate Unicode scalar.
+        let mut x = 0u32; // Collect hex digits to make a candidate Unicode scalar.
         let mut shift: u32 = 12;
 
         for _i in 0..4 {
             if self.pos.offset >= self.buf.len() {
                 self.set_error(ErrorKind::UnexpectedEof(Token::String));
 
-                return false;
+                return None;
             }
 
             let b = self.buf[self.pos.offset];
@@ -247,23 +287,17 @@ impl<B: Deref<Target = [u8]>> BufLexer<B> {
                 _ => {
                     self.set_error(ErrorKind::expect_escape_char_hex_digit(b));
 
-                    return false;
+                    return None;
                 }
             } as u32;
 
-            c |= digit << shift;
+            x |= digit << shift;
 
             self.pos.advance_col();
             shift -= 4;
         }
 
-        if char::from_u32(c).is_some() {
-            true
-        } else {
-            self.set_error(ErrorKind::InvalidUtf8EscapeSeq(c));
-
-            false
-        }
+        Some(x)
     }
 
     fn r#false(&mut self) -> Option<Token> {
@@ -421,7 +455,7 @@ impl<B: Deref<Target = [u8]>> BufLexer<B> {
         } else if self.buf[offset] & 0xc0 == 0x80 {
             true
         } else {
-            self.set_error(ErrorKind::invalid_utf8_cont_byte(2, 1, self.buf[offset]));
+            self.set_error(ErrorKind::bad_utf8_cont_byte(2, 1, self.buf[offset]));
 
             false
         }
@@ -455,13 +489,13 @@ impl<B: Deref<Target = [u8]>> BufLexer<B> {
             },
 
             (_, _) if b2 & 0xc0 == 0x80 => {
-                self.set_error(ErrorKind::invalid_utf8_cont_byte(3, 1, b1));
+                self.set_error(ErrorKind::bad_utf8_cont_byte(3, 1, b1));
 
                 false
             },
 
             _ => {
-                self.set_error(ErrorKind::invalid_utf8_cont_byte(3, 2, b2));
+                self.set_error(ErrorKind::bad_utf8_cont_byte(3, 2, b2));
                 self.pos.advance_col();
 
                 false
@@ -497,19 +531,19 @@ impl<B: Deref<Target = [u8]>> BufLexer<B> {
             },
 
             (_, _) if b2 & 0xc0 == 0x80 && b3 & 0xc0 == 0x80 => {
-                self.set_error(ErrorKind::invalid_utf8_cont_byte(3, 1, b1));
+                self.set_error(ErrorKind::bad_utf8_cont_byte(3, 1, b1));
 
                 false
             },
 
             (_, _) if b3 & 0xc0 == 0x80 => {
-                self.set_error(ErrorKind::invalid_utf8_cont_byte(3, 2, b2));
+                self.set_error(ErrorKind::bad_utf8_cont_byte(3, 2, b2));
 
                 false
             },
 
             _ => {
-                self.set_error(ErrorKind::invalid_utf8_cont_byte(3, 3, b3));
+                self.set_error(ErrorKind::bad_utf8_cont_byte(3, 3, b3));
 
                 false
             }

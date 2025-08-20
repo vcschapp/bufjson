@@ -11,3 +11,6 @@ categories = ["parsing", "encoding", "network-programming", "web-programming"]
 
 [dependencies]
 bitvec = { version = "^1.0.1", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+rstest = "^0.26.1"

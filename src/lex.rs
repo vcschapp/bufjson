@@ -66,14 +66,14 @@ pub enum Expect {
 
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
-    Io(Arc<std::io::Error>),
-    InvalidUtf8Seq,
-    InvalidUtf8EscapeSeq(u32),
-    InvalidUtf8ContByte {
+    BadSurrogatePair(u32, Option<u32>),
+    BadUtf8Seq,
+    BadUtf8ContByte {
         seq_len: u8,
         offset: u8,
         value: u8,
     },
+    Io(Arc<std::io::Error>),
     UnexpectedByte {
         token: Option<Token>,
         expect: Expect,
@@ -83,6 +83,10 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
+    pub(crate) fn bad_utf8_cont_byte(seq_len: u8, offset: u8, value: u8) -> ErrorKind {
+        ErrorKind::BadUtf8ContByte { seq_len, offset, value }
+    }
+
     pub(crate) fn expect_char(token: Token, actual: u8, expect: u8) -> ErrorKind {
         let expect = Expect::Char(expect as char);
 
@@ -117,10 +121,6 @@ impl ErrorKind {
         let expect = Expect::TokenStartChar;
 
         ErrorKind::UnexpectedByte { token: None, expect, actual }
-    }
-
-    pub(crate) fn invalid_utf8_cont_byte(seq_len: u8, offset: u8, value: u8) -> ErrorKind {
-        ErrorKind::InvalidUtf8ContByte { seq_len, offset, value }
     }
 }
 
@@ -160,7 +160,9 @@ fn hex2u32(b: u8) -> u32 {
 }
 
 pub(crate) fn de_escape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
+    debug_assert!(literal.len() >= 2);
     debug_assert!(matches!(literal.chars().nth(0), Some('"')));
+    debug_assert!(matches!(literal.chars().nth_back(0), Some('"')));
 
     let bytes = literal.as_bytes();
 
@@ -169,6 +171,7 @@ pub(crate) fn de_escape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
     buf.reserve(bytes.len()-1);
 
     let (mut i, mut j) = (0usize, 0usize);
+    let mut hi_surrogate: Option<u32> = None;
     while j < bytes.len() {
         if bytes[j] != b'\\' {
             j = j + 1;
@@ -181,22 +184,40 @@ pub(crate) fn de_escape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
             match x {
                 b'"' | b'\\' | b'/' => buf.push(x),
                 b'b' => buf.push(b'\x08'),
+                b't' => buf.push(b'\t'),
                 b'f' => buf.push(b'\x0c'),
                 b'n' => buf.push(b'\n'),
                 b'r' => buf.push(b'\r'),
-                b't' => buf.push(b'\t'),
                 b'u' => {
                     len = 6;
                     let (b0, b1, b2, b3) = (bytes[j+2], bytes[j+3], bytes[j+4], bytes[j+5]);
-                    let c = hex2u32(b0) << 12 | hex2u32(b1) << 8 | hex2u32(b2) | 4 | hex2u32(b3);
-                    match char::from_u32(c) {
-                        Some(x) => {
-                            let mut seq = [0u8; 4];
-                            let utf8_str = x.encode_utf8(&mut seq);
-                            buf.extend_from_slice(utf8_str.as_bytes());
-                        },
+                    let x = hex2u32(b0) << 12 | hex2u32(b1) << 8 | hex2u32(b2) << 4 | hex2u32(b3);
 
-                        None => panic!("invalid Unicode escape sequence: [0x{b0:02x}, 0x{b1:02x}, 0x{b2:02x}, 0x{b3:02x}]"),
+                    let code_point = match (hi_surrogate, x) {
+                        (None, 0xd800..=0xdbff) => {
+                            hi_surrogate = Some(x);
+
+                            None
+                        }
+                        (None, _) => Some(x),
+                        (Some(hi), 0xdc00..=0xdfff) => {
+                            hi_surrogate = None;
+
+                            Some(0x10000 + ((hi - 0xd800) << 10 | x - 0xdc00))
+                        },
+                        (Some(hi), _) => panic!("invalid low surrogate [0x{x:04x}] after high surrogate [0x{hi:04x}]"),
+                    };
+
+                    if let Some(c) = code_point {
+                        match char::from_u32(c) {
+                            Some(y) => {
+                                let mut seq = [0u8; 4];
+                                let utf8_str = y.encode_utf8(&mut seq);
+                                buf.extend_from_slice(utf8_str.as_bytes());
+                            },
+
+                            None => panic!("invalid code point: [0x{c:x}]"),
+                        }
                     }
                 },
                 _ => panic!("invalid escape sequence byte after '\': 0x{x:02x}"),
@@ -204,6 +225,78 @@ pub(crate) fn de_escape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
 
             j = j + len;
             i = j;
+        }
+    }
+
+    debug_assert!(matches!(hi_surrogate, None));
+
+    buf.extend_from_slice(&bytes[i..j]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case(r#""""#, r#""""#)]
+    #[case(r#""f""#, r#""f""#)]
+    #[case(r#""fo""#, r#""fo""#)]
+    #[case(r#""foo""#, r#""foo""#)]
+    #[case(r#""\\""#, r#""\""#)]
+    #[case(r#""\/""#, r#""/""#)]
+    #[case(r#""\"""#, r#"""""#)]
+    #[case(r#""\b""#, "\"\x08\"")]
+    #[case(r#""\t""#, "\"\t\"")]
+    #[case(r#""\f""#, "\"\x0c\"")]
+    #[case(r#""\n""#, "\"\n\"")]
+    #[case(r#""\r""#, "\"\r\"")]
+    #[case(r#""\u0000""#, "\"\0\"")]
+    #[case(r#""\u0008""#, "\"\x08\"")]
+    #[case(r#""\u0009""#, "\"\t\"")]
+    #[case(r#""\u000c""#, "\"\x0c\"")]
+    #[case(r#""\u000C""#, "\"\x0C\"")]
+    #[case(r#""\u000a""#, "\"\n\"")]
+    #[case(r#""\u000A""#, "\"\n\"")]
+    #[case(r#""\u000d""#, "\"\r\"")]
+    #[case(r#""\u000D""#, "\"\r\"")]
+    #[case(r#""\u000D""#, "\"\r\"")]
+    #[case(r#""\u0021""#, r#""!""#)]
+    #[case(r#""\u0030""#, r#""0""#)]
+    #[case(r#""\u0041""#, r#""A""#)]
+    #[case(r#""\u0062""#, r#""b""#)]
+    #[case(r#""\u007F""#, "\"\x7f\"")]              // DEL (U+007F, highest 1-byte UTF-8)
+    #[case(r#""\u00A9""#, r#""©""#)]                // Copyright sign (U+00A9, 2-byte UTF-8)
+    #[case(r#""\u03A9""#, r#""Ω""#)]                // Greek capital Omega (U+03A9, 2-byte UTF-8)
+    #[case(r#""\u0080""#, "\"\u{80}\"")]            // First 2-byte UTF-8 code point
+    #[case(r#""\u07FF""#, "\"\u{7ff}\"")]           // Last 2-byte UTF-8 code point
+    #[case(r#""\u20AC""#, r#""€""#)]                // Euro sign (U+20AC, 3-byte UTF-8)
+    #[case(r#""\u2603""#, r#""☃""#)]                // Snowman (U+2603, 3-byte UTF-8)
+    #[case(r#""\u0800""#, "\"\u{800}\"")]           // First 3-byte UTF-8 code point
+    #[case(r#""\uFFFF""#, "\"\u{ffff}\"")]          // Last valid BMP code point (3-byte UTF-8)
+    #[case(r#""\ud83D\uDe00""#, r#""😀""#)]         // Grinning face emoji (U+1F600, 4-byte UTF-8)
+    #[case(r#""\ud800\uDC00""#, "\"\u{10000}\"")]   // First 4-byte UTF-8 code point
+    #[case(r#""\uDBFF\udfff""#, "\"\u{10FFFF}\"")]  // Highest valid Unicode scalar value
+    fn test_de_escape_ok(#[case] literal: &str, #[case] expect: &str) {
+        // Test with an empty buffer.
+        {
+            let mut buf = Vec::new();
+
+            de_escape(literal, &mut buf);
+            let actual = String::from_utf8(buf).unwrap();
+
+            assert_eq!(actual, expect);
+        }
+
+        // Test with a non-empty buffer.
+        {
+            let mut buf = Vec::new();
+
+            buf.extend_from_slice(b"foo");
+            de_escape(literal, &mut buf);
+            let actual = String::from_utf8(buf).unwrap();
+
+            assert_eq!(actual, format!("foo{expect}"));
         }
     }
 }
