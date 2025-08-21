@@ -96,6 +96,7 @@ enum InnerState {
     WhiteCr,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum State {
     Mid,
     End { token: Token, escaped: bool, repeat: bool },
@@ -112,7 +113,7 @@ impl Mach {
     pub fn next(&mut self, b: Option<u8>) -> State {
         match self.state {
             InnerState::Start => self.start(b),
-            InnerState::Eof => panic!("at eof"),
+            InnerState::Eof => State::End { token: Token::Eof, escaped: false, repeat: false },
             InnerState::Err => panic!("already in error state"),
 
             InnerState::F => self.expect_char(Token::False, b'a', b, InnerState::Fa),
@@ -806,5 +807,133 @@ impl Mach {
                 State::End { token: Token::White, escaped: false, repeat: true }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case("", Token::Eof, true, false)]
+    #[case("{", Token::BraceL, true, false)]
+    #[case("}", Token::BraceR, true, false)]
+    #[case("[", Token::BrackL, true, false)]
+    #[case("]", Token::BrackR, true, false)]
+    #[case(":", Token::Colon, true, false)]
+    #[case(",", Token::Comma, true, false)]
+    #[case("false", Token::False, false, false)]
+    #[case("null", Token::Null, false, false)]
+    #[case("true", Token::True, false, false)]
+    #[case("0", Token::Num, false, false)]
+    #[case("-0", Token::Num, false, false)]
+    #[case("1", Token::Num, false, false)]
+    #[case("-1", Token::Num, false, false)]
+    #[case("12", Token::Num, false, false)]
+    #[case("-12", Token::Num, false, false)]
+    #[case("0.0", Token::Num, false, false)]
+    #[case("-0.0", Token::Num, false, false)]
+    #[case("0.123456789", Token::Num, false, false)]
+    #[case("-123.456789", Token::Num, false, false)]
+    #[case("0e0", Token::Num, false, false)]
+    #[case("0e+0", Token::Num, false, false)]
+    #[case("0e-0", Token::Num, false, false)]
+    #[case("0.0e0", Token::Num, false, false)]
+    #[case("0.0e+0", Token::Num, false, false)]
+    #[case("0.0e0", Token::Num, false, false)]    #[case("0e0", Token::Num, false, false)]
+    #[case("-0e+0", Token::Num, false, false)]
+    #[case("-0e-0", Token::Num, false, false)]
+    #[case("-0.0e0", Token::Num, false, false)]
+    #[case("-0.0e+0", Token::Num, false, false)]
+    #[case("-0.0e0", Token::Num, false, false)]
+    #[case("123e456", Token::Num, false, false)]
+    #[case("123.456e+7", Token::Num, false, false)]
+    #[case("123.456e-89", Token::Num, false, false)]
+    #[case("-123e456", Token::Num, false, false)]
+    #[case("-123.456e+7", Token::Num, false, false)]
+    #[case("-123.456e-89", Token::Num, false, false)]
+    #[case(r#""""#, Token::Str, true, false)]
+    #[case(r#"" ""#, Token::Str, true, false)]
+    #[case(r#""foo""#, Token::Str, true, false)]
+    #[case(r#""The quick brown fox jumped over the lazy dog!""#, Token::Str, true, false)]
+    #[case(r#""\\""#, Token::Str, true, true)]
+    #[case(r#""\/""#, Token::Str, true, true)]
+    #[case(r#""\t""#, Token::Str, true, true)]
+    #[case(r#""\r""#, Token::Str, true, true)]
+    #[case(r#""\n""#, Token::Str, true, true)]
+    #[case(r#""\u0000""#, Token::Str, true, true)]
+    #[case(r#""\u001f""#, Token::Str, true, true)]
+    #[case(r#""\u0020""#, Token::Str, true, true)]
+    #[case(r#""\u007E""#, Token::Str, true, true)]
+    #[case(r#""\u007F""#, Token::Str, true, true)]
+    #[case(r#""\u0080""#, Token::Str, true, true)]
+    #[case(r#""\u0100""#, Token::Str, true, true)]
+    #[case(r#""\uE000""#, Token::Str, true, true)]
+    #[case(r#""\ufDCf""#, Token::Str, true, true)]
+    #[case(r#""\uFdeF""#, Token::Str, true, true)]
+    #[case(r#""\ufffd""#, Token::Str, true, true)]
+    #[case(r#""\uFFFE""#, Token::Str, true, true)]
+    #[case(r#""\uFFFF""#, Token::Str, true, true)]
+    #[case(r#""\ud800\udc00""#, Token::Str, true, true)] // Lowest valid surrogate pair → U+10000
+    #[case(r#""\uD800\uDFFF""#, Token::Str, true, true)] // High surrogate with highest low surrogate → U+103FF
+    #[case(r#""\uDBFF\uDC00""#, Token::Str, true, true)] // Highest high surrogate with lowest low surrogate → U+10FC00
+    #[case(r#""\udbFf\udfff""#, Token::Str, true, true)] // Highest valid surrogate pair → U+10FFFF (max Unicode scalar value)
+    #[case("\"\u{0020}\"", Token::Str, true, false)]
+    #[case("\"\u{007f}\"", Token::Str, true, false)] // DEL, the highest 1-byte UTF-8 character
+    #[case("\"\u{0080}\"", Token::Str, true, false)] // Lowest two-byte UTF-8 character
+    #[case("\"\u{07ff}\"", Token::Str, true, false)] // Highest two-byte UTF-8 character
+    #[case("\"\u{0800}\"", Token::Str, true, false)] // Lowest three-byte UTF-8 character
+    #[case("\"\u{d7ff}\"", Token::Str, true, false)] // Highest BMP code point before surrogates
+    #[case("\"\u{e000}\"", Token::Str, true, false)] // Lowest BMP code point after surrogates
+    #[case("\"\u{ffff}\"", Token::Str, true, false)] // Highest BMP code point: non-character but still valid JSON
+    #[case("\"\u{10000}\"", Token::Str, true, false)] // Lowest four-byte UTF-8 character
+    #[case("\"\u{10ffff}\"", Token::Str, true, false)] // Highest valid Unicode scalar value
+    fn test_single_token(#[case] input: &str, #[case] expect: Token, #[case] self_terminating: bool, #[case] escaped: bool) {
+        let mut mach = Mach::default();
+
+        for (i, b) in input.bytes().enumerate() {
+            assert_eq!(i, mach.pos().offset);
+            assert_eq!(1, mach.pos().line);
+            assert_eq!(i+1, mach.pos().col);
+
+            let s = mach.next(Some(b));
+
+            if (i < input.len()-1) || !self_terminating {
+                assert_eq!(State::Mid, s);
+            } else {
+                assert_eq!(State::End { token: expect, escaped, repeat: false }, s);
+            }
+
+            assert_eq!(i + 1, mach.pos().offset);
+            assert_eq!(1, mach.pos().line);
+            assert_eq!(i+2, mach.pos().col);
+        }
+
+        let s = mach.next(None);
+
+        if !(self_terminating) {
+            assert_eq!(State::End { token: expect, escaped, repeat: true }, s);
+        } else {
+            assert_eq!(State::End { token: Token::Eof, escaped: false, repeat: false }, s);
+        }
+
+        assert_eq!(input.len(), mach.pos().offset);
+        assert_eq!(1,mach.pos().line);
+        assert_eq!(input.len()+1, mach.pos().col);
+
+        let t = mach.next(None);
+
+        assert_eq!(State::End { token: Token::Eof, escaped: false, repeat: false }, t);
+        assert_eq!(input.len(), mach.pos().offset);
+        assert_eq!(1,mach.pos().line);
+        assert_eq!(input.len()+1, mach.pos().col);
+
+        let u = mach.next(None);
+
+        assert_eq!(State::End { token: Token::Eof, escaped: false, repeat: false }, u);
+        assert_eq!(input.len(), mach.pos().offset);
+        assert_eq!(1,mach.pos().line);
+        assert_eq!(input.len()+1, mach.pos().col);
     }
 }

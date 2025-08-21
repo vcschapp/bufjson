@@ -133,7 +133,7 @@ impl fmt::Display for Expect {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ErrorKind {
     BadSurrogatePair(u16, Option<u16>),
     BadUtf8Seq,
