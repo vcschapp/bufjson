@@ -1,9 +1,10 @@
 use crate::lex;
 use bitvec::prelude::*;
+use std::fmt;
 use std::iter::Take;
 use std::sync::Arc;
 
-pub use crate::lex::{Pos, Token};
+pub use crate::lex::{Pos, Error as _, Token};
 
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -44,8 +45,8 @@ pub enum Expect {
     ObjectKeyOrEnd,
     ObjectKeySep,
     ObjectValueSepOrEnd,
-    ArrayValueOrEnd,
-    ArrayValueSepOrEnd,
+    ArrayItemOrEnd,
+    ArrayItemSepOrEnd,
     Eof,
 }
 
@@ -53,22 +54,22 @@ impl Expect {
     pub fn allowed_tokens(&self) -> &'static [Token] {
         match self {
             Expect::Value => &[
-                Token::BraceOpen,
-                Token::BracketOpen,
+                Token::BraceL,
+                Token::BrackL,
                 Token::False,
                 Token::Null,
-                Token::Number,
-                Token::String,
+                Token::Num,
+                Token::Str,
                 Token::True,
             ],
 
             Expect::ObjectKey => &[
-                Token::String,
+                Token::Str,
             ],
 
             Expect::ObjectKeyOrEnd => &[
-                Token::String,
-                Token::BraceClose,
+                Token::Str,
+                Token::BraceR,
             ],
 
             Expect::ObjectKeySep => &[
@@ -77,27 +78,44 @@ impl Expect {
 
             Expect::ObjectValueSepOrEnd => &[
                 Token::Comma,
-                Token::BraceClose,
+                Token::BraceR,
             ],
 
-            Expect::ArrayValueOrEnd => &[
-                Token::BraceOpen,
-                Token::BracketOpen,
-                Token::BracketClose,
+            Expect::ArrayItemOrEnd => &[
+                Token::BraceL,
+                Token::BrackL,
+                Token::BrackR,
                 Token::False,
                 Token::Null,
-                Token::Number,
-                Token::String,
+                Token::Num,
+                Token::Str,
                 Token::True,
             ],
 
-            Expect::ArrayValueSepOrEnd => &[
+            Expect::ArrayItemSepOrEnd => &[
                 Token::Comma,
-                Token::BracketClose,
+                Token::BrackR,
             ],
 
             Expect::Eof => &[],
         }
+    }
+}
+
+impl fmt::Display for Expect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Value => "value",
+            Self::ObjectKey => "object key",
+            Self::ObjectKeyOrEnd => "object key or '}'",
+            Self::ObjectKeySep => "':'",
+            Self::ObjectValueSepOrEnd => "',' or '}'",
+            Self::ArrayItemOrEnd => "array item",
+            Self::ArrayItemSepOrEnd => "',' or ']'",
+            Self::Eof => "EOF",
+        };
+
+        write!(f, "{s}")
     }
 }
 
@@ -284,36 +302,67 @@ where
     }
 }
 
-
 enum Value {
     Lazy,
     Err(Error),
-    Eof,
 }
 
 #[derive(Clone, Debug)]
 pub enum ErrorKind {
-    Io(Arc<std::io::Error>),
-    Lexical(lex::ErrorKind),
-    Mismatch {
+    Lex(lex::ErrorKind),
+    Read,
+    Syn {
         context: Context,
-        actual: Option<lex::Token>,
+        token: lex::Token,
     },
 }
 
-#[derive(Clone, Debug)]
-pub struct Error {
-    pub kind: ErrorKind,
-    pub pos: lex::Pos,
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Lex(inner) => {
+                write!(f, "lexical error: ")?;
+
+                inner.fmt(f)
+            },
+
+            Self::Read => write!(f, "read error"),
+
+            Self::Syn { context, token } => {
+                write!(f, "syntax error: expected {} but got {token}", context.expect())
+            },
+        }
+    }
 }
 
-pub struct Parser<L: lex::Lexer> {
+#[derive(Debug, Clone)]
+pub struct Error {
+    kind: ErrorKind,
+    pos: lex::Pos,
+    source: Option<Arc<dyn std::error::Error + 'static>>,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} at {}", self.kind, self.pos)
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source
+            .as_ref()
+            .map(|arc| &**arc)
+    }
+}
+
+pub struct Parser<L: lex::Lexer> where L::Error: 'static {
     lexer: L,
     context: Context,
     value: Value,
 }
 
-impl<L: lex::Lexer> Parser<L> {
+impl<L: lex::Lexer> Parser<L> where L::Error: 'static {
     pub fn new(lexer: L) -> Self {
         Self {
             lexer,
@@ -322,127 +371,106 @@ impl<L: lex::Lexer> Parser<L> {
         }
     }
 
-    pub fn next(&mut self) -> Option<Token> {
-        match self.value {
-            Value::Eof | Value::Err(_) => return None,
-            _ => (),
-        };
-
-        let mut token = self.lexer.next();
+    pub fn next(&mut self) -> Token {
+        let token = self.lexer.next();
         let mut value = Value::Lazy;
 
-        if token.is_some() {
-            match (self.context.expect, token) {
-                (e, Some(Token::BraceOpen)) if e == Expect::Value || e == Expect::ArrayValueOrEnd => {
-                    self.context.inner.push(Struct::Object);
-                    self.context.expect = Expect::ObjectKeyOrEnd;
-                },
+        match (self.context.expect, token) {
+            (e, Token::BraceL) if e == Expect::Value || e == Expect::ArrayItemOrEnd => {
+                self.context.inner.push(Struct::Object);
+                self.context.expect = Expect::ObjectKeyOrEnd;
+            },
 
-                (e, Some(Token::BracketOpen)) if e == Expect::Value || e == Expect::ArrayValueOrEnd => {
-                    self.context.inner.push(Struct::Array);
-                    self.context.expect = Expect::ArrayValueOrEnd;
-                },
+            (e, Token::BrackL) if e == Expect::Value || e == Expect::ArrayItemOrEnd => {
+                self.context.inner.push(Struct::Array);
+                self.context.expect = Expect::ArrayItemOrEnd;
+            },
 
-                (Expect::Value, Some(t)) if t == Token::False || t == Token::Null || t == Token::Number || t == Token::String || t == Token::True => {
-                    self.got_value(false);
-                },
+            (Expect::Value, t) if t == Token::False || t == Token::Null || t == Token::Num || t == Token::Str || t == Token::True => {
+                self.got_value(false);
+            },
 
-                (Expect::ObjectKey, Some(Token::String)) => {
-                    self.context.expect = Expect::ObjectKeySep;
-                }
-
-                (Expect::ObjectKeyOrEnd, Some(Token::BraceClose)) => {
-                    self.got_value(true);
-                },
-
-                (Expect::ObjectKeyOrEnd, Some(Token::String)) => {
-                    self.context.expect = Expect::ObjectKeySep;
-                },
-
-                (Expect::ObjectKeySep, Some(Token::Colon)) => {
-                    self.context.expect = Expect::Value;
-                },
-
-                (Expect::ObjectValueSepOrEnd, Some(Token::Comma)) => {
-                    self.context.expect = Expect::ObjectKey;
-                },
-
-                (Expect::ObjectValueSepOrEnd, Some(Token::BraceClose)) => {
-                    self.got_value(true);
-                },
-
-                (Expect::ArrayValueOrEnd, Some(Token::BracketClose)) => {
-                    self.got_value(true);
-                },
-
-                (Expect::ArrayValueSepOrEnd, Some(Token::BracketClose)) => {
-                    self.got_value(true);
-                },
-
-                (Expect::ArrayValueSepOrEnd, Some(Token::Comma)) => {
-                    self.context.expect = Expect::Value;
-                },
-
-                (_, Some(t)) => {
-                    value = Value::Err(Error {
-                        kind: ErrorKind::Mismatch { context: self.context.clone(), actual: Some(t), },
-                        pos: self.lexer.pos(),
-                    });
-                },
-
-                _ => todo!("put a proper panic"),
+            (Expect::ObjectKey, Token::Str) => {
+                self.context.expect = Expect::ObjectKeySep;
             }
-        } else {
-            let v = self.lexer.value();
 
-            match (self.context.expect, v) {
-                (Expect::Eof, None) => {
-                    value = Value::Eof;
-                },
+            (Expect::ObjectKeyOrEnd, Token::BraceR) => {
+                self.got_value(true);
+            },
 
-                (_, None) => {
-                    value = Value::Err(Error {
-                        kind: ErrorKind::Mismatch { context: self.context.clone(), actual: None },
-                        pos: self.lexer.pos(),
-                    });
-                },
+            (Expect::ObjectKeyOrEnd, Token::Str) => {
+                self.context.expect = Expect::ObjectKeySep;
+            },
 
-                (_, Some(Ok(_))) => {
-                    panic!("lexer must not return Some value after a None token");
-                },
+            (Expect::ObjectKeySep, Token::Colon) => {
+                self.context.expect = Expect::Value;
+            },
 
-                (_, Some(Err(err))) => {
-                    let kind = match err.kind {
-                        lex::ErrorKind::Io(err2) => ErrorKind::Io(err2),
-                        _ => ErrorKind::Lexical(err.kind),
-                    };
-                    value = Value::Err(Error {
-                        kind,
-                        pos: err.pos,
-                    });
-                    token = None;
-                }
-            }
+            (Expect::ObjectValueSepOrEnd, Token::Comma) => {
+                self.context.expect = Expect::ObjectKey;
+            },
+
+            (Expect::ObjectValueSepOrEnd, Token::BraceR) => {
+                self.got_value(true);
+            },
+
+            (Expect::ArrayItemOrEnd, Token::BrackR) => {
+                self.got_value(true);
+            },
+
+            (Expect::ArrayItemSepOrEnd, Token::BrackR) => {
+                self.got_value(true);
+            },
+
+            (Expect::ArrayItemSepOrEnd, Token::Comma) => {
+                self.context.expect = Expect::Value;
+            },
+
+            (Expect::Eof, Token::Eof) => (),
+
+            (_, Token::White) => (),
+
+            (_, Token::Err) => {
+                let err = self.lexer.value().err().expect("lexer returned error token, must contain error value");
+
+                let (kind, source) = match err.kind() {
+                    lex::ErrorKind::Read => (ErrorKind::Read, Some(Arc::new(err) as Arc<dyn std::error::Error + 'static>)),
+                    _ => (ErrorKind::Lex(err.kind()), None),
+                };
+
+                value = Value::Err(Error {
+                    kind,
+                    pos: *self.lexer.pos(),
+                    source,
+                })
+            },
+
+            (_, _) => {
+                value = Value::Err(Error {
+                    kind: ErrorKind::Syn { context: self.context.clone(), token, },
+                    pos: *self.lexer.pos(),
+                    source: None,
+                });
+            },
         }
+
 
         self.value = value;
 
         token
     }
 
-    pub fn value(&self) -> Option<Result<L::Value, Error>> {
+    pub fn value(&self) -> Result<L::Value, Error> {
         match &self.value {
             Value::Lazy => match self.lexer.value() {
-                Some(Ok(v)) => Some(Ok(v)),
-                Some(Err(_)) => panic!("lexer must not be in an error state"),
-                None => None,
+                Ok(v) => Ok(v),
+                Err(_) => panic!("lexer must not be in an error state"),
             },
-            Value::Err(err) => Some(Err(err.clone())),
-            Value::Eof => None,
+            Value::Err(err) => Err(err.clone()),
         }
     }
 
-    pub fn pos(&self) -> Pos {
+    pub fn pos(&self) -> &Pos {
         self.lexer.pos()
     }
 
@@ -462,7 +490,7 @@ impl<L: lex::Lexer> Parser<L> {
         };
 
         match s {
-            Some(Struct::Array) => self.context.expect = Expect::ArrayValueSepOrEnd,
+            Some(Struct::Array) => self.context.expect = Expect::ArrayItemSepOrEnd,
             Some(Struct::Object) => self.context.expect = Expect::ObjectValueSepOrEnd,
             None => self.context.expect = Expect::Eof,
         }
