@@ -40,7 +40,7 @@ enum InnerValue<B: Deref<Target=[u8]>> {
     Inline(u8, InlineBuf),
     NotEscaped(Ref<B>),
     Escaped(Ref<B>),
-    DeEscaped(Ref<B>, String),
+    UnEscaped(Ref<B>, String),
 }
 
 impl<B: Deref<Target=[u8]>> Default for InnerValue<B> {
@@ -85,12 +85,12 @@ impl<B: Deref<Target=[u8]>> super::Value for Value<B> {
         match &self.0 {
             InnerValue::Static(s) => s,
             InnerValue::Inline(len, buf) => Self::inline_str(*len, buf),
-            InnerValue::NotEscaped(r) | InnerValue::Escaped(r) | InnerValue::DeEscaped(r, _) => r.as_str(),
+            InnerValue::NotEscaped(r) | InnerValue::Escaped(r) | InnerValue::UnEscaped(r, _) => r.as_str(),
         }
     }
 
     fn is_escaped(&self) -> bool {
-        matches!(self.0, InnerValue::Escaped(_) | InnerValue::DeEscaped(_, _))
+        matches!(self.0, InnerValue::Escaped(_) | InnerValue::UnEscaped(_, _))
     }
 
     fn unescaped(&mut self) -> &str {
@@ -104,7 +104,7 @@ impl<B: Deref<Target=[u8]>> super::Value for Value<B> {
                     //         maintains UTF-8 safety.
                     let s = unsafe { String::from_utf8_unchecked(buf) };
 
-                    self.0 = InnerValue::DeEscaped(r, s);
+                    self.0 = InnerValue::UnEscaped(r, s);
 
                 },
                 _ => unreachable!(),
@@ -115,7 +115,7 @@ impl<B: Deref<Target=[u8]>> super::Value for Value<B> {
             InnerValue::Static(s) => s,
             InnerValue::Inline(len, buf) => Self::inline_str(*len, buf),
             InnerValue::NotEscaped(r) => r.as_str(),
-            InnerValue::DeEscaped(_, s) => s,
+            InnerValue::UnEscaped(_, s) => s,
             InnerValue::Escaped(_) => unreachable!()
         }
     }

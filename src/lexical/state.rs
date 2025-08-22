@@ -889,6 +889,11 @@ mod tests {
     #[case("\"\u{ffff}\"", Token::Str, true, false)] // Highest BMP code point: non-character but still valid JSON
     #[case("\"\u{10000}\"", Token::Str, true, false)] // Lowest four-byte UTF-8 character
     #[case("\"\u{10ffff}\"", Token::Str, true, false)] // Highest valid Unicode scalar value
+    #[case(" ", Token::White, false, false)]
+    #[case("\t", Token::White, false, false)]
+    #[case("  ", Token::White, false, false)]
+    #[case("\t\t", Token::White, false, false)]
+    #[case(" \t \t    \t          \t\t", Token::White, false, false)]
     fn test_single_token(#[case] input: &str, #[case] expect: Token, #[case] self_terminating: bool, #[case] escaped: bool) {
         let mut mach = Machine::default();
 

@@ -457,7 +457,7 @@ mod tests {
     #[case(r#""\ud800\u0000""#)]
     #[case(r#""\uDBFF\ud800""#)]
     #[should_panic(expected = "high surrogate followed by invalid low surrogate")]
-    fn test_de_escape_panic_invalid_surrogate_pair(#[case] literal: &str) {
+    fn test_unescape_panic_invalid_surrogate_pair(#[case] literal: &str) {
         let mut buf = Vec::new();
 
         unescape(literal, &mut buf);
@@ -468,7 +468,7 @@ mod tests {
     #[case(r#""\U""#)]
     #[case(r#""\:""#)]
     #[should_panic(expected = "invalid escape sequence byte after '\\'")]
-    fn test_de_escape_panic_invalid_esc_seq_byte(#[case] literal: &str) {
+    fn test_unescape_panic_invalid_esc_seq_byte(#[case] literal: &str) {
         let mut buf = Vec::new();
 
         unescape(literal, &mut buf);
