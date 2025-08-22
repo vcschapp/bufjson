@@ -779,7 +779,7 @@ impl Machine {
     fn white_cr(&mut self, b: Option<u8>) -> State {
         match b {
             Some(b' ') | Some(b'\t') => {
-                self.pos.advance_line_only(); // From previous CR.
+                self.pos.advance_line_no_offset(); // From previous CR.
                 self.pos.advance_col();
                 self.state = InnerState::White;
 
@@ -794,14 +794,13 @@ impl Machine {
             },
 
             Some(b'\r') => {
-                self.pos.advance_line_only(); // From previous CR.
-                self.state = InnerState::WhiteCr;
+                self.pos.advance_line();
 
                 State::Mid
             },
 
             _ => {
-                self.pos.advance_line_only(); // From previous CR.
+                self.pos.advance_line_no_offset(); // From previous CR.
                 self.state = InnerState::Start;
 
                 State::End { token: Token::White, escaped: false, repeat: true }
@@ -896,6 +895,7 @@ mod tests {
     #[case(" \t \t    \t          \t\t", Token::White, false, false)]
     fn test_single_token(#[case] input: &str, #[case] expect: Token, #[case] self_terminating: bool, #[case] escaped: bool) {
         let mut mach = Machine::default();
+        assert_eq!(Pos::default(), *mach.pos());
 
         for (i, b) in input.bytes().enumerate() {
             assert_eq!(i, mach.pos().offset);
@@ -940,5 +940,62 @@ mod tests {
         assert_eq!(input.len(), mach.pos().offset);
         assert_eq!(1,mach.pos().line);
         assert_eq!(input.len()+1, mach.pos().col);
+    }
+
+    #[rstest]
+    #[case("\n", &[(2, 1), (2, 1)])]
+    #[case("\n\n", &[(2, 1), (3, 1), (3, 1)])]
+    #[case("\r", &[(1, 1), (2, 1)])]
+    #[case("\r\r", &[(1, 1), (2, 1), (3, 1)])]
+    #[case("\r\n", &[(1, 1), (2, 1), (2, 1)])]
+    #[case("\n\r", &[(2, 1), (2, 1), (3,1)])]
+    #[case("\n\n\r\r", &[(2, 1), (3, 1), (3, 1), (4,1), (5, 1)])]
+    #[case("\r\n\r", &[(1, 1), (2, 1), (2, 1), (3, 1)])]
+    #[case("\n\r\n", &[(2, 1), (2, 1), (3, 1), (3, 1)])]
+    #[case(" \n", &[(1, 2), (2, 1), (2, 1)])]
+    #[case("\n ", &[(2, 1), (2, 2), (2, 2)])]
+    #[case(" \r", &[(1, 2), (1, 2), (2, 1)])]
+    #[case("\r ", &[(1, 1), (2, 2), (2, 2)])]
+    #[case("\t\n", &[(1, 2), (2, 1), (2, 1)])]
+    #[case("\n ", &[(2, 1), (2, 2), (2, 2)])]
+    #[case("\t\r", &[(1, 2), (1, 2), (2, 1)])]
+    #[case("\r\t", &[(1, 1), (2, 2), (2, 2)])]
+fn test_whitespace_multiline(#[case] input: &str, #[case] line_col: &[(usize, usize)]) {
+        assert_eq!(input.len()+1, line_col.len());
+
+        let mut mach = Machine::default();
+        assert_eq!(Pos::default(), *mach.pos());
+
+        for (i, b) in input.bytes().enumerate() {
+            let s = mach.next(Some(b));
+
+            assert_eq!(State::Mid, s, "i={i}");
+
+            let (line, col) = line_col[i];
+
+            assert_eq!(i + 1, mach.pos().offset, "i={i}");
+            assert_eq!(line, mach.pos().line, "i={i}");
+            assert_eq!(col, mach.pos().col, "i={i}");
+        }
+
+        let s = mach.next(None);
+
+        assert_eq!(State::End { token: Token::White, escaped: false, repeat: true }, s);
+
+
+        let (line, col) = line_col[input.len()];
+
+        assert_eq!(input.len(), mach.pos().offset);
+        assert_eq!(line, mach.pos().line);
+        assert_eq!(col, mach.pos().col);
+
+        let t = mach.next(None);
+
+        assert_eq!(State::End { token: Token::Eof, escaped: false, repeat: false }, t);
+
+        assert_eq!(input.len(), mach.pos().offset);
+        assert_eq!(line, mach.pos().line);
+        assert_eq!(col, mach.pos().col);
+
     }
 }

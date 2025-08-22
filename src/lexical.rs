@@ -70,8 +70,8 @@ impl Pos {
     }
 
     #[inline(always)]
-    pub(crate) fn advance_line_only(&mut self) {
-        self.line += 1; // Assert: Offset was already advanced.
+    pub(crate) fn advance_line_no_offset(&mut self) {
+        self.line += 1;
         self.col = 1;
     }
 
