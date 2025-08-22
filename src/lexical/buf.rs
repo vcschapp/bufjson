@@ -230,14 +230,14 @@ impl<B: Deref<Target = [u8]>> Analyzer for BufLexer<B> {
 
                 state::State::End { token, escaped, repeat } => {
                     self.value = match token {
-                        Token::BraceLeft => StoredValue::Literal("{"),
-                        Token::BraceRight => StoredValue::Literal("}"),
-                        Token::BracketLeft => StoredValue::Literal("["),
-                        Token::Colon => StoredValue::Literal(":"),
-                        Token::Comma => StoredValue::Literal(","),
-                        Token::False => StoredValue::Literal("false"),
-                        Token::Null => StoredValue::Literal("null"),
-                        Token::True => StoredValue::Literal("true"),
+                        Token::ObjBegin => StoredValue::Literal("{"),
+                        Token::ObjEnd => StoredValue::Literal("}"),
+                        Token::ArrBegin => StoredValue::Literal("["),
+                        Token::NameSep => StoredValue::Literal(":"),
+                        Token::ValueSep => StoredValue::Literal(","),
+                        Token::LitFalse => StoredValue::Literal("false"),
+                        Token::LitNull => StoredValue::Literal("null"),
+                        Token::LitTrue => StoredValue::Literal("true"),
                         _ => StoredValue::Range(self.value_pos.offset..self.mach.pos().offset, escaped),
                     };
 

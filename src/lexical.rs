@@ -7,39 +7,39 @@ pub mod state;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Token {
-    BraceLeft,
-    BraceRight,
-    BracketLeft,
-    BracketRight,
-    Colon,
-    Comma,
+    ArrBegin,
+    ArrEnd,
     Eof,
     Err,
-    False,
-    Null,
+    LitFalse,
+    LitNull,
+    LitTrue,
+    NameSep,
     Num,
+    ObjBegin,
+    ObjEnd,
     Str,
-    True,
+    ValueSep,
     White,
 }
 
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            Token::BraceLeft => "'{'",
-            Token::BraceRight => "'}'",
-            Token::BracketLeft => "'['",
-            Token::BracketRight => "']'",
-            Token::Colon => "':'",
-            Token::Comma => "','",
-            Token::Eof => "EOF",
-            Token::Err => "error",
-            Token::False => "'false'",
-            Token::Null => "'null'",
-            Token::Num => "number",
-            Token::Str => "string",
-            Token::True => "'true'",
-            Token::White => "whitespace",
+            Self::ArrBegin => "'['",
+            Self::ArrEnd => "']'",
+            Self::Eof => "EOF",
+            Self::Err => "error",
+            Self::LitFalse => "'false'",
+            Self::LitNull => "'null'",
+            Self::LitTrue => "'true'",
+            Self::NameSep => "':'",
+            Self::Num => "number",
+            Self::ObjBegin => "'{'",
+            Self::ObjEnd => "'}'",
+            Self::Str => "string",
+            Self::ValueSep => "','",
+            Self::White => "whitespace",
         };
 
         write!(f, "{s}")

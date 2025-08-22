@@ -39,62 +39,62 @@ impl From<BitRef<'_>> for Struct {
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Expect {
+    ArrElementOrEnd,
+    ArrElementSepOrEnd,
+    Eof,
+    ObjName,
+    ObjNameOrEnd,
+    ObjNameSep,
+    ObjValueSepOrEnd,
     #[default]
     Value,
-    ObjectKey,
-    ObjectKeyOrEnd,
-    ObjectKeySep,
-    ObjectValueSepOrEnd,
-    ArrayItemOrEnd,
-    ArrayItemSepOrEnd,
-    Eof,
 }
 
 impl Expect {
     pub fn allowed_tokens(&self) -> &'static [Token] {
         match self {
             Expect::Value => &[
-                Token::BraceLeft,
-                Token::BracketLeft,
-                Token::False,
-                Token::Null,
+                Token::ArrBegin,
+                Token::LitFalse,
+                Token::LitNull,
+                Token::LitTrue,
                 Token::Num,
-                Token::Str,
-                Token::True,
-            ],
-
-            Expect::ObjectKey => &[
+                Token::ObjBegin,
                 Token::Str,
             ],
 
-            Expect::ObjectKeyOrEnd => &[
+            Expect::ObjName => &[
                 Token::Str,
-                Token::BraceRight,
             ],
 
-            Expect::ObjectKeySep => &[
-                Token::Colon,
+            Expect::ObjNameOrEnd => &[
+                Token::Str,
+                Token::ObjEnd,
             ],
 
-            Expect::ObjectValueSepOrEnd => &[
-                Token::Comma,
-                Token::BraceRight,
+            Expect::ObjNameSep => &[
+                Token::NameSep,
             ],
 
-            Expect::ArrayItemOrEnd => &[
-                Token::BraceLeft,
-                Token::BracketLeft,
-                Token::BracketRight,
-                Token::False,
-                Token::Null,
+            Expect::ObjValueSepOrEnd => &[
+                Token::ObjEnd,
+                Token::ValueSep,
+            ],
+
+            Expect::ArrElementOrEnd => &[
+                Token::ArrBegin,
+                Token::ArrEnd,
+                Token::LitFalse,
+                Token::LitNull,
+                Token::LitTrue,
                 Token::Num,
+                Token::ObjBegin,
                 Token::Str,
-                Token::True,
             ],
 
-            Expect::ArrayItemSepOrEnd => &[
-                Token::Comma,
-                Token::BracketRight,
+            Expect::ArrElementSepOrEnd => &[
+                Token::ArrEnd,
+                Token::ValueSep,
             ],
 
             Expect::Eof => &[],
@@ -105,14 +105,14 @@ impl Expect {
 impl fmt::Display for Expect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            Self::Value => "value",
-            Self::ObjectKey => "object key",
-            Self::ObjectKeyOrEnd => "object key or '}'",
-            Self::ObjectKeySep => "':'",
-            Self::ObjectValueSepOrEnd => "',' or '}'",
-            Self::ArrayItemOrEnd => "array item",
-            Self::ArrayItemSepOrEnd => "',' or ']'",
+            Self::ArrElementOrEnd => "array item",
+            Self::ArrElementSepOrEnd => "',' or ']'",
             Self::Eof => "EOF",
+            Self::ObjName => "object key",
+            Self::ObjNameOrEnd => "object key or '}'",
+            Self::ObjNameSep => "':'",
+            Self::ObjValueSepOrEnd => "',' or '}'",
+            Self::Value => "value",
         };
 
         write!(f, "{s}")
@@ -376,53 +376,53 @@ impl<L: lexical::Analyzer> Parser<L> where L::Error: 'static {
         let mut value = Value::Lazy;
 
         match (self.context.expect, token) {
-            (e, Token::BraceLeft) if e == Expect::Value || e == Expect::ArrayItemOrEnd => {
+            (e, Token::ObjBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
                 self.context.inner.push(Struct::Object);
-                self.context.expect = Expect::ObjectKeyOrEnd;
+                self.context.expect = Expect::ObjNameOrEnd;
             },
 
-            (e, Token::BracketLeft) if e == Expect::Value || e == Expect::ArrayItemOrEnd => {
+            (e, Token::ArrBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
                 self.context.inner.push(Struct::Array);
-                self.context.expect = Expect::ArrayItemOrEnd;
+                self.context.expect = Expect::ArrElementOrEnd;
             },
 
-            (Expect::Value, t) if t == Token::False || t == Token::Null || t == Token::Num || t == Token::Str || t == Token::True => {
+            (Expect::Value, t) if t == Token::LitFalse || t == Token::LitNull || t == Token::Num || t == Token::Str || t == Token::LitTrue => {
                 self.got_value(false);
             },
 
-            (Expect::ObjectKey, Token::Str) => {
-                self.context.expect = Expect::ObjectKeySep;
+            (Expect::ObjName, Token::Str) => {
+                self.context.expect = Expect::ObjNameSep;
             }
 
-            (Expect::ObjectKeyOrEnd, Token::BraceRight) => {
+            (Expect::ObjNameOrEnd, Token::ObjEnd) => {
                 self.got_value(true);
             },
 
-            (Expect::ObjectKeyOrEnd, Token::Str) => {
-                self.context.expect = Expect::ObjectKeySep;
+            (Expect::ObjNameOrEnd, Token::Str) => {
+                self.context.expect = Expect::ObjNameSep;
             },
 
-            (Expect::ObjectKeySep, Token::Colon) => {
+            (Expect::ObjNameSep, Token::NameSep) => {
                 self.context.expect = Expect::Value;
             },
 
-            (Expect::ObjectValueSepOrEnd, Token::Comma) => {
-                self.context.expect = Expect::ObjectKey;
+            (Expect::ObjValueSepOrEnd, Token::ValueSep) => {
+                self.context.expect = Expect::ObjName;
             },
 
-            (Expect::ObjectValueSepOrEnd, Token::BraceRight) => {
+            (Expect::ObjValueSepOrEnd, Token::ObjEnd) => {
                 self.got_value(true);
             },
 
-            (Expect::ArrayItemOrEnd, Token::BracketRight) => {
+            (Expect::ArrElementOrEnd, Token::ArrEnd) => {
                 self.got_value(true);
             },
 
-            (Expect::ArrayItemSepOrEnd, Token::BracketRight) => {
+            (Expect::ArrElementSepOrEnd, Token::ArrEnd) => {
                 self.got_value(true);
             },
 
-            (Expect::ArrayItemSepOrEnd, Token::Comma) => {
+            (Expect::ArrElementSepOrEnd, Token::ValueSep) => {
                 self.context.expect = Expect::Value;
             },
 
@@ -490,8 +490,8 @@ impl<L: lexical::Analyzer> Parser<L> where L::Error: 'static {
         };
 
         match s {
-            Some(Struct::Array) => self.context.expect = Expect::ArrayItemSepOrEnd,
-            Some(Struct::Object) => self.context.expect = Expect::ObjectValueSepOrEnd,
+            Some(Struct::Array) => self.context.expect = Expect::ArrElementSepOrEnd,
+            Some(Struct::Object) => self.context.expect = Expect::ObjValueSepOrEnd,
             None => self.context.expect = Expect::Eof,
         }
     }

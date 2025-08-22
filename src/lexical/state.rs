@@ -116,26 +116,26 @@ impl Machine {
             InnerState::Eof => State::End { token: Token::Eof, escaped: false, repeat: false },
             InnerState::Err => panic!("already in error state"),
 
-            InnerState::F => self.expect_char(Token::False, b'a', b, InnerState::Fa),
-            InnerState::Fa => self.expect_char(Token::False, b'l', b, InnerState::Fal),
-            InnerState::Fal => self.expect_char(Token::False, b's', b, InnerState::Fals),
-            InnerState::Fals => self.expect_char(Token::False, b'e', b, InnerState::False),
-            InnerState::False => self.expect_boundary(Token::False, b),
+            InnerState::F => self.expect_char(Token::LitFalse, b'a', b, InnerState::Fa),
+            InnerState::Fa => self.expect_char(Token::LitFalse, b'l', b, InnerState::Fal),
+            InnerState::Fal => self.expect_char(Token::LitFalse, b's', b, InnerState::Fals),
+            InnerState::Fals => self.expect_char(Token::LitFalse, b'e', b, InnerState::False),
+            InnerState::False => self.expect_boundary(Token::LitFalse, b),
 
-            InnerState::N => self.expect_char(Token::Null, b'u', b, InnerState::Nu),
-            InnerState::Nu => self.expect_char(Token::Null, b'l', b, InnerState::Nul),
-            InnerState::Nul => self.expect_char(Token::Null, b'l', b, InnerState::Null),
-            InnerState::Null => self.expect_boundary(Token::Null, b),
+            InnerState::N => self.expect_char(Token::LitNull, b'u', b, InnerState::Nu),
+            InnerState::Nu => self.expect_char(Token::LitNull, b'l', b, InnerState::Nul),
+            InnerState::Nul => self.expect_char(Token::LitNull, b'l', b, InnerState::Null),
+            InnerState::Null => self.expect_boundary(Token::LitNull, b),
 
             InnerState::Num(num) => self.num(num, b),
 
             InnerState::Str(str) => self.str(str, b),
 
 
-            InnerState::T => self.expect_char(Token::True, b'r', b, InnerState::Tr),
-            InnerState::Tr => self.expect_char(Token::True, b'u', b, InnerState::Tru),
-            InnerState::Tru => self.expect_char(Token::True, b'e', b, InnerState::True),
-            InnerState::True => self.expect_boundary(Token::True, b),
+            InnerState::T => self.expect_char(Token::LitTrue, b'r', b, InnerState::Tr),
+            InnerState::Tr => self.expect_char(Token::LitTrue, b'u', b, InnerState::Tru),
+            InnerState::Tru => self.expect_char(Token::LitTrue, b'e', b, InnerState::True),
+            InnerState::True => self.expect_boundary(Token::LitTrue, b),
 
             InnerState::White => self.white(b),
             InnerState::WhiteCr => self.white_cr(b),
@@ -152,37 +152,37 @@ impl Machine {
             Some(b'{') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::BraceLeft, escaped: false, repeat: false }
+                State::End { token: Token::ObjBegin, escaped: false, repeat: false }
             },
 
             Some(b'}') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::BraceRight, escaped: false, repeat: false }
+                State::End { token: Token::ObjEnd, escaped: false, repeat: false }
             },
 
             Some(b'[') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::BracketLeft, escaped: false, repeat: false }
+                State::End { token: Token::ArrBegin, escaped: false, repeat: false }
             },
 
             Some(b']') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::BracketRight, escaped: false, repeat: false }
+                State::End { token: Token::ArrEnd, escaped: false, repeat: false }
             },
 
             Some(b':') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::Colon, escaped: false, repeat: false }
+                State::End { token: Token::NameSep, escaped: false, repeat: false }
             },
 
             Some(b',') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::Comma, escaped: false, repeat: false }
+                State::End { token: Token::ValueSep, escaped: false, repeat: false }
             },
 
             Some(b'f') => {
@@ -816,15 +816,15 @@ mod tests {
 
     #[rstest]
     #[case("", Token::Eof, true, false)]
-    #[case("{", Token::BraceLeft, true, false)]
-    #[case("}", Token::BraceRight, true, false)]
-    #[case("[", Token::BracketLeft, true, false)]
-    #[case("]", Token::BracketRight, true, false)]
-    #[case(":", Token::Colon, true, false)]
-    #[case(",", Token::Comma, true, false)]
-    #[case("false", Token::False, false, false)]
-    #[case("null", Token::Null, false, false)]
-    #[case("true", Token::True, false, false)]
+    #[case("{", Token::ObjBegin, true, false)]
+    #[case("}", Token::ObjEnd, true, false)]
+    #[case("[", Token::ArrBegin, true, false)]
+    #[case("]", Token::ArrEnd, true, false)]
+    #[case(":", Token::NameSep, true, false)]
+    #[case(",", Token::ValueSep, true, false)]
+    #[case("false", Token::LitFalse, false, false)]
+    #[case("null", Token::LitNull, false, false)]
+    #[case("true", Token::LitTrue, false, false)]
     #[case("0", Token::Num, false, false)]
     #[case("-0", Token::Num, false, false)]
     #[case("1", Token::Num, false, false)]
