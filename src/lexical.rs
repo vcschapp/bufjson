@@ -111,7 +111,7 @@ pub enum Expect {
     DotOrBoundary,
     EscChar,
     ExpSignOrDigit,
-    StringChar,
+    StrChar,
     TokenStartChar,
     UnicodeEscHexDigit,
 }
@@ -126,7 +126,7 @@ impl fmt::Display for Expect {
             Self::DotOrBoundary => write!(f, "character '.', boundary character, or EOF"),
             Self::EscChar => write!(f, "escape sequence character '\\', '\"', '/', 'r', 'n', 't', or 'u'"),
             Self::ExpSignOrDigit => write!(f, "exponent sign character '+' or '-', or exponent digit character '0'..'9'"),
-            Self::StringChar => write!(f, "string character"),
+            Self::StrChar => write!(f, "string character"),
             Self::TokenStartChar => write!(f, "token start character"),
             Self::UnicodeEscHexDigit => write!(f, "Unicode escape sequence hex digit '0'..'9', 'A'..'F', or 'a'..'f'"),
         }
@@ -199,7 +199,7 @@ impl ErrorKind {
     }
 
     pub(crate) fn expect_string_char(actual: u8) -> ErrorKind {
-        let expect = Expect::StringChar;
+        let expect = Expect::StrChar;
 
         ErrorKind::UnexpectedByte { token: Some(Token::Str), expect, actual }
     }
