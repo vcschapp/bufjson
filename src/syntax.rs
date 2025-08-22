@@ -55,7 +55,7 @@ impl Expect {
         match self {
             Expect::Value => &[
                 Token::BraceLeft,
-                Token::BracketL,
+                Token::BracketLeft,
                 Token::False,
                 Token::Null,
                 Token::Num,
@@ -83,7 +83,7 @@ impl Expect {
 
             Expect::ArrayItemOrEnd => &[
                 Token::BraceLeft,
-                Token::BracketL,
+                Token::BracketLeft,
                 Token::BracketRight,
                 Token::False,
                 Token::Null,
@@ -381,7 +381,7 @@ impl<L: lexical::Lexer> Parser<L> where L::Error: 'static {
                 self.context.expect = Expect::ObjectKeyOrEnd;
             },
 
-            (e, Token::BracketL) if e == Expect::Value || e == Expect::ArrayItemOrEnd => {
+            (e, Token::BracketLeft) if e == Expect::Value || e == Expect::ArrayItemOrEnd => {
                 self.context.inner.push(Struct::Array);
                 self.context.expect = Expect::ArrayItemOrEnd;
             },

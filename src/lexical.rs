@@ -9,7 +9,7 @@ pub mod state;
 pub enum Token {
     BraceLeft,
     BraceRight,
-    BracketL,
+    BracketLeft,
     BracketRight,
     Colon,
     Comma,
@@ -28,7 +28,7 @@ impl fmt::Display for Token {
         let s = match self {
             Token::BraceLeft => "'{'",
             Token::BraceRight => "'}'",
-            Token::BracketL => "'['",
+            Token::BracketLeft => "'['",
             Token::BracketRight => "']'",
             Token::Colon => "':'",
             Token::Comma => "','",
