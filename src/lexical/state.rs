@@ -1,4 +1,4 @@
-use crate::lex;
+use crate::lexical;
 
 use super::{ErrorKind, Pos, Token};
 
@@ -104,12 +104,12 @@ pub enum State {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct Mach {
+pub struct Machine {
     state: InnerState,
     pos: Pos,
 }
 
-impl Mach {
+impl Machine {
     pub fn next(&mut self, b: Option<u8>) -> State {
         match self.state {
             InnerState::Start => self.start(b),
@@ -152,25 +152,25 @@ impl Mach {
             Some(b'{') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::BraceL, escaped: false, repeat: false }
+                State::End { token: Token::BraceLeft, escaped: false, repeat: false }
             },
 
             Some(b'}') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::BraceR, escaped: false, repeat: false }
+                State::End { token: Token::BraceRight, escaped: false, repeat: false }
             },
 
             Some(b'[') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::BrackL, escaped: false, repeat: false }
+                State::End { token: Token::BracketL, escaped: false, repeat: false }
             },
 
             Some(b']') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::BrackR, escaped: false, repeat: false }
+                State::End { token: Token::BracketRight, escaped: false, repeat: false }
             },
 
             Some(b':') => {
@@ -509,28 +509,28 @@ impl Mach {
 
             // [1/4] 4-bit character of a \`uXXXX` Unicode escape sequence.
             (Str::EscU, Some(x)) if Self::is_hex_byte(x) => {
-                self.state = InnerState::Str(Str::EscU1(lex::hex2u16(x)));
+                self.state = InnerState::Str(Str::EscU1(lexical::hex2u16(x)));
 
                 State::Mid
             },
 
             // [2/4] 4-bit character of a \`uXXXX` Unicode escape sequence.
             (Str::EscU1(acc), Some(x)) if Self::is_hex_byte(x) => {
-                self.state = InnerState::Str(Str::EscU2(acc << 4 | lex::hex2u16(x)));
+                self.state = InnerState::Str(Str::EscU2(acc << 4 | lexical::hex2u16(x)));
 
                 State::Mid
             },
 
             // [3/4] 4-bit character of a \`uXXXX` Unicode escape sequence.
             (Str::EscU2(acc), Some(x)) if Self::is_hex_byte(x) => {
-                self.state = InnerState::Str(Str::EscU3(acc << 4 | lex::hex2u16(x)));
+                self.state = InnerState::Str(Str::EscU3(acc << 4 | lexical::hex2u16(x)));
 
                 State::Mid
             },
 
             // [4/4] 4-bit character of a \`uXXXX` Unicode escape sequence.
             (Str::EscU3(acc), Some(x)) if Self::is_hex_byte(x) => {
-                let c = acc << 4 | lex::hex2u16(x);
+                let c = acc << 4 | lexical::hex2u16(x);
 
                 match c {
                     0x0000..=0xd7ff | 0xe000..=0xffff => {
@@ -587,28 +587,28 @@ impl Mach {
 
             // [1/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
             (Str::EscLoEscU(hi), Some(x)) if Self::is_hex_byte(x) => {
-                self.state = InnerState::Str(Str::EscLoEscU1(hi, lex::hex2u16(x)));
+                self.state = InnerState::Str(Str::EscLoEscU1(hi, lexical::hex2u16(x)));
 
                 State::Mid
             },
 
             // [2/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
             (Str::EscLoEscU1(hi, acc), Some(x)) if Self::is_hex_byte(x) => {
-                self.state = InnerState::Str(Str::EscLoEscU2(hi, acc << 4 | lex::hex2u16(x)));
+                self.state = InnerState::Str(Str::EscLoEscU2(hi, acc << 4 | lexical::hex2u16(x)));
 
                 State::Mid
             },
 
             // [3/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
             (Str::EscLoEscU2(hi, acc), Some(x)) if Self::is_hex_byte(x) => {
-                self.state = InnerState::Str(Str::EscLoEscU3(hi, acc << 4 | lex::hex2u16(x)));
+                self.state = InnerState::Str(Str::EscLoEscU3(hi, acc << 4 | lexical::hex2u16(x)));
 
                 State::Mid
             },
 
             // [4/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
             (Str::EscLoEscU3(hi, acc), Some(x)) if Self::is_hex_byte(x) => {
-                let lo = acc << 4 | lex::hex2u16(x);
+                let lo = acc << 4 | lexical::hex2u16(x);
 
                 match lo {
                     0xdc00..=0xdfff => {
@@ -817,10 +817,10 @@ mod tests {
 
     #[rstest]
     #[case("", Token::Eof, true, false)]
-    #[case("{", Token::BraceL, true, false)]
-    #[case("}", Token::BraceR, true, false)]
-    #[case("[", Token::BrackL, true, false)]
-    #[case("]", Token::BrackR, true, false)]
+    #[case("{", Token::BraceLeft, true, false)]
+    #[case("}", Token::BraceRight, true, false)]
+    #[case("[", Token::BracketL, true, false)]
+    #[case("]", Token::BracketRight, true, false)]
     #[case(":", Token::Colon, true, false)]
     #[case(",", Token::Comma, true, false)]
     #[case("false", Token::False, false, false)]
@@ -890,7 +890,7 @@ mod tests {
     #[case("\"\u{10000}\"", Token::Str, true, false)] // Lowest four-byte UTF-8 character
     #[case("\"\u{10ffff}\"", Token::Str, true, false)] // Highest valid Unicode scalar value
     fn test_single_token(#[case] input: &str, #[case] expect: Token, #[case] self_terminating: bool, #[case] escaped: bool) {
-        let mut mach = Mach::default();
+        let mut mach = Machine::default();
 
         for (i, b) in input.bytes().enumerate() {
             assert_eq!(i, mach.pos().offset);

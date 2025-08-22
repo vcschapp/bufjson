@@ -3,14 +3,14 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 pub mod buf;
-pub mod mach;
+pub mod state;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Token {
-    BraceL,
-    BraceR,
-    BrackL,
-    BrackR,
+    BraceLeft,
+    BraceRight,
+    BracketL,
+    BracketRight,
     Colon,
     Comma,
     Eof,
@@ -26,10 +26,10 @@ pub enum Token {
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            Token::BraceL => "'{'",
-            Token::BraceR => "'}'",
-            Token::BrackL => "'['",
-            Token::BrackR => "']'",
+            Token::BraceLeft => "'{'",
+            Token::BraceRight => "'}'",
+            Token::BracketL => "'['",
+            Token::BracketRight => "']'",
             Token::Colon => "':'",
             Token::Comma => "','",
             Token::Eof => "EOF",
@@ -312,7 +312,7 @@ pub(crate) fn hex2u16(b: u8) -> u16 {
     }
 }
 
-pub(crate) fn de_escape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
+pub(crate) fn unescape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
     debug_assert!(literal.len() >= 2);
     debug_assert!(matches!(literal.chars().nth(0), Some('"')));
     debug_assert!(matches!(literal.chars().nth_back(0), Some('"')));
@@ -430,12 +430,12 @@ mod tests {
     #[case(r#""\ud83D\uDe00""#, r#""😀""#)]         // Grinning face emoji (U+1F600, 4-byte UTF-8)
     #[case(r#""\ud800\uDC00""#, "\"\u{10000}\"")]   // First 4-byte UTF-8 code point
     #[case(r#""\uDBFF\udfff""#, "\"\u{10FFFF}\"")]  // Highest valid Unicode scalar value
-    fn test_de_escape_ok(#[case] literal: &str, #[case] expect: &str) {
+    fn test_unescape_ok(#[case] literal: &str, #[case] expect: &str) {
         // Test with an empty buffer.
         {
             let mut buf = Vec::new();
 
-            de_escape(literal, &mut buf);
+            unescape(literal, &mut buf);
             let actual = String::from_utf8(buf).unwrap();
 
             assert_eq!(actual, expect);
@@ -446,7 +446,7 @@ mod tests {
             let mut buf = Vec::new();
 
             buf.extend_from_slice(b"foo");
-            de_escape(literal, &mut buf);
+            unescape(literal, &mut buf);
             let actual = String::from_utf8(buf).unwrap();
 
             assert_eq!(actual, format!("foo{expect}"));
@@ -460,7 +460,7 @@ mod tests {
     fn test_de_escape_panic_invalid_surrogate_pair(#[case] literal: &str) {
         let mut buf = Vec::new();
 
-        de_escape(literal, &mut buf);
+        unescape(literal, &mut buf);
     }
 
     #[rstest]
@@ -471,6 +471,6 @@ mod tests {
     fn test_de_escape_panic_invalid_esc_seq_byte(#[case] literal: &str) {
         let mut buf = Vec::new();
 
-        de_escape(literal, &mut buf);
+        unescape(literal, &mut buf);
     }
 }

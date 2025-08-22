@@ -1,10 +1,10 @@
-use crate::lex;
+use crate::lexical;
 use bitvec::prelude::*;
 use std::fmt;
 use std::iter::Take;
 use std::sync::Arc;
 
-pub use crate::lex::{Pos, Error as _, Token};
+pub use crate::lexical::{Pos, Error as _, Token};
 
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -54,8 +54,8 @@ impl Expect {
     pub fn allowed_tokens(&self) -> &'static [Token] {
         match self {
             Expect::Value => &[
-                Token::BraceL,
-                Token::BrackL,
+                Token::BraceLeft,
+                Token::BracketL,
                 Token::False,
                 Token::Null,
                 Token::Num,
@@ -69,7 +69,7 @@ impl Expect {
 
             Expect::ObjectKeyOrEnd => &[
                 Token::Str,
-                Token::BraceR,
+                Token::BraceRight,
             ],
 
             Expect::ObjectKeySep => &[
@@ -78,13 +78,13 @@ impl Expect {
 
             Expect::ObjectValueSepOrEnd => &[
                 Token::Comma,
-                Token::BraceR,
+                Token::BraceRight,
             ],
 
             Expect::ArrayItemOrEnd => &[
-                Token::BraceL,
-                Token::BrackL,
-                Token::BrackR,
+                Token::BraceLeft,
+                Token::BracketL,
+                Token::BracketRight,
                 Token::False,
                 Token::Null,
                 Token::Num,
@@ -94,7 +94,7 @@ impl Expect {
 
             Expect::ArrayItemSepOrEnd => &[
                 Token::Comma,
-                Token::BrackR,
+                Token::BracketRight,
             ],
 
             Expect::Eof => &[],
@@ -309,11 +309,11 @@ enum Value {
 
 #[derive(Clone, Debug)]
 pub enum ErrorKind {
-    Lex(lex::ErrorKind),
+    Lex(lexical::ErrorKind),
     Read,
     Syn {
         context: Context,
-        token: lex::Token,
+        token: lexical::Token,
     },
 }
 
@@ -338,7 +338,7 @@ impl fmt::Display for ErrorKind {
 #[derive(Debug, Clone)]
 pub struct Error {
     kind: ErrorKind,
-    pos: lex::Pos,
+    pos: lexical::Pos,
     source: Option<Arc<dyn std::error::Error + 'static>>,
 }
 
@@ -356,13 +356,13 @@ impl std::error::Error for Error {
     }
 }
 
-pub struct Parser<L: lex::Lexer> where L::Error: 'static {
+pub struct Parser<L: lexical::Lexer> where L::Error: 'static {
     lexer: L,
     context: Context,
     value: Value,
 }
 
-impl<L: lex::Lexer> Parser<L> where L::Error: 'static {
+impl<L: lexical::Lexer> Parser<L> where L::Error: 'static {
     pub fn new(lexer: L) -> Self {
         Self {
             lexer,
@@ -376,12 +376,12 @@ impl<L: lex::Lexer> Parser<L> where L::Error: 'static {
         let mut value = Value::Lazy;
 
         match (self.context.expect, token) {
-            (e, Token::BraceL) if e == Expect::Value || e == Expect::ArrayItemOrEnd => {
+            (e, Token::BraceLeft) if e == Expect::Value || e == Expect::ArrayItemOrEnd => {
                 self.context.inner.push(Struct::Object);
                 self.context.expect = Expect::ObjectKeyOrEnd;
             },
 
-            (e, Token::BrackL) if e == Expect::Value || e == Expect::ArrayItemOrEnd => {
+            (e, Token::BracketL) if e == Expect::Value || e == Expect::ArrayItemOrEnd => {
                 self.context.inner.push(Struct::Array);
                 self.context.expect = Expect::ArrayItemOrEnd;
             },
@@ -394,7 +394,7 @@ impl<L: lex::Lexer> Parser<L> where L::Error: 'static {
                 self.context.expect = Expect::ObjectKeySep;
             }
 
-            (Expect::ObjectKeyOrEnd, Token::BraceR) => {
+            (Expect::ObjectKeyOrEnd, Token::BraceRight) => {
                 self.got_value(true);
             },
 
@@ -410,15 +410,15 @@ impl<L: lex::Lexer> Parser<L> where L::Error: 'static {
                 self.context.expect = Expect::ObjectKey;
             },
 
-            (Expect::ObjectValueSepOrEnd, Token::BraceR) => {
+            (Expect::ObjectValueSepOrEnd, Token::BraceRight) => {
                 self.got_value(true);
             },
 
-            (Expect::ArrayItemOrEnd, Token::BrackR) => {
+            (Expect::ArrayItemOrEnd, Token::BracketRight) => {
                 self.got_value(true);
             },
 
-            (Expect::ArrayItemSepOrEnd, Token::BrackR) => {
+            (Expect::ArrayItemSepOrEnd, Token::BracketRight) => {
                 self.got_value(true);
             },
 
@@ -434,7 +434,7 @@ impl<L: lex::Lexer> Parser<L> where L::Error: 'static {
                 let err = self.lexer.value().err().expect("lexer returned error token, must contain error value");
 
                 let (kind, source) = match err.kind() {
-                    lex::ErrorKind::Read => (ErrorKind::Read, Some(Arc::new(err) as Arc<dyn std::error::Error + 'static>)),
+                    lexical::ErrorKind::Read => (ErrorKind::Read, Some(Arc::new(err) as Arc<dyn std::error::Error + 'static>)),
                     _ => (ErrorKind::Lex(err.kind()), None),
                 };
 

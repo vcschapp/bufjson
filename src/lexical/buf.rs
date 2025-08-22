@@ -3,7 +3,7 @@ use std::ops::Deref;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::lex::{self, mach, {ErrorKind, Lexer, Pos, Token}};
+use crate::lexical::{self, state, {ErrorKind, Lexer, Pos, Token}};
 
 #[derive(Debug)]
 struct Ref<B> {
@@ -98,7 +98,7 @@ impl<B: Deref<Target=[u8]>> super::Value for Value<B> {
             match std::mem::take(&mut self.0) {
                 InnerValue::Escaped(r) => {
                     let mut buf = Vec::new();
-                    lex::de_escape(r.as_str(), &mut buf);
+                    lexical::unescape(r.as_str(), &mut buf);
 
                     // SAFETY: `r` was valid UTF-8 before it was de-escaped, and the de-escaping process
                     //         maintains UTF-8 safety.
@@ -140,7 +140,7 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-impl lex::Error for Error {
+impl lexical::Error for Error {
     fn kind(&self) -> ErrorKind {
         self.kind
     }
@@ -165,7 +165,7 @@ impl Default for StoredValue {
 
 pub struct BufLexer<B: Deref<Target = [u8]>> {
     buf: Arc<B>,
-    mach: mach::Mach,
+    mach: state::Machine,
     repeat: Option<u8>,
     value: StoredValue,
     value_pos: Pos,
@@ -174,7 +174,7 @@ pub struct BufLexer<B: Deref<Target = [u8]>> {
 impl<B: Deref<Target = [u8]>> BufLexer<B> {
     pub fn new(buf: B) -> Self {
         let buf = Arc::new(buf);
-        let mach = mach::Mach::default();
+        let mach = state::Machine::default();
         let repeat = None;
         let value = StoredValue::default();
         let value_pos = Pos::default();
@@ -224,15 +224,15 @@ impl<B: Deref<Target = [u8]>> Lexer for BufLexer<B> {
 
         loop {
             match self.mach.next(b) {
-                mach::State::Mid => {
+                state::State::Mid => {
                     b = self.byte()
                 },
 
-                mach::State::End { token, escaped, repeat } => {
+                state::State::End { token, escaped, repeat } => {
                     self.value = match token {
-                        Token::BraceL => StoredValue::Literal("{"),
-                        Token::BraceR => StoredValue::Literal("}"),
-                        Token::BrackL => StoredValue::Literal("["),
+                        Token::BraceLeft => StoredValue::Literal("{"),
+                        Token::BraceRight => StoredValue::Literal("}"),
+                        Token::BracketL => StoredValue::Literal("["),
                         Token::Colon => StoredValue::Literal(":"),
                         Token::Comma => StoredValue::Literal(","),
                         Token::False => StoredValue::Literal("false"),
@@ -248,7 +248,7 @@ impl<B: Deref<Target = [u8]>> Lexer for BufLexer<B> {
                     return token
                 },
 
-                mach::State::Err(kind) => {
+                state::State::Err(kind) => {
                     let pos = *self.mach.pos();
 
                     self.value = StoredValue::Err(Error { kind, pos });
