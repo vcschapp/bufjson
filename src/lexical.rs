@@ -5,7 +5,7 @@ use std::task::{Context, Poll};
 pub mod buf;
 pub mod state;
 
-/// JSON lexical token type, such as begin object (`{`) or literal true (`'true'`).
+/// JSON lexical token type, such as begin object (`{`) or literal true (`true`).
 ///
 /// This is a list of the JSON lexical token types as described in the [JSON spec][rfc]. The names
 /// of enumeration members are aligned with the names as they appear in the spec.
@@ -15,8 +15,8 @@ pub mod state;
 /// values that depend on the specific JSON text being analyzed (*e.g.* [`Str`]).
 ///
 /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
-/// [`ArrBegin`]: [`Token::ArrBegin`]
-/// [`Str`]: [`Token::Str`]
+/// [`ArrBegin`]: Token::ArrBegin
+/// [`Str`]: Token::Str
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Token {
     /// The begin array token, which has the literal value `[`.
@@ -41,7 +41,7 @@ pub enum Token {
     ObjBegin,
     /// The end object token, which has the literal value `}`.
     ObjEnd,
-    /// A string token, such as `""`, `"foo"`, or `"Hello,\u0020world! 🌎".
+    /// A string token, such as `""`, `"foo"`, or `"Hello,\u0020world! 🌎"`.
     Str,
     /// The value separator token, which has the literal value `,`.
     ValueSep,
