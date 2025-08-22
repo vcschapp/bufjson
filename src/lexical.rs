@@ -5,40 +5,66 @@ use std::task::{Context, Poll};
 pub mod buf;
 pub mod state;
 
+/// JSON lexical token type, such as begin object (`{`) or literal true (`'true'`).
+///
+/// This is a list of the JSON lexical token types as described in the [JSON spec][rfc]. The names
+/// of enumeration members are aligned with the names as they appear in the spec.
+///
+/// Note that `Token` just models the token *type*, not the value. Some token types have static
+/// values that never change (*e.g.*, [`ArrBegin`] is always `'['`) while others have variable
+/// values that depend on the specific JSON text being analyzed (*e.g.* [`Str`]).
+///
+/// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
+/// [`ArrBegin`]: [`Token::ArrBegin`]
+/// [`Str`]: [`Token::Str`]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Token {
+    /// The begin array token, which has the literal value `[`.
     ArrBegin,
+    /// The end array token, which has the literal value `]`.
     ArrEnd,
+    /// Pseudo-token representing the end of the JSON text (end of file).
     Eof,
+    /// Pseudo-token representing an unrecoverable lexical error detected in the JSON text.
     Err,
+    /// The value literal `false`.
     LitFalse,
+    /// The value literal `null`.
     LitNull,
+    /// The value literal `true`.
     LitTrue,
+    /// The name separator token, which has the literal value `:`.
     NameSep,
+    /// A numer token such as `0`, `123.4`, or `-1.25e+6`.
     Num,
+    /// The begin object token, which has the literal value `{`.
     ObjBegin,
+    /// The end object token, which has the literal value `}`.
     ObjEnd,
+    /// A string token, such as `""`, `"foo"`, or `"Hello,\u0020world! 🌎".
     Str,
+    /// The value separator token, which has the literal value `,`.
     ValueSep,
+    /// A maximal string of insignificant whitespace.
     White,
 }
 
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            Self::ArrBegin => "'['",
-            Self::ArrEnd => "']'",
+            Self::ArrBegin => "[",
+            Self::ArrEnd => "]",
             Self::Eof => "EOF",
             Self::Err => "error",
-            Self::LitFalse => "'false'",
-            Self::LitNull => "'null'",
-            Self::LitTrue => "'true'",
-            Self::NameSep => "':'",
+            Self::LitFalse => "false",
+            Self::LitNull => "null",
+            Self::LitTrue => "true",
+            Self::NameSep => ":",
             Self::Num => "number",
-            Self::ObjBegin => "'{'",
-            Self::ObjEnd => "'}'",
+            Self::ObjBegin => "{",
+            Self::ObjEnd => "}",
             Self::Str => "string",
-            Self::ValueSep => "','",
+            Self::ValueSep => ",",
             Self::White => "whitespace",
         };
 
