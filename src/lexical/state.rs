@@ -164,7 +164,7 @@ impl Machine {
             Some(b'[') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::BracketL, escaped: false, repeat: false }
+                State::End { token: Token::BracketLeft, escaped: false, repeat: false }
             },
 
             Some(b']') => {
@@ -819,7 +819,7 @@ mod tests {
     #[case("", Token::Eof, true, false)]
     #[case("{", Token::BraceLeft, true, false)]
     #[case("}", Token::BraceRight, true, false)]
-    #[case("[", Token::BracketL, true, false)]
+    #[case("[", Token::BracketLeft, true, false)]
     #[case("]", Token::BracketRight, true, false)]
     #[case(":", Token::Colon, true, false)]
     #[case(",", Token::Comma, true, false)]
