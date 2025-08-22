@@ -3,7 +3,7 @@ use std::ops::Deref;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::lexical::{self, state, {ErrorKind, Lexer, Pos, Token}};
+use crate::lexical::{self, state, {ErrorKind, Analyzer, Pos, Token}};
 
 #[derive(Debug)]
 struct Ref<B> {
@@ -205,7 +205,7 @@ impl<B: Deref<Target = [u8]>> BufLexer<B> {
 
 }
 
-impl<B: Deref<Target = [u8]>> Lexer for BufLexer<B> {
+impl<B: Deref<Target = [u8]>> Analyzer for BufLexer<B> {
     type Value = Value<B>;
     type Error = Error;
 

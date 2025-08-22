@@ -356,13 +356,13 @@ impl std::error::Error for Error {
     }
 }
 
-pub struct Parser<L: lexical::Lexer> where L::Error: 'static {
+pub struct Parser<L: lexical::Analyzer> where L::Error: 'static {
     lexer: L,
     context: Context,
     value: Value,
 }
 
-impl<L: lexical::Lexer> Parser<L> where L::Error: 'static {
+impl<L: lexical::Analyzer> Parser<L> where L::Error: 'static {
     pub fn new(lexer: L) -> Self {
         Self {
             lexer,

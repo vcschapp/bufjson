@@ -281,7 +281,7 @@ pub trait Error: std::error::Error {
     fn pos(&self) -> &Pos;
 }
 
-pub trait Lexer {
+pub trait Analyzer {
     type Value: Value;
     type Error: Error;
 
@@ -292,7 +292,7 @@ pub trait Lexer {
     fn pos(&self) -> &Pos;
 }
 
-pub trait AsyncLexer {
+pub trait AsyncAnalyzer {
     type Value: Value;
     type Error: Error;
 
