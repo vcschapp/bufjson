@@ -3,7 +3,9 @@ use std::ops::Deref;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::lexical::{self, state, {ErrorKind, Analyzer, Pos, Token}};
+use crate::lexical::{
+    self, state, {Analyzer, ErrorKind, Pos, Token},
+};
 
 #[derive(Debug)]
 struct Ref<B> {
@@ -11,7 +13,7 @@ struct Ref<B> {
     rng: Range<usize>,
 }
 
-impl<B> Clone for  Ref<B> {
+impl<B> Clone for Ref<B> {
     fn clone(&self) -> Self {
         Self {
             buf: Arc::clone(&self.buf),
@@ -20,7 +22,7 @@ impl<B> Clone for  Ref<B> {
     }
 }
 
-impl<B: Deref<Target=[u8]>> Ref<B> {
+impl<B: Deref<Target = [u8]>> Ref<B> {
     fn new(buf: Arc<B>, rng: Range<usize>) -> Ref<B> {
         Self { buf, rng }
     }
@@ -35,7 +37,7 @@ const INLINE_LEN: usize = 39;
 type InlineBuf = [u8; INLINE_LEN];
 
 #[derive(Clone, Debug)]
-enum InnerValue<B: Deref<Target=[u8]>> {
+enum InnerValue<B: Deref<Target = [u8]>> {
     Static(&'static str),
     Inline(u8, InlineBuf),
     NotEscaped(Ref<B>),
@@ -43,16 +45,16 @@ enum InnerValue<B: Deref<Target=[u8]>> {
     UnEscaped(Ref<B>, String),
 }
 
-impl<B: Deref<Target=[u8]>> Default for InnerValue<B> {
+impl<B: Deref<Target = [u8]>> Default for InnerValue<B> {
     fn default() -> Self {
         Self::Static("")
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Value<B: Deref<Target=[u8]>>(InnerValue<B>);
+pub struct Value<B: Deref<Target = [u8]>>(InnerValue<B>);
 
-impl<B: Deref<Target=[u8]>> Value<B> {
+impl<B: Deref<Target = [u8]>> Value<B> {
     fn from_static(s: &'static str) -> Self {
         Self(InnerValue::Static(s))
     }
@@ -71,7 +73,11 @@ impl<B: Deref<Target=[u8]>> Value<B> {
         } else {
             let r = Ref::new(Arc::clone(buf), r);
 
-            return Self(if !escaped { InnerValue::NotEscaped(r) } else { InnerValue::Escaped(r) })
+            return Self(if !escaped {
+                InnerValue::NotEscaped(r)
+            } else {
+                InnerValue::Escaped(r)
+            });
         }
     }
 
@@ -80,12 +86,14 @@ impl<B: Deref<Target=[u8]>> Value<B> {
     }
 }
 
-impl<B: Deref<Target=[u8]>> super::Value for Value<B> {
+impl<B: Deref<Target = [u8]>> super::Value for Value<B> {
     fn literal(&self) -> &str {
         match &self.0 {
             InnerValue::Static(s) => s,
             InnerValue::Inline(len, buf) => Self::inline_str(*len, buf),
-            InnerValue::NotEscaped(r) | InnerValue::Escaped(r) | InnerValue::UnEscaped(r, _) => r.as_str(),
+            InnerValue::NotEscaped(r) | InnerValue::Escaped(r) | InnerValue::UnEscaped(r, _) => {
+                r.as_str()
+            }
         }
     }
 
@@ -105,8 +113,7 @@ impl<B: Deref<Target=[u8]>> super::Value for Value<B> {
                     let s = unsafe { String::from_utf8_unchecked(buf) };
 
                     self.0 = InnerValue::UnEscaped(r, s);
-
-                },
+                }
                 _ => unreachable!(),
             }
         }
@@ -116,11 +123,9 @@ impl<B: Deref<Target=[u8]>> super::Value for Value<B> {
             InnerValue::Inline(len, buf) => Self::inline_str(*len, buf),
             InnerValue::NotEscaped(r) => r.as_str(),
             InnerValue::UnEscaped(_, s) => s,
-            InnerValue::Escaped(_) => unreachable!()
+            InnerValue::Escaped(_) => unreachable!(),
         }
     }
-
-
 }
 
 // Assert that `Value` does not grow beyond 48 bytes (six 64-bit words).
@@ -202,7 +207,6 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
             None
         }
     }
-
 }
 
 impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
@@ -211,7 +215,7 @@ impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
 
     fn next(&mut self) -> Token {
         if matches!(self.value, StoredValue::Err(_)) {
-            return Token::Err
+            return Token::Err;
         }
 
         self.value_pos = *self.mach.pos();
@@ -224,11 +228,13 @@ impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
 
         loop {
             match self.mach.next(b) {
-                state::State::Mid => {
-                    b = self.byte()
-                },
+                state::State::Mid => b = self.byte(),
 
-                state::State::End { token, escaped, repeat } => {
+                state::State::End {
+                    token,
+                    escaped,
+                    repeat,
+                } => {
                     self.value = match token {
                         Token::ObjBegin => StoredValue::Literal("{"),
                         Token::ObjEnd => StoredValue::Literal("}"),
@@ -238,23 +244,26 @@ impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
                         Token::LitFalse => StoredValue::Literal("false"),
                         Token::LitNull => StoredValue::Literal("null"),
                         Token::LitTrue => StoredValue::Literal("true"),
-                        _ => StoredValue::Range(self.value_pos.offset..self.mach.pos().offset, escaped),
+                        _ => StoredValue::Range(
+                            self.value_pos.offset..self.mach.pos().offset,
+                            escaped,
+                        ),
                     };
 
                     if repeat {
                         self.repeat = b;
                     }
 
-                    return token
-                },
+                    return token;
+                }
 
                 state::State::Err(kind) => {
                     let pos = *self.mach.pos();
 
                     self.value = StoredValue::Err(Error { kind, pos });
 
-                    return Token::Err
-                },
+                    return Token::Err;
+                }
             }
         }
     }

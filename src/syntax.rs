@@ -4,8 +4,7 @@ use std::fmt;
 use std::iter::Take;
 use std::sync::Arc;
 
-pub use crate::lexical::{Pos, Error as _, Token};
-
+pub use crate::lexical::{Error as _, Pos, Token};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
@@ -63,23 +62,13 @@ impl Expect {
                 Token::Str,
             ],
 
-            Expect::ObjName => &[
-                Token::Str,
-            ],
+            Expect::ObjName => &[Token::Str],
 
-            Expect::ObjNameOrEnd => &[
-                Token::Str,
-                Token::ObjEnd,
-            ],
+            Expect::ObjNameOrEnd => &[Token::Str, Token::ObjEnd],
 
-            Expect::ObjNameSep => &[
-                Token::NameSep,
-            ],
+            Expect::ObjNameSep => &[Token::NameSep],
 
-            Expect::ObjValueSepOrEnd => &[
-                Token::ObjEnd,
-                Token::ValueSep,
-            ],
+            Expect::ObjValueSepOrEnd => &[Token::ObjEnd, Token::ValueSep],
 
             Expect::ArrElementOrEnd => &[
                 Token::ArrBegin,
@@ -92,10 +81,7 @@ impl Expect {
                 Token::Str,
             ],
 
-            Expect::ArrElementSepOrEnd => &[
-                Token::ArrEnd,
-                Token::ValueSep,
-            ],
+            Expect::ArrElementSepOrEnd => &[Token::ArrEnd, Token::ValueSep],
 
             Expect::Eof => &[],
         }
@@ -140,7 +126,7 @@ impl StructContext {
                     v.push(s.into());
                     *self = StructContext::Heap(v);
                 }
-            },
+            }
 
             StructContext::Heap(v) => v.push(s.into()),
         }
@@ -156,7 +142,7 @@ impl StructContext {
                 } else {
                     None
                 }
-            },
+            }
 
             StructContext::Heap(v) => v.pop().map(Into::<Struct>::into),
         }
@@ -166,11 +152,11 @@ impl StructContext {
         match self {
             StructContext::Inline(len, array) => {
                 if *len > 0 {
-                    Some(array[*len-1].into())
+                    Some(array[*len - 1].into())
                 } else {
                     None
                 }
-            },
+            }
 
             StructContext::Heap(v) => v.last().map(Into::<Struct>::into),
         }
@@ -277,14 +263,12 @@ pub struct StructIter<I>(I);
 impl<I> Iterator for StructIter<I>
 where
     I: Iterator,
-    I::Item: Into<Struct>
+    I::Item: Into<Struct>,
 {
     type Item = Struct;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0
-            .next()
-            .map(Into::<Struct>::into)
+        self.0.next().map(Into::<Struct>::into)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -324,13 +308,17 @@ impl fmt::Display for ErrorKind {
                 write!(f, "lexical error: ")?;
 
                 inner.fmt(f)
-            },
+            }
 
             Self::Read => write!(f, "read error"),
 
             Self::Syn { context, token } => {
-                write!(f, "syntax error: expected {} but got {token}", context.expect())
-            },
+                write!(
+                    f,
+                    "syntax error: expected {} but got {token}",
+                    context.expect()
+                )
+            }
         }
     }
 }
@@ -350,19 +338,23 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source
-            .as_ref()
-            .map(|arc| &**arc)
+        self.source.as_ref().map(|arc| &**arc)
     }
 }
 
-pub struct Parser<L: lexical::Analyzer> where L::Error: 'static {
+pub struct Parser<L: lexical::Analyzer>
+where
+    L::Error: 'static,
+{
     lexer: L,
     context: Context,
     value: Value,
 }
 
-impl<L: lexical::Analyzer> Parser<L> where L::Error: 'static {
+impl<L: lexical::Analyzer> Parser<L>
+where
+    L::Error: 'static,
+{
     pub fn new(lexer: L) -> Self {
         Self {
             lexer,
@@ -379,16 +371,22 @@ impl<L: lexical::Analyzer> Parser<L> where L::Error: 'static {
             (e, Token::ObjBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
                 self.context.inner.push(Struct::Object);
                 self.context.expect = Expect::ObjNameOrEnd;
-            },
+            }
 
             (e, Token::ArrBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
                 self.context.inner.push(Struct::Array);
                 self.context.expect = Expect::ArrElementOrEnd;
-            },
+            }
 
-            (Expect::Value, t) if t == Token::LitFalse || t == Token::LitNull || t == Token::Num || t == Token::Str || t == Token::LitTrue => {
+            (Expect::Value, t)
+                if t == Token::LitFalse
+                    || t == Token::LitNull
+                    || t == Token::Num
+                    || t == Token::Str
+                    || t == Token::LitTrue =>
+            {
                 self.got_value(false);
-            },
+            }
 
             (Expect::ObjName, Token::Str) => {
                 self.context.expect = Expect::ObjNameSep;
@@ -396,45 +394,52 @@ impl<L: lexical::Analyzer> Parser<L> where L::Error: 'static {
 
             (Expect::ObjNameOrEnd, Token::ObjEnd) => {
                 self.got_value(true);
-            },
+            }
 
             (Expect::ObjNameOrEnd, Token::Str) => {
                 self.context.expect = Expect::ObjNameSep;
-            },
+            }
 
             (Expect::ObjNameSep, Token::NameSep) => {
                 self.context.expect = Expect::Value;
-            },
+            }
 
             (Expect::ObjValueSepOrEnd, Token::ValueSep) => {
                 self.context.expect = Expect::ObjName;
-            },
+            }
 
             (Expect::ObjValueSepOrEnd, Token::ObjEnd) => {
                 self.got_value(true);
-            },
+            }
 
             (Expect::ArrElementOrEnd, Token::ArrEnd) => {
                 self.got_value(true);
-            },
+            }
 
             (Expect::ArrElementSepOrEnd, Token::ArrEnd) => {
                 self.got_value(true);
-            },
+            }
 
             (Expect::ArrElementSepOrEnd, Token::ValueSep) => {
                 self.context.expect = Expect::Value;
-            },
+            }
 
             (Expect::Eof, Token::Eof) => (),
 
             (_, Token::White) => (),
 
             (_, Token::Err) => {
-                let err = self.lexer.value().err().expect("lexer returned error token, must contain error value");
+                let err = self
+                    .lexer
+                    .value()
+                    .err()
+                    .expect("lexer returned error token, must contain error value");
 
                 let (kind, source) = match err.kind() {
-                    lexical::ErrorKind::Read => (ErrorKind::Read, Some(Arc::new(err) as Arc<dyn std::error::Error + 'static>)),
+                    lexical::ErrorKind::Read => (
+                        ErrorKind::Read,
+                        Some(Arc::new(err) as Arc<dyn std::error::Error + 'static>),
+                    ),
                     _ => (ErrorKind::Lex(err.kind()), None),
                 };
 
@@ -443,17 +448,19 @@ impl<L: lexical::Analyzer> Parser<L> where L::Error: 'static {
                     pos: *self.lexer.pos(),
                     source,
                 })
-            },
+            }
 
             (_, _) => {
                 value = Value::Err(Error {
-                    kind: ErrorKind::Syn { context: self.context.clone(), token, },
+                    kind: ErrorKind::Syn {
+                        context: self.context.clone(),
+                        token,
+                    },
                     pos: *self.lexer.pos(),
                     source: None,
                 });
-            },
+            }
         }
-
 
         self.value = value;
 

@@ -16,7 +16,9 @@ enum Num {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum Str {
-    Ready { escaped: bool },
+    Ready {
+        escaped: bool,
+    },
     Esc,
     EscU,
     EscU1(u16),
@@ -28,21 +30,40 @@ enum Str {
     EscLoEscU1(u16, u16),
     EscLoEscU2(u16, u16),
     EscLoEscU3(u16, u16),
-    Utf821 { escaped: bool },
-    Utf831 { escaped: bool, b0: u8 },
-    Utf832 { escaped: bool, b0: u8, b1: u8, },
-    Utf841 { escaped: bool, b0: u8 },
-    Utf842 { escaped: bool, b0: u8, b1: u8, },
-    Utf843 { escaped: bool, b0: u8, b1: u8, b2: u8, },
+    Utf821 {
+        escaped: bool,
+    },
+    Utf831 {
+        escaped: bool,
+        b0: u8,
+    },
+    Utf832 {
+        escaped: bool,
+        b0: u8,
+        b1: u8,
+    },
+    Utf841 {
+        escaped: bool,
+        b0: u8,
+    },
+    Utf842 {
+        escaped: bool,
+        b0: u8,
+        b1: u8,
+    },
+    Utf843 {
+        escaped: bool,
+        b0: u8,
+        b1: u8,
+        b2: u8,
+    },
 }
-
 
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
 enum InnerState {
     //==============================================================================================
     // TERMINAL STATES
     //==============================================================================================
-
     #[default]
     Start,
     Eof,
@@ -51,7 +72,6 @@ enum InnerState {
     //==============================================================================================
     // KEYWORD: `false`
     //==============================================================================================
-
     F,
     Fa,
     Fal,
@@ -61,7 +81,6 @@ enum InnerState {
     //==============================================================================================
     // KEYWORD: `null`
     //==============================================================================================
-
     N,
     Nu,
     Nul,
@@ -70,19 +89,16 @@ enum InnerState {
     //==============================================================================================
     // NUMBER
     //==============================================================================================
-
     Num(Num),
 
     //==============================================================================================
     // STRING
     //==============================================================================================
-
     Str(Str),
 
     //==============================================================================================
     // KEYWORD: `true`
     //==============================================================================================
-
     T,
     Tr,
     Tru,
@@ -91,7 +107,6 @@ enum InnerState {
     //==============================================================================================
     // WHITESPACE
     //==============================================================================================
-
     White,
     WhiteCr,
 }
@@ -99,7 +114,11 @@ enum InnerState {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum State {
     Mid,
-    End { token: Token, escaped: bool, repeat: bool },
+    End {
+        token: Token,
+        escaped: bool,
+        repeat: bool,
+    },
     Err(ErrorKind),
 }
 
@@ -113,7 +132,11 @@ impl Machine {
     pub fn next(&mut self, b: Option<u8>) -> State {
         match self.state {
             InnerState::Start => self.start(b),
-            InnerState::Eof => State::End { token: Token::Eof, escaped: false, repeat: false },
+            InnerState::Eof => State::End {
+                token: Token::Eof,
+                escaped: false,
+                repeat: false,
+            },
             InnerState::Err => panic!("already in error state"),
 
             InnerState::F => self.expect_char(Token::LitFalse, b'a', b, InnerState::Fa),
@@ -131,7 +154,6 @@ impl Machine {
 
             InnerState::Str(str) => self.str(str, b),
 
-
             InnerState::T => self.expect_char(Token::LitTrue, b'r', b, InnerState::Tr),
             InnerState::Tr => self.expect_char(Token::LitTrue, b'u', b, InnerState::Tru),
             InnerState::Tru => self.expect_char(Token::LitTrue, b'e', b, InnerState::True),
@@ -147,145 +169,179 @@ impl Machine {
         &self.pos
     }
 
-    fn start(&mut self, b: Option<u8>) -> State{
+    fn start(&mut self, b: Option<u8>) -> State {
         match b {
             Some(b'{') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::ObjBegin, escaped: false, repeat: false }
-            },
+                State::End {
+                    token: Token::ObjBegin,
+                    escaped: false,
+                    repeat: false,
+                }
+            }
 
             Some(b'}') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::ObjEnd, escaped: false, repeat: false }
-            },
+                State::End {
+                    token: Token::ObjEnd,
+                    escaped: false,
+                    repeat: false,
+                }
+            }
 
             Some(b'[') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::ArrBegin, escaped: false, repeat: false }
-            },
+                State::End {
+                    token: Token::ArrBegin,
+                    escaped: false,
+                    repeat: false,
+                }
+            }
 
             Some(b']') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::ArrEnd, escaped: false, repeat: false }
-            },
+                State::End {
+                    token: Token::ArrEnd,
+                    escaped: false,
+                    repeat: false,
+                }
+            }
 
             Some(b':') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::NameSep, escaped: false, repeat: false }
-            },
+                State::End {
+                    token: Token::NameSep,
+                    escaped: false,
+                    repeat: false,
+                }
+            }
 
             Some(b',') => {
                 self.pos.advance_col();
 
-                State::End { token: Token::ValueSep, escaped: false, repeat: false }
-            },
+                State::End {
+                    token: Token::ValueSep,
+                    escaped: false,
+                    repeat: false,
+                }
+            }
 
             Some(b'f') => {
                 self.pos.advance_col();
                 self.state = InnerState::F;
 
                 State::Mid
-            },
+            }
 
             Some(b'n') => {
                 self.pos.advance_col();
                 self.state = InnerState::N;
 
                 State::Mid
-            },
+            }
 
             Some(b'-') => {
                 self.pos.advance_col();
                 self.state = InnerState::Num(Num::Minus);
 
                 State::Mid
-            },
+            }
 
             Some(b'0') => {
                 self.pos.advance_col();
                 self.state = InnerState::Num(Num::Zero);
 
                 State::Mid
-            },
+            }
 
             Some(b'1'..=b'9') => {
                 self.pos.advance_col();
                 self.state = InnerState::Num(Num::Int);
 
                 State::Mid
-            },
+            }
 
             Some(b'"') => {
                 self.pos.advance_col();
                 self.state = InnerState::Str(Str::Ready { escaped: false });
 
                 State::Mid
-            },
+            }
 
             Some(b't') => {
                 self.pos.advance_col();
                 self.state = InnerState::T;
 
                 State::Mid
-            },
+            }
 
             Some(b' ') | Some(b'\t') => {
                 self.pos.advance_col();
                 self.state = InnerState::White;
 
                 State::Mid
-            },
+            }
 
             Some(b'\r') => {
                 self.pos.advance_offset(1);
                 self.state = InnerState::WhiteCr;
 
                 State::Mid
-            },
+            }
 
             Some(b'\n') => {
                 self.pos.advance_line();
                 self.state = InnerState::White;
 
                 State::Mid
-            },
+            }
 
             None => {
                 self.state = InnerState::Eof;
 
-                State::End { token: Token::Eof, escaped: false, repeat: false }
+                State::End {
+                    token: Token::Eof,
+                    escaped: false,
+                    repeat: false,
+                }
             }
 
             Some(c) => {
                 self.state = InnerState::Err;
 
                 State::Err(ErrorKind::expect_token_start_char(c))
-            },
+            }
         }
     }
 
     #[inline(always)]
-    fn expect_char(&mut self, tok: Token, expect: u8, actual: Option<u8>, next: InnerState) -> State {
+    fn expect_char(
+        &mut self,
+        tok: Token,
+        expect: u8,
+        actual: Option<u8>,
+        next: InnerState,
+    ) -> State {
         match actual {
             Some(c) if c == expect => {
                 self.pos.advance_col();
                 self.state = next;
 
                 State::Mid
-            },
+            }
 
             Some(c) => {
                 self.state = InnerState::Err;
 
                 State::Err(ErrorKind::expect_char(tok, c, expect as char))
-            },
+            }
 
-            None => self.unexpected_eof(tok)
+            None => self.unexpected_eof(tok),
         }
     }
 
@@ -297,16 +353,16 @@ impl Machine {
     }
 
     fn is_boundary_byte(b: u8) -> bool {
-        b == b'{' ||
-        b == b'}' ||
-        b == b'[' ||
-        b == b']' ||
-        b == b':' ||
-        b == b'"' ||
-        b == b' ' ||
-        b == b'\t' ||
-        b == b'\n' ||
-        b == b'\r'
+        b == b'{'
+            || b == b'}'
+            || b == b'['
+            || b == b']'
+            || b == b':'
+            || b == b'"'
+            || b == b' '
+            || b == b'\t'
+            || b == b'\n'
+            || b == b'\r'
     }
 
     fn is_hex_byte(b: u8) -> bool {
@@ -318,17 +374,22 @@ impl Machine {
 
     fn expect_boundary(&mut self, tok: Token, b: Option<u8>) -> State {
         match b {
-            None | Some(b'{') | Some(b'}') | Some(b'[') | Some(b']') | Some(b':') | Some(b',') | Some(b'"') | Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r') => {
+            None | Some(b'{') | Some(b'}') | Some(b'[') | Some(b']') | Some(b':') | Some(b',')
+            | Some(b'"') | Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r') => {
                 self.state = InnerState::Start;
 
-                State::End { token: tok, escaped: false, repeat: true }
-            },
+                State::End {
+                    token: tok,
+                    escaped: false,
+                    repeat: true,
+                }
+            }
 
             Some(c) => {
                 self.state = InnerState::Err;
 
                 State::Err(ErrorKind::expect_boundary(tok, c))
-            },
+            }
         }
     }
 
@@ -339,27 +400,27 @@ impl Machine {
                 self.state = InnerState::Num(Num::Zero);
 
                 State::Mid
-            },
+            }
 
             (Num::Minus, Some(b'1'..=b'9')) => {
                 self.pos.advance_col();
                 self.state = InnerState::Num(Num::Int);
 
                 State::Mid
-            },
+            }
 
-            (Num::Int, Some(b'0'..=b'9')) | (Num::Frac, Some(b'0'..=b'9'))=> {
+            (Num::Int, Some(b'0'..=b'9')) | (Num::Frac, Some(b'0'..=b'9')) => {
                 self.pos.advance_col();
 
                 State::Mid
-            },
+            }
 
             (Num::Zero, Some(b'.')) | (Num::Int, Some(b'.')) => {
                 self.pos.advance_col();
                 self.state = InnerState::Num(Num::Dot);
 
                 State::Mid
-            },
+            }
 
             (Num::Dot, Some(b'0'..=b'9')) => {
                 self.pos.advance_col();
@@ -380,7 +441,7 @@ impl Machine {
                 self.state = InnerState::Num(Num::ExpSign);
 
                 State::Mid
-            },
+            }
 
             (Num::Exp, Some(b'0'..=b'9')) | (Num::ExpSign, Some(b'0'..=b'9')) => {
                 self.pos.advance_col();
@@ -393,22 +454,34 @@ impl Machine {
                 self.pos.advance_col();
 
                 State::Mid
-            },
+            }
 
             (Num::Zero, None) | (Num::Int, None) | (Num::Frac, None) | (Num::ExpInt, None) => {
                 self.state = InnerState::Start;
 
-                State::End { token: Token::Num, escaped: false, repeat: true }
-            },
+                State::End {
+                    token: Token::Num,
+                    escaped: false,
+                    repeat: true,
+                }
+            }
 
-            (Num::Zero, Some(c)) | (Num::Int, Some(c)) | (Num::Frac, Some(c)) | (Num::ExpInt, Some(c)) if Self::is_boundary_byte(c) => {
+            (Num::Zero, Some(c))
+            | (Num::Int, Some(c))
+            | (Num::Frac, Some(c))
+            | (Num::ExpInt, Some(c))
+                if Self::is_boundary_byte(c) =>
+            {
                 self.state = InnerState::Start;
 
-                State::End { token: Token::Num, escaped: false, repeat: true }
-            },
+                State::End {
+                    token: Token::Num,
+                    escaped: false,
+                    repeat: true,
+                }
+            }
 
-
-            (Num::Zero, Some(c))  => {
+            (Num::Zero, Some(c)) => {
                 self.state = InnerState::Err;
 
                 State::Err(ErrorKind::expect_dot_or_boundary(c))
@@ -424,15 +497,17 @@ impl Machine {
                 self.state = InnerState::Err;
 
                 State::Err(ErrorKind::expect_digit(c))
-            },
+            }
 
             (Num::Exp, Some(c)) => {
                 self.state = InnerState::Err;
 
                 State::Err(ErrorKind::expect_exp_sign_or_digit(c))
-            },
+            }
 
-            (Num::Minus, None) | (Num::Dot, None) | (Num::Exp, None) | (Num::ExpSign, None) => self.unexpected_eof(Token::Num),
+            (Num::Minus, None) | (Num::Dot, None) | (Num::Exp, None) | (Num::ExpSign, None) => {
+                self.unexpected_eof(Token::Num)
+            }
         }
     }
 
@@ -442,62 +517,66 @@ impl Machine {
             (Str::Ready { escaped }, Some(b'"')) => {
                 self.state = InnerState::Start;
 
-                State::End { token: Token::Str, escaped, repeat: false }
-            },
+                State::End {
+                    token: Token::Str,
+                    escaped,
+                    repeat: false,
+                }
+            }
 
             // Reverse solidus begins an escape sequence.
-            (Str::Ready { escaped: _}, Some(b'\\')) => {
+            (Str::Ready { escaped: _ }, Some(b'\\')) => {
                 self.state = InnerState::Str(Str::Esc);
 
                 State::Mid
-            },
+            }
 
             // Any other valid ASCII character...
-            (Str::Ready { escaped: _ }, Some(b' '..=0x7f)) => {
-                State::Mid
-            },
+            (Str::Ready { escaped: _ }, Some(b' '..=0x7f)) => State::Mid,
 
             // [1/2] Two-byte UTF-8 sequence start...
             (Str::Ready { escaped }, Some(0xc2..=0xdf)) => {
                 self.state = InnerState::Str(Str::Utf821 { escaped });
 
                 State::Mid
-            },
+            }
 
             // [1/3] Three-byte UTF-8 sequence start...
             (Str::Ready { escaped }, Some(b0)) if (0xe0..=0xef).contains(&b0) => {
                 self.state = InnerState::Str(Str::Utf831 { escaped, b0 });
 
                 State::Mid
-            },
+            }
 
             // [1/4] Four-byte UTF-8 sequence start...
             (Str::Ready { escaped }, Some(b0)) if (0xf0..=0xf4).contains(&b0) => {
                 self.state = InnerState::Str(Str::Utf841 { escaped, b0 });
 
                 State::Mid
-            },
+            }
 
             // Any other byte seen in the ready state is hot garbage.
             (Str::Ready { escaped: _ }, Some(c)) => {
                 self.state = InnerState::Err;
 
                 State::Err(ErrorKind::expect_string_char(c))
-            },
+            }
 
             // Completing a short-form escape sequence.
-            (Str::Esc, Some(c)) if c == b'\\' || c == b'"' || c == b'n' || c == b't' || c == b'r' || c == b'/' => {
+            (Str::Esc, Some(c))
+                if c == b'\\' || c == b'"' || c == b'n' || c == b't' || c == b'r' || c == b'/' =>
+            {
                 self.state = InnerState::Str(Str::Ready { escaped: true });
 
                 State::Mid
-            },
+            }
 
             // Starting a Unicode escape sequence.
             (Str::Esc, Some(b'u')) => {
                 self.state = InnerState::Str(Str::EscU);
 
                 State::Mid
-            },
+            }
 
             // Any other byte that doesn't complete a short-form escape sequence or start a Unicode
             // escape sequence...
@@ -505,28 +584,28 @@ impl Machine {
                 self.state = InnerState::Err;
 
                 State::Err(ErrorKind::expect_esc_char(c))
-            },
+            }
 
             // [1/4] 4-bit character of a \`uXXXX` Unicode escape sequence.
             (Str::EscU, Some(x)) if Self::is_hex_byte(x) => {
                 self.state = InnerState::Str(Str::EscU1(lexical::hex2u16(x)));
 
                 State::Mid
-            },
+            }
 
             // [2/4] 4-bit character of a \`uXXXX` Unicode escape sequence.
             (Str::EscU1(acc), Some(x)) if Self::is_hex_byte(x) => {
                 self.state = InnerState::Str(Str::EscU2(acc << 4 | lexical::hex2u16(x)));
 
                 State::Mid
-            },
+            }
 
             // [3/4] 4-bit character of a \`uXXXX` Unicode escape sequence.
             (Str::EscU2(acc), Some(x)) if Self::is_hex_byte(x) => {
                 self.state = InnerState::Str(Str::EscU3(acc << 4 | lexical::hex2u16(x)));
 
                 State::Mid
-            },
+            }
 
             // [4/4] 4-bit character of a \`uXXXX` Unicode escape sequence.
             (Str::EscU3(acc), Some(x)) if Self::is_hex_byte(x) => {
@@ -537,21 +616,21 @@ impl Machine {
                         self.state = InnerState::Str(Str::Ready { escaped: true });
 
                         State::Mid
-                    },
+                    }
 
                     0xd800..=0xdbff => {
                         self.state = InnerState::Str(Str::EscHi(c));
 
                         State::Mid
-                    },
+                    }
 
                     0xdc00..=0xdfff => {
                         self.state = InnerState::Err;
 
                         State::Err(ErrorKind::BadSurrogatePair(c, None))
-                    },
+                    }
                 }
-            },
+            }
 
             // Right after a Unicode escape sequence containing a high surrogate, a reverse solidus
             // signals another escape sequence which should contain the low surrogate.
@@ -559,7 +638,7 @@ impl Machine {
                 self.state = InnerState::Str(Str::EscLoEsc(hi));
 
                 State::Mid
-            },
+            }
 
             // If we don't get a reverse solidus signalling the start of the low surrogate after a
             // Unicode high surrogate sequence, it's an error.
@@ -567,7 +646,7 @@ impl Machine {
                 self.state = InnerState::Err;
 
                 State::Err(ErrorKind::expect_unicode_esc_lo_surrogate(c, '\\'))
-            },
+            }
 
             // Starting a Unicode escape sequence representing the low surrogate of a surrogate
             // pair.
@@ -575,7 +654,7 @@ impl Machine {
                 self.state = InnerState::Str(Str::EscLoEscU(hi));
 
                 State::Mid
-            },
+            }
 
             // If we don't get a '\u' signalling the start of the low surrogate after a Unicode high
             // surrogate sequence, it's an error.
@@ -583,28 +662,28 @@ impl Machine {
                 self.state = InnerState::Err;
 
                 State::Err(ErrorKind::expect_unicode_esc_lo_surrogate(c, 'u'))
-            },
+            }
 
             // [1/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
             (Str::EscLoEscU(hi), Some(x)) if Self::is_hex_byte(x) => {
                 self.state = InnerState::Str(Str::EscLoEscU1(hi, lexical::hex2u16(x)));
 
                 State::Mid
-            },
+            }
 
             // [2/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
             (Str::EscLoEscU1(hi, acc), Some(x)) if Self::is_hex_byte(x) => {
                 self.state = InnerState::Str(Str::EscLoEscU2(hi, acc << 4 | lexical::hex2u16(x)));
 
                 State::Mid
-            },
+            }
 
             // [3/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
             (Str::EscLoEscU2(hi, acc), Some(x)) if Self::is_hex_byte(x) => {
                 self.state = InnerState::Str(Str::EscLoEscU3(hi, acc << 4 | lexical::hex2u16(x)));
 
                 State::Mid
-            },
+            }
 
             // [4/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
             (Str::EscLoEscU3(hi, acc), Some(x)) if Self::is_hex_byte(x) => {
@@ -615,24 +694,29 @@ impl Machine {
                         self.state = InnerState::Str(Str::Ready { escaped: true });
 
                         State::Mid
-                    },
+                    }
 
                     _ => {
                         self.state = InnerState::Err;
 
                         State::Err(ErrorKind::BadSurrogatePair(hi, Some(lo)))
-                    },
+                    }
                 }
-            },
+            }
 
             // Non-hex-digit seen in any Unicode escape sequence.
-            (Str::EscU, Some(c))| (Str::EscU1(_), Some(c)) | (Str::EscU2(_), Some(c)) | (Str::EscU3(_), Some(c))
-                | (Str::EscLoEscU(_), Some(c)) | (Str::EscLoEscU1(_, _), Some(c))
-                | (Str::EscLoEscU2(_, _), Some(c)) | (Str::EscLoEscU3(_, _), Some(c)) => {
+            (Str::EscU, Some(c))
+            | (Str::EscU1(_), Some(c))
+            | (Str::EscU2(_), Some(c))
+            | (Str::EscU3(_), Some(c))
+            | (Str::EscLoEscU(_), Some(c))
+            | (Str::EscLoEscU1(_, _), Some(c))
+            | (Str::EscLoEscU2(_, _), Some(c))
+            | (Str::EscLoEscU3(_, _), Some(c)) => {
                 self.state = InnerState::Err;
 
                 State::Err(ErrorKind::expect_unicode_esc_hex_digit(c))
-            },
+            }
 
             // [2/2]: Two-byte UTF-8 sequence end.
             (Str::Utf821 { escaped }, Some(b1)) => {
@@ -645,41 +729,39 @@ impl Machine {
 
                     State::Err(ErrorKind::bad_utf8_cont_byte(2, 1, b1))
                 }
-            },
+            }
 
             // [2/3]: Three-byte UTF-8 sequence continuation...
             (Str::Utf831 { escaped, b0 }, Some(b1)) => {
                 self.state = InnerState::Str(Str::Utf832 { escaped, b0, b1 });
 
                 State::Mid
-            },
+            }
 
             // [3/3]: Three-byte UTF-8 sequence end.
-            (Str::Utf832 { escaped, b0, b1 }, Some(b2)) => {
-                match (b0, b1) {
-                    (0xe0, 0xa0..=0xbf) | (0xed, 0x80..=0x9f) if b2 & 0xc0 == 0x80 => {
-                        self.state = InnerState::Str(Str::Ready { escaped });
+            (Str::Utf832 { escaped, b0, b1 }, Some(b2)) => match (b0, b1) {
+                (0xe0, 0xa0..=0xbf) | (0xed, 0x80..=0x9f) if b2 & 0xc0 == 0x80 => {
+                    self.state = InnerState::Str(Str::Ready { escaped });
 
-                        State::Mid
-                    },
+                    State::Mid
+                }
 
-                    (_, 0x80..=0xbf) if b0 != 0xe0 && b0 != 0xed  && b1 & 0xc0 == 0x80 => {
-                        self.state = InnerState::Str(Str::Ready { escaped });
+                (_, 0x80..=0xbf) if b0 != 0xe0 && b0 != 0xed && b1 & 0xc0 == 0x80 => {
+                    self.state = InnerState::Str(Str::Ready { escaped });
 
-                        State::Mid
-                    },
+                    State::Mid
+                }
 
-                    (_, _) if b2 & 0xc0 == 0x80 => {
-                        self.state = InnerState::Err;
+                (_, _) if b2 & 0xc0 == 0x80 => {
+                    self.state = InnerState::Err;
 
-                        State::Err(ErrorKind::bad_utf8_cont_byte(3, 1, b1))
-                    },
+                    State::Err(ErrorKind::bad_utf8_cont_byte(3, 1, b1))
+                }
 
-                    _ => {
-                        self.state = InnerState::Err;
+                _ => {
+                    self.state = InnerState::Err;
 
-                        State::Err(ErrorKind::bad_utf8_cont_byte(3, 2, b2))
-                    },
+                    State::Err(ErrorKind::bad_utf8_cont_byte(3, 2, b2))
                 }
             },
 
@@ -688,47 +770,62 @@ impl Machine {
                 self.state = InnerState::Str(Str::Utf842 { escaped, b0, b1 });
 
                 State::Mid
-            },
+            }
 
             // [3/4]: Four-byte UTF-8 sequence continuation...
             (Str::Utf842 { escaped, b0, b1 }, Some(b2)) => {
-                self.state = InnerState::Str(Str::Utf843 { escaped, b0, b1, b2 });
+                self.state = InnerState::Str(Str::Utf843 {
+                    escaped,
+                    b0,
+                    b1,
+                    b2,
+                });
 
                 State::Mid
-            },
+            }
 
             // [4/4]: Four-byte UTF-8 sequence end.
-            (Str::Utf843 { escaped, b0, b1, b2 }, Some(b3)) => {
-                match (b0, b1) {
-                    (0xf0, 0x90..0xbf) | (0xf4, 0x80..=0x8f) if b2 & 0xc0 == 0x80 && b3 & 0xc0 == 0x80 => {
-                        self.state = InnerState::Str(Str::Ready { escaped });
+            (
+                Str::Utf843 {
+                    escaped,
+                    b0,
+                    b1,
+                    b2,
+                },
+                Some(b3),
+            ) => match (b0, b1) {
+                (0xf0, 0x90..0xbf) | (0xf4, 0x80..=0x8f)
+                    if b2 & 0xc0 == 0x80 && b3 & 0xc0 == 0x80 =>
+                {
+                    self.state = InnerState::Str(Str::Ready { escaped });
 
-                        State::Mid
-                    },
+                    State::Mid
+                }
 
-                    (_, 0x80..=0xbf) if b0 != 0xf0 && b0 != 0xf4 && b2 & 0xc0 == 0x80 && b3 & 0xc0 == 0x80 => {
-                        self.state = InnerState::Str(Str::Ready { escaped });
+                (_, 0x80..=0xbf)
+                    if b0 != 0xf0 && b0 != 0xf4 && b2 & 0xc0 == 0x80 && b3 & 0xc0 == 0x80 =>
+                {
+                    self.state = InnerState::Str(Str::Ready { escaped });
 
-                        State::Mid
-                    },
+                    State::Mid
+                }
 
-                    (_, _) if b2 & 0xc0 == 0x80 && b3 & 0xc0 == 0x80 => {
-                        self.state = InnerState::Err;
+                (_, _) if b2 & 0xc0 == 0x80 && b3 & 0xc0 == 0x80 => {
+                    self.state = InnerState::Err;
 
-                        State::Err(ErrorKind::bad_utf8_cont_byte(4, 1, b1))
-                    },
+                    State::Err(ErrorKind::bad_utf8_cont_byte(4, 1, b1))
+                }
 
-                    (_, _) if b3 & 0xc0 == 0x80 => {
-                        self.state = InnerState::Err;
+                (_, _) if b3 & 0xc0 == 0x80 => {
+                    self.state = InnerState::Err;
 
-                        State::Err(ErrorKind::bad_utf8_cont_byte(4, 2, b2))
-                    },
+                    State::Err(ErrorKind::bad_utf8_cont_byte(4, 2, b2))
+                }
 
-                    _ => {
-                        self.state = InnerState::Err;
+                _ => {
+                    self.state = InnerState::Err;
 
-                        State::Err(ErrorKind::bad_utf8_cont_byte(4, 3, b3))
-                    }
+                    State::Err(ErrorKind::bad_utf8_cont_byte(4, 3, b3))
                 }
             },
 
@@ -737,7 +834,7 @@ impl Machine {
                 self.state = InnerState::Err;
 
                 State::Err(ErrorKind::UnexpectedEof(Token::Str))
-            },
+            }
         };
 
         if self.state != InnerState::Err {
@@ -753,26 +850,30 @@ impl Machine {
                 self.pos.advance_col();
 
                 State::Mid
-            },
+            }
 
             Some(b'\n') => {
                 self.pos.advance_line();
 
                 State::Mid
-            },
+            }
 
             Some(b'\r') => {
                 self.pos.advance_offset(1);
                 self.state = InnerState::WhiteCr;
 
                 State::Mid
-            },
+            }
 
             _ => {
                 self.state = InnerState::Start;
 
-                State::End { token: Token::White, escaped: false, repeat: true }
-            },
+                State::End {
+                    token: Token::White,
+                    escaped: false,
+                    repeat: true,
+                }
+            }
         }
     }
 
@@ -791,20 +892,24 @@ impl Machine {
                 self.state = InnerState::White;
 
                 State::Mid
-            },
+            }
 
             Some(b'\r') => {
                 self.pos.advance_line();
 
                 State::Mid
-            },
+            }
 
             _ => {
                 self.pos.advance_line_no_offset(); // From previous CR.
                 self.state = InnerState::Start;
 
-                State::End { token: Token::White, escaped: false, repeat: true }
-            },
+                State::End {
+                    token: Token::White,
+                    escaped: false,
+                    repeat: true,
+                }
+            }
         }
     }
 }
@@ -840,7 +945,8 @@ mod tests {
     #[case("0e-0", Token::Num, false, false)]
     #[case("0.0e0", Token::Num, false, false)]
     #[case("0.0e+0", Token::Num, false, false)]
-    #[case("0.0e0", Token::Num, false, false)]    #[case("0e0", Token::Num, false, false)]
+    #[case("0.0e0", Token::Num, false, false)]
+    #[case("0e0", Token::Num, false, false)]
     #[case("-0e+0", Token::Num, false, false)]
     #[case("-0e-0", Token::Num, false, false)]
     #[case("-0.0e0", Token::Num, false, false)]
@@ -855,7 +961,12 @@ mod tests {
     #[case(r#""""#, Token::Str, true, false)]
     #[case(r#"" ""#, Token::Str, true, false)]
     #[case(r#""foo""#, Token::Str, true, false)]
-    #[case(r#""The quick brown fox jumped over the lazy dog!""#, Token::Str, true, false)]
+    #[case(
+        r#""The quick brown fox jumped over the lazy dog!""#,
+        Token::Str,
+        true,
+        false
+    )]
     #[case(r#""\\""#, Token::Str, true, true)]
     #[case(r#""\/""#, Token::Str, true, true)]
     #[case(r#""\t""#, Token::Str, true, true)]
@@ -893,53 +1004,93 @@ mod tests {
     #[case("  ", Token::White, false, false)]
     #[case("\t\t", Token::White, false, false)]
     #[case(" \t \t    \t          \t\t", Token::White, false, false)]
-    fn test_single_token(#[case] input: &str, #[case] expect: Token, #[case] self_terminating: bool, #[case] escaped: bool) {
+    fn test_single_token(
+        #[case] input: &str,
+        #[case] expect: Token,
+        #[case] self_terminating: bool,
+        #[case] escaped: bool,
+    ) {
         let mut mach = Machine::default();
         assert_eq!(Pos::default(), *mach.pos());
 
         for (i, b) in input.bytes().enumerate() {
             assert_eq!(i, mach.pos().offset);
             assert_eq!(1, mach.pos().line);
-            assert_eq!(i+1, mach.pos().col);
+            assert_eq!(i + 1, mach.pos().col);
 
             let s = mach.next(Some(b));
 
-            if (i < input.len()-1) || !self_terminating {
+            if (i < input.len() - 1) || !self_terminating {
                 assert_eq!(State::Mid, s);
             } else {
-                assert_eq!(State::End { token: expect, escaped, repeat: false }, s);
+                assert_eq!(
+                    State::End {
+                        token: expect,
+                        escaped,
+                        repeat: false
+                    },
+                    s
+                );
             }
 
             assert_eq!(i + 1, mach.pos().offset);
             assert_eq!(1, mach.pos().line);
-            assert_eq!(i+2, mach.pos().col);
+            assert_eq!(i + 2, mach.pos().col);
         }
 
         let s = mach.next(None);
 
         if !(self_terminating) {
-            assert_eq!(State::End { token: expect, escaped, repeat: true }, s);
+            assert_eq!(
+                State::End {
+                    token: expect,
+                    escaped,
+                    repeat: true
+                },
+                s
+            );
         } else {
-            assert_eq!(State::End { token: Token::Eof, escaped: false, repeat: false }, s);
+            assert_eq!(
+                State::End {
+                    token: Token::Eof,
+                    escaped: false,
+                    repeat: false
+                },
+                s
+            );
         }
 
         assert_eq!(input.len(), mach.pos().offset);
-        assert_eq!(1,mach.pos().line);
-        assert_eq!(input.len()+1, mach.pos().col);
+        assert_eq!(1, mach.pos().line);
+        assert_eq!(input.len() + 1, mach.pos().col);
 
         let t = mach.next(None);
 
-        assert_eq!(State::End { token: Token::Eof, escaped: false, repeat: false }, t);
+        assert_eq!(
+            State::End {
+                token: Token::Eof,
+                escaped: false,
+                repeat: false
+            },
+            t
+        );
         assert_eq!(input.len(), mach.pos().offset);
-        assert_eq!(1,mach.pos().line);
-        assert_eq!(input.len()+1, mach.pos().col);
+        assert_eq!(1, mach.pos().line);
+        assert_eq!(input.len() + 1, mach.pos().col);
 
         let u = mach.next(None);
 
-        assert_eq!(State::End { token: Token::Eof, escaped: false, repeat: false }, u);
+        assert_eq!(
+            State::End {
+                token: Token::Eof,
+                escaped: false,
+                repeat: false
+            },
+            u
+        );
         assert_eq!(input.len(), mach.pos().offset);
-        assert_eq!(1,mach.pos().line);
-        assert_eq!(input.len()+1, mach.pos().col);
+        assert_eq!(1, mach.pos().line);
+        assert_eq!(input.len() + 1, mach.pos().col);
     }
 
     #[rstest]
@@ -960,8 +1111,8 @@ mod tests {
     #[case("\n ", &[(2, 1), (2, 2), (2, 2)])]
     #[case("\t\r", &[(1, 2), (1, 2), (2, 1)])]
     #[case("\r\t", &[(1, 1), (2, 2), (2, 2)])]
-fn test_whitespace_multiline(#[case] input: &str, #[case] line_col: &[(usize, usize)]) {
-        assert_eq!(input.len()+1, line_col.len());
+    fn test_whitespace_multiline(#[case] input: &str, #[case] line_col: &[(usize, usize)]) {
+        assert_eq!(input.len() + 1, line_col.len());
 
         let mut mach = Machine::default();
         assert_eq!(Pos::default(), *mach.pos());
@@ -980,8 +1131,14 @@ fn test_whitespace_multiline(#[case] input: &str, #[case] line_col: &[(usize, us
 
         let s = mach.next(None);
 
-        assert_eq!(State::End { token: Token::White, escaped: false, repeat: true }, s);
-
+        assert_eq!(
+            State::End {
+                token: Token::White,
+                escaped: false,
+                repeat: true
+            },
+            s
+        );
 
         let (line, col) = line_col[input.len()];
 
@@ -991,11 +1148,17 @@ fn test_whitespace_multiline(#[case] input: &str, #[case] line_col: &[(usize, us
 
         let t = mach.next(None);
 
-        assert_eq!(State::End { token: Token::Eof, escaped: false, repeat: false }, t);
+        assert_eq!(
+            State::End {
+                token: Token::Eof,
+                escaped: false,
+                repeat: false
+            },
+            t
+        );
 
         assert_eq!(input.len(), mach.pos().offset);
         assert_eq!(line, mach.pos().line);
         assert_eq!(col, mach.pos().col);
-
     }
 }

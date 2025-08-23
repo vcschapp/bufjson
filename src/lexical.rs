@@ -125,7 +125,11 @@ impl Default for Pos {
 
 impl fmt::Display for Pos {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "line {}, column {} (offset: {})", self.line, self.col, self.offset)
+        write!(
+            f,
+            "line {}, column {} (offset: {})",
+            self.line, self.col, self.offset
+        )
     }
 }
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -148,13 +152,24 @@ impl fmt::Display for Expect {
             Self::Boundary => write!(f, "boundary character or EOF"),
             Self::Char(c) => write!(f, "character '{c}'"),
             Self::Digit => write!(f, "digit character '0'..'9'"),
-            Self::DigitOrBoundary => write!(f, "digit character '0'..'9', boundary character, or EOF"),
+            Self::DigitOrBoundary => {
+                write!(f, "digit character '0'..'9', boundary character, or EOF")
+            }
             Self::DotOrBoundary => write!(f, "character '.', boundary character, or EOF"),
-            Self::EscChar => write!(f, "escape sequence character '\\', '\"', '/', 'r', 'n', 't', or 'u'"),
-            Self::ExpSignOrDigit => write!(f, "exponent sign character '+' or '-', or exponent digit character '0'..'9'"),
+            Self::EscChar => write!(
+                f,
+                "escape sequence character '\\', '\"', '/', 'r', 'n', 't', or 'u'"
+            ),
+            Self::ExpSignOrDigit => write!(
+                f,
+                "exponent sign character '+' or '-', or exponent digit character '0'..'9'"
+            ),
             Self::StrChar => write!(f, "string character"),
             Self::TokenStartChar => write!(f, "token start character"),
-            Self::UnicodeEscHexDigit => write!(f, "Unicode escape sequence hex digit '0'..'9', 'A'..'F', or 'a'..'f'"),
+            Self::UnicodeEscHexDigit => write!(
+                f,
+                "Unicode escape sequence hex digit '0'..'9', 'A'..'F', or 'a'..'f'"
+            ),
         }
     }
 }
@@ -179,108 +194,181 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     pub(crate) fn bad_utf8_cont_byte(seq_len: u8, offset: u8, value: u8) -> ErrorKind {
-        ErrorKind::BadUtf8ContByte { seq_len, offset, value }
+        ErrorKind::BadUtf8ContByte {
+            seq_len,
+            offset,
+            value,
+        }
     }
 
     pub(crate) fn expect_boundary(token: Token, actual: u8) -> ErrorKind {
         let expect = Expect::Boundary;
 
-        ErrorKind::UnexpectedByte { token: Some(token), expect, actual }
+        ErrorKind::UnexpectedByte {
+            token: Some(token),
+            expect,
+            actual,
+        }
     }
 
     pub(crate) fn expect_char(token: Token, actual: u8, expect: char) -> ErrorKind {
         let expect = Expect::Char(expect);
 
-        ErrorKind::UnexpectedByte { token: Some(token), expect, actual }
+        ErrorKind::UnexpectedByte {
+            token: Some(token),
+            expect,
+            actual,
+        }
     }
 
     pub(crate) fn expect_digit(actual: u8) -> ErrorKind {
         let expect = Expect::Digit;
 
-        ErrorKind::UnexpectedByte { token: Some(Token::Num), expect, actual }
+        ErrorKind::UnexpectedByte {
+            token: Some(Token::Num),
+            expect,
+            actual,
+        }
     }
 
     pub(crate) fn expect_digit_or_boundary(actual: u8) -> ErrorKind {
         let expect = Expect::DigitOrBoundary;
 
-        ErrorKind::UnexpectedByte { token: Some(Token::Num), expect, actual }
+        ErrorKind::UnexpectedByte {
+            token: Some(Token::Num),
+            expect,
+            actual,
+        }
     }
 
     pub(crate) fn expect_dot_or_boundary(actual: u8) -> ErrorKind {
         let expect = Expect::DotOrBoundary;
 
-        ErrorKind::UnexpectedByte { token: Some(Token::Num), expect, actual }
+        ErrorKind::UnexpectedByte {
+            token: Some(Token::Num),
+            expect,
+            actual,
+        }
     }
 
     pub(crate) fn expect_esc_char(actual: u8) -> ErrorKind {
         let expect = Expect::EscChar;
 
-        ErrorKind::UnexpectedByte { token: Some(Token::Str), expect, actual }
+        ErrorKind::UnexpectedByte {
+            token: Some(Token::Str),
+            expect,
+            actual,
+        }
     }
 
     pub(crate) fn expect_exp_sign_or_digit(actual: u8) -> ErrorKind {
         let expect = Expect::ExpSignOrDigit;
 
-        ErrorKind::UnexpectedByte { token: Some(Token::Num), expect, actual }
+        ErrorKind::UnexpectedByte {
+            token: Some(Token::Num),
+            expect,
+            actual,
+        }
     }
 
     pub(crate) fn expect_string_char(actual: u8) -> ErrorKind {
         let expect = Expect::StrChar;
 
-        ErrorKind::UnexpectedByte { token: Some(Token::Str), expect, actual }
+        ErrorKind::UnexpectedByte {
+            token: Some(Token::Str),
+            expect,
+            actual,
+        }
     }
 
     pub(crate) fn expect_token_start_char(actual: u8) -> ErrorKind {
         let expect = Expect::TokenStartChar;
 
-        ErrorKind::UnexpectedByte { token: None, expect, actual }
+        ErrorKind::UnexpectedByte {
+            token: None,
+            expect,
+            actual,
+        }
     }
 
     pub(crate) fn expect_unicode_esc_hex_digit(actual: u8) -> ErrorKind {
         let expect = Expect::UnicodeEscHexDigit;
 
-        ErrorKind::UnexpectedByte { token: Some(Token::Str), expect, actual }
+        ErrorKind::UnexpectedByte {
+            token: Some(Token::Str),
+            expect,
+            actual,
+        }
     }
 
     pub(crate) fn expect_unicode_esc_lo_surrogate(actual: u8, expect: char) -> ErrorKind {
         let expect = Expect::Char(expect);
 
-        ErrorKind::UnexpectedByte { token: Some(Token::Str), expect, actual }
+        ErrorKind::UnexpectedByte {
+            token: Some(Token::Str),
+            expect,
+            actual,
+        }
     }
 
     pub(crate) fn fmt_at(&self, f: &mut fmt::Formatter, pos: Option<&Pos>) -> fmt::Result {
         match self {
             Self::BadSurrogatePair(hi, None) => {
-                write!(f, "bad Unicode escape sequence: low surrogate '\\u{hi:04X}' without preceding high surrogate")?;
-            },
+                write!(
+                    f,
+                    "bad Unicode escape sequence: low surrogate '\\u{hi:04X}' without preceding high surrogate"
+                )?;
+            }
 
             Self::BadSurrogatePair(hi, Some(lo)) => {
-                write!(f, "bad Unicode escape sequence surogate pair: high surrogate '\\u{hi:04X}' followed by invalid low surrogate '\\u{lo:04X}'")?;
-            },
+                write!(
+                    f,
+                    "bad Unicode escape sequence surogate pair: high surrogate '\\u{hi:04X}' followed by invalid low surrogate '\\u{lo:04X}'"
+                )?;
+            }
 
             Self::BadUtf8Seq => {
                 write!(f, "bad UTF-8 byte sequence")?;
-            },
+            }
 
-            Self::BadUtf8ContByte { seq_len, offset, value } => {
-                write!(f, "bad continuation byte 0x{value:02x} in {seq_len}-byte UTF-8 sequence (byte #{offset})")?;
-            },
+            Self::BadUtf8ContByte {
+                seq_len,
+                offset,
+                value,
+            } => {
+                write!(
+                    f,
+                    "bad continuation byte 0x{value:02x} in {seq_len}-byte UTF-8 sequence (byte #{offset})"
+                )?;
+            }
 
             Self::Read => write!(f, "read error")?,
 
-            Self::UnexpectedByte { token, expect, actual } if (b' '..=0x7e).contains(actual) => {
-                write!(f, "expected {expect} but got character '{}' (ASCII 0x{actual:02x}", *actual as char)?;
+            Self::UnexpectedByte {
+                token,
+                expect,
+                actual,
+            } if (b' '..=0x7e).contains(actual) => {
+                write!(
+                    f,
+                    "expected {expect} but got character '{}' (ASCII 0x{actual:02x}",
+                    *actual as char
+                )?;
                 if let Some(t) = token {
                     write!(f, " in {t} token")?;
                 }
-            },
+            }
 
-            Self::UnexpectedByte { token, expect, actual } => {
+            Self::UnexpectedByte {
+                token,
+                expect,
+                actual,
+            } => {
                 write!(f, "expected {expect} but got byte {actual:02x}")?;
                 if let Some(t) = token {
                     write!(f, "in {t} token")?;
                 }
-            },
+            }
 
             Self::UnexpectedEof(token) => {
                 write!(f, "unexpected EOF in {token} token")?;
@@ -313,7 +401,7 @@ pub trait Analyzer {
 
     fn next(&mut self) -> Token;
 
-    fn value(& self) -> Result<Self::Value, Self::Error>;
+    fn value(&self) -> Result<Self::Value, Self::Error>;
 
     fn pos(&self) -> &Pos;
 }
@@ -322,7 +410,7 @@ pub trait AsyncAnalyzer {
     type Value: Value;
     type Error: Error;
 
-    fn poll_next(self: Pin<&mut Self>,cx: &mut Context<'_>) -> Poll<Option<Token>>;
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Token>>;
 
     fn value(&self) -> Option<Result<Self::Value, Self::Error>>;
 
@@ -347,7 +435,7 @@ pub(crate) fn unescape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
 
     // Reserve at least len-1 characters in the buffer. This is a bit tricksy: we know there is at
     // least one escape sequence, so the real string length is going to shrink by at least one byte.
-    buf.reserve(bytes.len()-1);
+    buf.reserve(bytes.len() - 1);
 
     let (mut i, mut j) = (0usize, 0usize);
     let mut hi_surrogate: Option<u32> = None;
@@ -357,7 +445,7 @@ pub(crate) fn unescape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
         } else {
             buf.extend_from_slice(&bytes[i..j]);
 
-            let x = bytes[j+1];
+            let x = bytes[j + 1];
             let mut len = 2;
 
             match x {
@@ -369,8 +457,10 @@ pub(crate) fn unescape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
                 b'r' => buf.push(b'\r'),
                 b'u' => {
                     len = 6;
-                    let (b0, b1, b2, b3) = (bytes[j+2], bytes[j+3], bytes[j+4], bytes[j+5]);
-                    let x: u32 = (hex2u16(b0) << 12 | hex2u16(b1) << 8 | hex2u16(b2) << 4 | hex2u16(b3)) as u32;
+                    let (b0, b1, b2, b3) = (bytes[j + 2], bytes[j + 3], bytes[j + 4], bytes[j + 5]);
+                    let x: u32 =
+                        (hex2u16(b0) << 12 | hex2u16(b1) << 8 | hex2u16(b2) << 4 | hex2u16(b3))
+                            as u32;
 
                     let code_point = match (hi_surrogate, x as u32) {
                         (None, 0xd800..=0xdbff) => {
@@ -383,8 +473,10 @@ pub(crate) fn unescape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
                             hi_surrogate = None;
 
                             Some(0x10000 + ((hi - 0xd800) << 10 | x - 0xdc00))
-                        },
-                        (Some(hi), _) => panic!("high surrogate followed by invalid low surrogate: [0x{hi:04x}], [0x{x:04x}]"),
+                        }
+                        (Some(hi), _) => panic!(
+                            "high surrogate followed by invalid low surrogate: [0x{hi:04x}], [0x{x:04x}]"
+                        ),
                     };
 
                     if let Some(c) = code_point {
@@ -393,12 +485,12 @@ pub(crate) fn unescape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
                                 let mut seq = [0u8; 4];
                                 let utf8_str = y.encode_utf8(&mut seq);
                                 buf.extend_from_slice(utf8_str.as_bytes());
-                            },
+                            }
 
                             None => unreachable!(),
                         }
                     }
-                },
+                }
                 _ => panic!("invalid escape sequence byte after '\\': 0x{x:02x}"),
             }
 
@@ -444,18 +536,18 @@ mod tests {
     #[case(r#""\u0030""#, r#""0""#)]
     #[case(r#""\u0041""#, r#""A""#)]
     #[case(r#""\u0062""#, r#""b""#)]
-    #[case(r#""\u007F""#, "\"\x7f\"")]              // DEL (U+007F, highest 1-byte UTF-8)
-    #[case(r#""\u00A9""#, r#""©""#)]                // Copyright sign (U+00A9, 2-byte UTF-8)
-    #[case(r#""\u03A9""#, r#""Ω""#)]                // Greek capital Omega (U+03A9, 2-byte UTF-8)
-    #[case(r#""\u0080""#, "\"\u{80}\"")]            // First 2-byte UTF-8 code point
-    #[case(r#""\u07FF""#, "\"\u{7ff}\"")]           // Last 2-byte UTF-8 code point
-    #[case(r#""\u20AC""#, r#""€""#)]                // Euro sign (U+20AC, 3-byte UTF-8)
-    #[case(r#""\u2603""#, r#""☃""#)]                // Snowman (U+2603, 3-byte UTF-8)
-    #[case(r#""\u0800""#, "\"\u{800}\"")]           // First 3-byte UTF-8 code point
-    #[case(r#""\uFFFF""#, "\"\u{ffff}\"")]          // Last valid BMP code point (3-byte UTF-8)
-    #[case(r#""\ud83D\uDe00""#, r#""😀""#)]         // Grinning face emoji (U+1F600, 4-byte UTF-8)
-    #[case(r#""\ud800\uDC00""#, "\"\u{10000}\"")]   // First 4-byte UTF-8 code point
-    #[case(r#""\uDBFF\udfff""#, "\"\u{10FFFF}\"")]  // Highest valid Unicode scalar value
+    #[case(r#""\u007F""#, "\"\x7f\"")] // DEL (U+007F, highest 1-byte UTF-8)
+    #[case(r#""\u00A9""#, r#""©""#)] // Copyright sign (U+00A9, 2-byte UTF-8)
+    #[case(r#""\u03A9""#, r#""Ω""#)] // Greek capital Omega (U+03A9, 2-byte UTF-8)
+    #[case(r#""\u0080""#, "\"\u{80}\"")] // First 2-byte UTF-8 code point
+    #[case(r#""\u07FF""#, "\"\u{7ff}\"")] // Last 2-byte UTF-8 code point
+    #[case(r#""\u20AC""#, r#""€""#)] // Euro sign (U+20AC, 3-byte UTF-8)
+    #[case(r#""\u2603""#, r#""☃""#)] // Snowman (U+2603, 3-byte UTF-8)
+    #[case(r#""\u0800""#, "\"\u{800}\"")] // First 3-byte UTF-8 code point
+    #[case(r#""\uFFFF""#, "\"\u{ffff}\"")] // Last valid BMP code point (3-byte UTF-8)
+    #[case(r#""\ud83D\uDe00""#, r#""😀""#)] // Grinning face emoji (U+1F600, 4-byte UTF-8)
+    #[case(r#""\ud800\uDC00""#, "\"\u{10000}\"")] // First 4-byte UTF-8 code point
+    #[case(r#""\uDBFF\udfff""#, "\"\u{10FFFF}\"")] // Highest valid Unicode scalar value
     fn test_unescape_ok(#[case] literal: &str, #[case] expect: &str) {
         // Test with an empty buffer.
         {
