@@ -163,7 +163,7 @@ impl Default for StoredValue {
     }
 }
 
-pub struct BufLexer<B: Deref<Target = [u8]>> {
+pub struct BufAnalyzer<B: Deref<Target = [u8]>> {
     buf: Arc<B>,
     mach: state::Machine,
     repeat: Option<u8>,
@@ -171,7 +171,7 @@ pub struct BufLexer<B: Deref<Target = [u8]>> {
     value_pos: Pos,
 }
 
-impl<B: Deref<Target = [u8]>> BufLexer<B> {
+impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
     pub fn new(buf: B) -> Self {
         let buf = Arc::new(buf);
         let mach = state::Machine::default();
@@ -205,7 +205,7 @@ impl<B: Deref<Target = [u8]>> BufLexer<B> {
 
 }
 
-impl<B: Deref<Target = [u8]>> Analyzer for BufLexer<B> {
+impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
     type Value = Value<B>;
     type Error = Error;
 
