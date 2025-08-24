@@ -565,7 +565,14 @@ impl Machine {
 
             // Completing a short-form escape sequence.
             (Str::Esc, Some(c))
-                if c == b'\\' || c == b'"' || c == b'n' || c == b't' || c == b'r' || c == b'/' =>
+                if c == b'\\'
+                    || c == b'"'
+                    || c == b'n'
+                    || c == b't'
+                    || c == b'r'
+                    || c == b'f'
+                    || c == b'b'
+                    || c == b'/' =>
             {
                 self.state = InnerState::Str(Str::Ready { escaped: true });
 
@@ -973,6 +980,8 @@ mod tests {
     #[case(r#""\t""#, Token::Str, true, true)]
     #[case(r#""\r""#, Token::Str, true, true)]
     #[case(r#""\n""#, Token::Str, true, true)]
+    #[case(r#""\f""#, Token::Str, true, true)]
+    #[case(r#""\b""#, Token::Str, true, true)]
     #[case(r#""\u0000""#, Token::Str, true, true)]
     #[case(r#""\u001f""#, Token::Str, true, true)]
     #[case(r#""\u0020""#, Token::Str, true, true)]

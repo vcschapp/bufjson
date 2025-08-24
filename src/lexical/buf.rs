@@ -336,6 +336,8 @@ mod tests {
     #[case(r#""\t""#, Token::Str, Some("\"\t\""))]
     #[case(r#""\r""#, Token::Str, Some("\"\r\""))]
     #[case(r#""\n""#, Token::Str, Some("\"\n\""))]
+    #[case(r#""\f""#, Token::Str, Some("\"\u{000c}\""))]
+    #[case(r#""\b""#, Token::Str, Some("\"\u{0008}\""))]
     #[case(r#""\u0000""#, Token::Str, Some("\"\u{0000}\""))]
     #[case(r#""\u001f""#, Token::Str, Some("\"\u{001f}\""))]
     #[case(r#""\u0020""#, Token::Str, Some(r#"" ""#))]
