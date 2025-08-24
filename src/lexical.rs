@@ -5,7 +5,7 @@ use std::task::{Context, Poll};
 pub mod buf;
 pub mod state;
 
-/// JSON lexical token type, such as begin object (`{`) or literal true (`true`).
+/// JSON lexical token type, such as begin object (`{`), literal true (`true`), or string.
 ///
 /// This is a list of the JSON lexical token types as described in the [JSON spec][rfc]. The names
 /// of enumeration members are aligned with the names as they appear in the spec.
@@ -72,11 +72,97 @@ impl fmt::Display for Token {
     }
 }
 
+/// JSON lexical token value.
+///
+/// Contains the actual *value* of the JSON token read from the JSON text. This is in distinction to
+/// [`Token`], which only indicates the *type* of the token.
+///
+/// For example, consider the following JSON text:
+///
+/// ```json
+/// "foo"
+/// ```
+///
+/// The above JSON text contains one token whose type is [`Token::Str`] and whose value is `"foo"`.
 pub trait Value {
+    /// Returns the literal value of the token exactly as it appears in the JSON text.
+    ///
+    /// # Fixed value tokens
+    ///
+    /// For token types with a fixed literal value, *e.g.* [`Token::NameSep`], the value returned
+    /// is the fixed value.
+    ///
+    /// # Numbers
+    ///
+    /// For number tokens, the value returned is the literal text of the number token.
+    ///
+    /// # Strings
+    ///
+    /// For string tokens, the value returned is the literal text of the string token *including*
+    /// the opening and closing double quote (`"`) characters. Therefore, every string token has
+    /// length at least two and the unquoted value can be extracted by dropping the first and last
+    /// characters.
+    ///
+    /// Because the return value contains the entire literal string token as it appears in the JSON
+    /// text, any escape sequences the string may contain are not expanded. This has the benefit
+    /// of supporting the following use cases: allowing lexical analyzer implementations to minimize
+    /// or eliminate allocations when returning token values; and allowing applications to observe
+    /// or edit a stream of JSON tokens without making any unintended changes to the raw JSON input.
+    ///
+    /// Some applications need to have escape sequences expanded in order to work with normalized
+    /// strings. For example, it's pretty hard to reliably do a dictionary lookup for the name
+    /// `"foo"` if the literal value might be `"fo\u006f"`, `"f\u006f\u006f"`, `"\u0066oo"`, *etc.*
+    /// To check if the string contains an escape sequence, use [`is_escaped`]; and to obtain the
+    /// normalized value with all escape sequences expanded, use [`unescaped`].
+    ///
+    /// [`is_escaped`]: method@Self::is_escaped
+    /// [`unescaped`]: method@Self::unescaped
+    ///
+    /// # Whitespace
+    ///
+    /// For whitespace tokens, the value returned is the literal string of whitespace characters.
+    ///
+    /// # End of file
+    ///
+    /// For the pseudo-token [`Token::Eof`], the value is the empty string.
     fn literal(&self) -> &str;
 
+    /// Indicates whether the token value contains escape sequences.
+    ///
+    /// This method must always return `false` for all token types except [`Token::Str`]. For
+    /// [`Token::Str`], it must return `true` if the literal text of the string token contains at
+    /// least one escape sequence, and `false` otherwise.
     fn is_escaped(&self) -> bool;
 
+    /// Returns a normalized version of [`literal`] with all escape sequences encountered in the
+    /// JSON text fully expanded.
+    ///
+    /// For non-string tokens, and string tokens for which [`is_escaped`] returns `false`, this
+    /// method does nothing and simply returns the same value returned by [`literal`].
+    ///
+    /// For string tokens containing one or more escape sequences, this method returns a normalized
+    /// version of the string value with the escape sequences expanded. At least one allocation is
+    /// likely to be triggered the first time this method is called for a string token value
+    /// containing escape sequences.
+    ///
+    /// As described in the [JSON spec][rfc], the following escape sequence expansions are done:
+    ///
+    /// | Sequence | Expands to |
+    /// |-|-|
+    /// | `\"` | Quotation mark, `"`, U+0022 |
+    /// | `\\` | Reverse solidus, `\`, U+005c |
+    /// | `\/` | Solidus, `/`, U+002f |
+    /// | `\b` | Backspace, U+0008 |
+    /// | `\f` | Form feed, U+000c |
+    /// | `\n` | Line feed, U+000a |
+    /// | `\r` | Carriage return, U+000d |
+    /// | `\t` | Horizontal tab, U+0009 |
+    /// | `\uXXXX` | Any Unicode character in basic multilingual plane, U+0000 through U+ffff |
+    /// | `\uHHHH\uLLLL` | Unicode characters outside the basic multilingual plane represented as a high/low surrogate pair |
+    ///
+    /// [`literal`]: method@Self::literal
+    /// [`is_escaped`]: method@Self::is_escaped
+    /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
     fn unescaped(&mut self) -> &str;
 }
 
