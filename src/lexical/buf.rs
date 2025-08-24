@@ -281,3 +281,546 @@ impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
         &self.value_pos
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexical::Value;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case("", Token::Eof, None)]
+    #[case("{", Token::ObjBegin, None)]
+    #[case("}", Token::ObjEnd, None)]
+    #[case("[", Token::ArrBegin, None)]
+    #[case("]", Token::ArrEnd, None)]
+    #[case(":", Token::NameSep, None)]
+    #[case(",", Token::ValueSep, None)]
+    #[case("false", Token::LitFalse, None)]
+    #[case("null", Token::LitNull, None)]
+    #[case("true", Token::LitTrue, None)]
+    #[case("0", Token::Num, None)]
+    #[case("-0", Token::Num, None)]
+    #[case("1", Token::Num, None)]
+    #[case("-1", Token::Num, None)]
+    #[case("12", Token::Num, None)]
+    #[case("-12", Token::Num, None)]
+    #[case("0.0", Token::Num, None)]
+    #[case("-0.0", Token::Num, None)]
+    #[case("0.123456789", Token::Num, None)]
+    #[case("-123.456789", Token::Num, None)]
+    #[case("0e0", Token::Num, None)]
+    #[case("0e+0", Token::Num, None)]
+    #[case("0e-0", Token::Num, None)]
+    #[case("0.0e0", Token::Num, None)]
+    #[case("0.0e+0", Token::Num, None)]
+    #[case("0.0e0", Token::Num, None)]
+    #[case("0e0", Token::Num, None)]
+    #[case("-0e+0", Token::Num, None)]
+    #[case("-0e-0", Token::Num, None)]
+    #[case("-0.0e0", Token::Num, None)]
+    #[case("-0.0e+0", Token::Num, None)]
+    #[case("-0.0e0", Token::Num, None)]
+    #[case("123e456", Token::Num, None)]
+    #[case("123.456e+7", Token::Num, None)]
+    #[case("123.456e-89", Token::Num, None)]
+    #[case("-123e456", Token::Num, None)]
+    #[case("-123.456e+7", Token::Num, None)]
+    #[case("-123.456e-89", Token::Num, None)]
+    #[case(r#""""#, Token::Str, None)]
+    #[case(r#"" ""#, Token::Str, None)]
+    #[case(r#""foo""#, Token::Str, None)]
+    #[case(r#""The quick brown fox jumped over the lazy dog!""#, Token::Str, None)]
+    #[case(r#""\\""#, Token::Str, Some(r#""\""#))]
+    #[case(r#""\/""#, Token::Str, Some(r#""/""#))]
+    #[case(r#""\t""#, Token::Str, Some("\"\t\""))]
+    #[case(r#""\r""#, Token::Str, Some("\"\r\""))]
+    #[case(r#""\n""#, Token::Str, Some("\"\n\""))]
+    #[case(r#""\u0000""#, Token::Str, Some("\"\u{0000}\""))]
+    #[case(r#""\u001f""#, Token::Str, Some("\"\u{001f}\""))]
+    #[case(r#""\u0020""#, Token::Str, Some(r#"" ""#))]
+    #[case(r#""\u007E""#, Token::Str, Some(r#""~""#))]
+    #[case(r#""\u007F""#, Token::Str, Some("\"\u{007f}\""))]
+    #[case(r#""\u0080""#, Token::Str, Some("\"\u{0080}\""))]
+    #[case(r#""\u0100""#, Token::Str, Some("\"\u{0100}\""))]
+    #[case(r#""\uE000""#, Token::Str, Some("\"\u{e000}\""))]
+    #[case(r#""\ufDCf""#, Token::Str, Some("\"\u{fdcf}\""))]
+    #[case(r#""\uFdeF""#, Token::Str, Some("\"\u{fdef}\""))]
+    #[case(r#""\ufffd""#, Token::Str, Some("\"\u{fffd}\""))]
+    #[case(r#""\uFFFE""#, Token::Str, Some("\"\u{fffe}\""))]
+    #[case(r#""\uFFFF""#, Token::Str, Some("\"\u{ffff}\""))]
+    #[case(r#""\ud800\udc00""#, Token::Str, Some("\"\u{10000}\""))] // Lowest valid surrogate pair → U+10000
+    #[case(r#""\uD800\uDFFF""#, Token::Str, Some("\"\u{103ff}\""))] // High surrogate with highest low surrogate → U+103FF
+    #[case(r#""\uDBFF\uDC00""#, Token::Str, Some("\"\u{10fc00}\""))] // Highest high surrogate with lowest low surrogate → U+10FC00
+    #[case(r#""\udbFf\udfff""#, Token::Str, Some("\"\u{10ffff}\""))] // Highest valid surrogate pair → U+10FFFF (max Unicode scalar value)
+    #[case("\"\u{0020}\"", Token::Str, None)]
+    #[case("\"\u{007f}\"", Token::Str, None)] // DEL, the highest 1-byte UTF-8 character
+    #[case("\"\u{0080}\"", Token::Str, None)] // Lowest two-byte UTF-8 character
+    #[case("\"\u{07ff}\"", Token::Str, None)] // Highest two-byte UTF-8 character
+    #[case("\"\u{0800}\"", Token::Str, None)] // Lowest three-byte UTF-8 character
+    #[case("\"\u{d7ff}\"", Token::Str, None)] // Highest BMP code point before surrogates
+    #[case("\"\u{e000}\"", Token::Str, None)] // Lowest BMP code point after surrogates
+    #[case("\"\u{ffff}\"", Token::Str, None)] // Highest BMP code point: non-character but still valid JSON
+    #[case("\"\u{10000}\"", Token::Str, None)] // Lowest four-byte UTF-8 character
+    #[case("\"\u{10ffff}\"", Token::Str, None)] // Highest valid Unicode scalar value
+    #[case(" ", Token::White, None)]
+    #[case("\t", Token::White, None)]
+    #[case("  ", Token::White, None)]
+    #[case("\t\t", Token::White, None)]
+    #[case(" \t \t    \t          \t\t", Token::White, None)]
+    fn test_single_token(
+        #[case] input: &str,
+        #[case] expect: Token,
+        #[case] unescaped: Option<&str>,
+    ) {
+        // With value fetch.
+        {
+            let mut an = BufAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(expect, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            let mut value = an.value().unwrap();
+            assert_eq!(input, value.literal());
+            assert_eq!(unescaped.is_some(), value.is_escaped());
+            if let Some(u) = unescaped {
+                assert_eq!(u, value.unescaped());
+            } else {
+                assert_eq!(input, value.unescaped());
+            }
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: input.len() + 1
+                },
+                *an.pos()
+            );
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: input.len() + 1
+                },
+                *an.pos()
+            );
+        }
+
+        // Without value fetch.
+        {
+            let mut an = BufAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(expect, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: input.len() + 1
+                },
+                *an.pos()
+            );
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: input.len() + 1
+                },
+                *an.pos()
+            );
+        }
+    }
+
+    #[rstest]
+    #[case("\n", 2, 1)]
+    #[case("\n\n", 3, 1)]
+    #[case("\r", 2, 1)]
+    #[case("\r\r", 3, 1)]
+    #[case("\r\n", 2, 1)]
+    #[case("\n\r", 3, 1)]
+    #[case("\n\n\r\r", 5, 1)]
+    #[case("\r\n\r", 3, 1)]
+    #[case("\n\r\n", 3, 1)]
+    #[case(" \n", 2, 1)]
+    #[case("\n ", 2, 2)]
+    #[case(" \r", 2, 1)]
+    #[case("\r ", 2, 2)]
+    #[case("\t\n", 2, 1)]
+    #[case("\n ", 2, 2)]
+    #[case("\t\r", 2, 1)]
+    #[case("\r\t", 2, 2)]
+    fn test_whitespace_multiline(#[case] input: &str, #[case] line: usize, #[case] col: usize) {
+        // With value fetch.
+        {
+            let mut an = BufAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::White, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            let mut value = an.value().unwrap();
+            assert_eq!(input, value.literal());
+            assert!(!value.is_escaped());
+            assert_eq!(input, value.unescaped());
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line,
+                    col
+                },
+                *an.pos()
+            );
+        }
+
+        // Without value fetch.
+        {
+            let mut an = BufAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::White, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line,
+                    col
+                },
+                *an.pos()
+            );
+        }
+    }
+
+    #[rstest]
+    #[case("", T::t(Token::Eof, ""), T::t(Token::Eof, ""), 1, 1)]
+    // =============================================================================================
+    // Object start character `{` followed by something...
+    // =============================================================================================
+    #[case("{{", T::t(Token::ObjBegin, "{"), T::t(Token::ObjBegin, "{").pos(1, 1, 2), 1, 3)]
+    #[case("{}", T::t(Token::ObjBegin, "{"), T::t(Token::ObjEnd, "}").pos(1, 1, 2), 1, 3)]
+    #[case("{[", T::t(Token::ObjBegin, "{"), T::t(Token::ArrBegin, "[").pos(1, 1, 2), 1, 3)]
+    #[case("{]", T::t(Token::ObjBegin, "{"), T::t(Token::ArrEnd, "]").pos(1, 1, 2), 1, 3)]
+    #[case("{:", T::t(Token::ObjBegin, "{"), T::t(Token::NameSep, ":").pos(1, 1, 2), 1, 3)]
+    #[case("{,", T::t(Token::ObjBegin, "{"), T::t(Token::ValueSep, ",").pos(1, 1, 2), 1, 3)]
+    #[case("{false", T::t(Token::ObjBegin, "{"), T::t(Token::LitFalse, "false").pos(1, 1, 2), 1, 7)]
+    #[case("{null", T::t(Token::ObjBegin, "{"), T::t(Token::LitNull, "null").pos(1, 1, 2), 1, 6)]
+    #[case("{true", T::t(Token::ObjBegin, "{"), T::t(Token::LitTrue, "true").pos(1, 1, 2), 1, 6)]
+    #[case("{0", T::t(Token::ObjBegin, "{"), T::t(Token::Num, "0").pos(1, 1, 2), 1, 3)]
+    #[case("{-1.9", T::t(Token::ObjBegin, "{"), T::t(Token::Num, "-1.9").pos(1, 1, 2), 1, 6)]
+    #[case("{3.14e+0", T::t(Token::ObjBegin, "{"), T::t(Token::Num, "3.14e+0").pos(1, 1, 2), 1, 9)]
+    #[case(r#"{"""#, T::t(Token::ObjBegin, "{"), T::t(Token::Str, r#""""#).pos(1, 1, 2), 1, 4)]
+    #[case(r#"{"foo""#, T::t(Token::ObjBegin, "{"), T::t(Token::Str, r#""foo""#).pos(1, 1, 2), 1, 7)]
+    #[case(r#"{"hello\u0020there,\nworld!""#, T::t(Token::ObjBegin, "{"), T::t(Token::Str, r#""hello\u0020there,\nworld!""#).pos(1, 1, 2).unescaped("\"hello there,\nworld!\""), 1,29)]
+    #[case("{ ", T::t(Token::ObjBegin, "{"), T::t(Token::White, " ").pos(1, 1, 2), 1, 3)]
+    #[case("{\t\t\r\n\n ", T::t(Token::ObjBegin, "{"), T::t(Token::White, "\t\t\r\n\n ").pos(1, 1, 2), 3, 2)]
+    // =============================================================================================
+    // Object end character `}` followed by something...
+    // =============================================================================================
+    #[case("}{", T::t(Token::ObjEnd, "}"), T::t(Token::ObjBegin, "{").pos(1, 1, 2), 1, 3)]
+    #[case("}}", T::t(Token::ObjEnd, "}"), T::t(Token::ObjEnd, "}").pos(1, 1, 2), 1, 3)]
+    #[case("}[", T::t(Token::ObjEnd, "}"), T::t(Token::ArrBegin, "[").pos(1, 1, 2), 1, 3)]
+    #[case("}]", T::t(Token::ObjEnd, "}"), T::t(Token::ArrEnd, "]").pos(1, 1, 2), 1, 3)]
+    #[case("}:", T::t(Token::ObjEnd, "}"), T::t(Token::NameSep, ":").pos(1, 1, 2), 1, 3)]
+    #[case("},", T::t(Token::ObjEnd, "}"), T::t(Token::ValueSep, ",").pos(1, 1, 2), 1, 3)]
+    #[case("}false", T::t(Token::ObjEnd, "}"), T::t(Token::LitFalse, "false").pos(1, 1, 2), 1, 7)]
+    #[case("}null", T::t(Token::ObjEnd, "}"), T::t(Token::LitNull, "null").pos(1, 1, 2), 1, 6)]
+    #[case("}true", T::t(Token::ObjEnd, "}"), T::t(Token::LitTrue, "true").pos(1, 1, 2), 1, 6)]
+    #[case("}0", T::t(Token::ObjEnd, "}"), T::t(Token::Num, "0").pos(1, 1, 2), 1, 3)]
+    #[case("}-1.9", T::t(Token::ObjEnd, "}"), T::t(Token::Num, "-1.9").pos(1, 1, 2), 1, 6)]
+    #[case("}3.14e+0", T::t(Token::ObjEnd, "}"), T::t(Token::Num, "3.14e+0").pos(1, 1, 2), 1, 9)]
+    #[case(r#"}"""#, T::t(Token::ObjEnd, "}"), T::t(Token::Str, r#""""#).pos(1, 1, 2), 1, 4)]
+    #[case(r#"}"foo""#, T::t(Token::ObjEnd, "}"), T::t(Token::Str, r#""foo""#).pos(1, 1, 2), 1, 7)]
+    #[case(r#"}"hello\u0020there,\nworld!""#, T::t(Token::ObjEnd, "}"), T::t(Token::Str, r#""hello\u0020there,\nworld!""#).pos(1, 1, 2).unescaped("\"hello there,\nworld!\""), 1,29)]
+    #[case("} ", T::t(Token::ObjEnd, "}"), T::t(Token::White, " ").pos(1, 1, 2), 1, 3)]
+    #[case("}\t\t\r\n\n ", T::t(Token::ObjEnd, "}"), T::t(Token::White, "\t\t\r\n\n ").pos(1, 1, 2), 3, 2)]
+    // =============================================================================================
+    // Array start character `[` followed by something...
+    // =============================================================================================
+    #[case("[{", T::t(Token::ArrBegin, "["), T::t(Token::ObjBegin, "{").pos(1, 1, 2), 1, 3)]
+    #[case("[}", T::t(Token::ArrBegin, "["), T::t(Token::ObjEnd, "}").pos(1, 1, 2), 1, 3)]
+    #[case("[[", T::t(Token::ArrBegin, "["), T::t(Token::ArrBegin, "[").pos(1, 1, 2), 1, 3)]
+    #[case("[]", T::t(Token::ArrBegin, "["), T::t(Token::ArrEnd, "]").pos(1, 1, 2), 1, 3)]
+    #[case("[:", T::t(Token::ArrBegin, "["), T::t(Token::NameSep, ":").pos(1, 1, 2), 1, 3)]
+    #[case("[,", T::t(Token::ArrBegin, "["), T::t(Token::ValueSep, ",").pos(1, 1, 2), 1, 3)]
+    #[case("[false", T::t(Token::ArrBegin, "["), T::t(Token::LitFalse, "false").pos(1, 1, 2), 1, 7)]
+    #[case("[null", T::t(Token::ArrBegin, "["), T::t(Token::LitNull, "null").pos(1, 1, 2), 1, 6)]
+    #[case("[true", T::t(Token::ArrBegin, "["), T::t(Token::LitTrue, "true").pos(1, 1, 2), 1, 6)]
+    #[case("[0", T::t(Token::ArrBegin, "["), T::t(Token::Num, "0").pos(1, 1, 2), 1, 3)]
+    #[case("[-1.9", T::t(Token::ArrBegin, "["), T::t(Token::Num, "-1.9").pos(1, 1, 2), 1, 6)]
+    #[case("[3.14e+0", T::t(Token::ArrBegin, "["), T::t(Token::Num, "3.14e+0").pos(1, 1, 2), 1, 9)]
+    #[case(r#"["""#, T::t(Token::ArrBegin, "["), T::t(Token::Str, r#""""#).pos(1, 1, 2), 1, 4)]
+    #[case(r#"["foo""#, T::t(Token::ArrBegin, "["), T::t(Token::Str, r#""foo""#).pos(1, 1, 2), 1, 7)]
+    #[case(r#"["hello\u0020there,\nworld!""#, T::t(Token::ArrBegin, "["), T::t(Token::Str, r#""hello\u0020there,\nworld!""#).pos(1, 1, 2).unescaped("\"hello there,\nworld!\""), 1,29)]
+    #[case("[ ", T::t(Token::ArrBegin, "["), T::t(Token::White, " ").pos(1, 1, 2), 1, 3)]
+    #[case("[\t\t\r\n\n ", T::t(Token::ArrBegin, "["), T::t(Token::White, "\t\t\r\n\n ").pos(1, 1, 2), 3, 2)]
+    // =============================================================================================
+    // Array end character `]` followed by something...
+    // =============================================================================================
+    #[case("]{", T::t(Token::ArrEnd, "]"), T::t(Token::ObjBegin, "{").pos(1, 1, 2), 1, 3)]
+    #[case("]}", T::t(Token::ArrEnd, "]"), T::t(Token::ObjEnd, "}").pos(1, 1, 2), 1, 3)]
+    #[case("][", T::t(Token::ArrEnd, "]"), T::t(Token::ArrBegin, "[").pos(1, 1, 2), 1, 3)]
+    #[case("]]", T::t(Token::ArrEnd, "]"), T::t(Token::ArrEnd, "]").pos(1, 1, 2), 1, 3)]
+    #[case("]:", T::t(Token::ArrEnd, "]"), T::t(Token::NameSep, ":").pos(1, 1, 2), 1, 3)]
+    #[case("],", T::t(Token::ArrEnd, "]"), T::t(Token::ValueSep, ",").pos(1, 1, 2), 1, 3)]
+    #[case("]false", T::t(Token::ArrEnd, "]"), T::t(Token::LitFalse, "false").pos(1, 1, 2), 1, 7)]
+    #[case("]null", T::t(Token::ArrEnd, "]"), T::t(Token::LitNull, "null").pos(1, 1, 2), 1, 6)]
+    #[case("]true", T::t(Token::ArrEnd, "]"), T::t(Token::LitTrue, "true").pos(1, 1, 2), 1, 6)]
+    #[case("]0", T::t(Token::ArrEnd, "]"), T::t(Token::Num, "0").pos(1, 1, 2), 1, 3)]
+    #[case("]-1.9", T::t(Token::ArrEnd, "]"), T::t(Token::Num, "-1.9").pos(1, 1, 2), 1, 6)]
+    #[case("]31.4e-1", T::t(Token::ArrEnd, "]"), T::t(Token::Num, "31.4e-1").pos(1, 1, 2), 1, 9)]
+    #[case(r#"]"""#, T::t(Token::ArrEnd, "]"), T::t(Token::Str, r#""""#).pos(1, 1, 2), 1, 4)]
+    #[case(r#"]"foo""#, T::t(Token::ArrEnd, "]"), T::t(Token::Str, r#""foo""#).pos(1, 1, 2), 1, 7)]
+    #[case(r#"]"hello\u0020there,\nworld!""#, T::t(Token::ArrEnd, "]"), T::t(Token::Str, r#""hello\u0020there,\nworld!""#).pos(1, 1, 2).unescaped("\"hello there,\nworld!\""), 1,29)]
+    #[case("] ", T::t(Token::ArrEnd, "]"), T::t(Token::White, " ").pos(1, 1, 2), 1, 3)]
+    #[case("]\t\t\r\n\n ", T::t(Token::ArrEnd, "]"), T::t(Token::White, "\t\t\r\n\n ").pos(1, 1, 2), 3, 2)]
+    // =============================================================================================
+    // Name separator `:` followed by something...
+    // =============================================================================================
+    #[case(":{", T::t(Token::NameSep, ":"), T::t(Token::ObjBegin, "{").pos(1, 1, 2), 1, 3)]
+    #[case(":}", T::t(Token::NameSep, ":"), T::t(Token::ObjEnd, "}").pos(1, 1, 2), 1, 3)]
+    #[case(":[", T::t(Token::NameSep, ":"), T::t(Token::ArrBegin, "[").pos(1, 1, 2), 1, 3)]
+    #[case(":]", T::t(Token::NameSep, ":"), T::t(Token::ArrEnd, "]").pos(1, 1, 2), 1, 3)]
+    #[case("::", T::t(Token::NameSep, ":"), T::t(Token::NameSep, ":").pos(1, 1, 2), 1, 3)]
+    #[case(":,", T::t(Token::NameSep, ":"), T::t(Token::ValueSep, ",").pos(1, 1, 2), 1, 3)]
+    #[case(":false", T::t(Token::NameSep, ":"), T::t(Token::LitFalse, "false").pos(1, 1, 2), 1, 7)]
+    #[case(":null", T::t(Token::NameSep, ":"), T::t(Token::LitNull, "null").pos(1, 1, 2), 1, 6)]
+    #[case(":true", T::t(Token::NameSep, ":"), T::t(Token::LitTrue, "true").pos(1, 1, 2), 1, 6)]
+    #[case(":0", T::t(Token::NameSep, ":"), T::t(Token::Num, "0").pos(1, 1, 2), 1, 3)]
+    #[case(":-1.9", T::t(Token::NameSep, ":"), T::t(Token::Num, "-1.9").pos(1, 1, 2), 1, 6)]
+    #[case(":31.4e-1", T::t(Token::NameSep, ":"), T::t(Token::Num, "31.4e-1").pos(1, 1, 2), 1, 9)]
+    #[case(r#":"""#, T::t(Token::NameSep, ":"), T::t(Token::Str, r#""""#).pos(1, 1, 2), 1, 4)]
+    #[case(r#":"foo""#, T::t(Token::NameSep, ":"), T::t(Token::Str, r#""foo""#).pos(1, 1, 2), 1, 7)]
+    #[case(r#":"hello\u0020there,\nworld!""#, T::t(Token::NameSep, ":"), T::t(Token::Str, r#""hello\u0020there,\nworld!""#).pos(1, 1, 2).unescaped("\"hello there,\nworld!\""), 1,29)]
+    #[case(": ", T::t(Token::NameSep, ":"), T::t(Token::White, " ").pos(1, 1, 2), 1, 3)]
+    #[case(":\t\t\r\n\n ", T::t(Token::NameSep, ":"), T::t(Token::White, "\t\t\r\n\n ").pos(1, 1, 2), 3, 2)]
+    // =============================================================================================
+    // Value separator `,` followed by something...
+    // =============================================================================================
+    #[case(",{", T::t(Token::ValueSep, ","), T::t(Token::ObjBegin, "{").pos(1, 1, 2), 1, 3)]
+    #[case(",}", T::t(Token::ValueSep, ","), T::t(Token::ObjEnd, "}").pos(1, 1, 2), 1, 3)]
+    #[case(",[", T::t(Token::ValueSep, ","), T::t(Token::ArrBegin, "[").pos(1, 1, 2), 1, 3)]
+    #[case(",]", T::t(Token::ValueSep, ","), T::t(Token::ArrEnd, "]").pos(1, 1, 2), 1, 3)]
+    #[case(",:", T::t(Token::ValueSep, ","), T::t(Token::NameSep, ":").pos(1, 1, 2), 1, 3)]
+    #[case(",,", T::t(Token::ValueSep, ","), T::t(Token::ValueSep, ",").pos(1, 1, 2), 1, 3)]
+    #[case(",false", T::t(Token::ValueSep, ","), T::t(Token::LitFalse, "false").pos(1, 1, 2), 1, 7)]
+    #[case(",null", T::t(Token::ValueSep, ","), T::t(Token::LitNull, "null").pos(1, 1, 2), 1, 6)]
+    #[case(",true", T::t(Token::ValueSep, ","), T::t(Token::LitTrue, "true").pos(1, 1, 2), 1, 6)]
+    #[case(",-0.0", T::t(Token::ValueSep, ","), T::t(Token::Num, "-0.0").pos(1, 1, 2), 1, 6)]
+    #[case(",1.9", T::t(Token::ValueSep, ","), T::t(Token::Num, "1.9").pos(1, 1, 2), 1, 5)]
+    #[case(",314e-2", T::t(Token::ValueSep, ","), T::t(Token::Num, "314e-2").pos(1, 1, 2), 1, 8)]
+    #[case(r#","""#, T::t(Token::ValueSep, ","), T::t(Token::Str, r#""""#).pos(1, 1, 2), 1, 4)]
+    #[case(r#","foo""#, T::t(Token::ValueSep, ","), T::t(Token::Str, r#""foo""#).pos(1, 1, 2), 1, 7)]
+    #[case(r#","hello\u0020there,\nworld!""#, T::t(Token::ValueSep, ","), T::t(Token::Str, r#""hello\u0020there,\nworld!""#).pos(1, 1, 2).unescaped("\"hello there,\nworld!\""), 1,29)]
+    #[case(", ", T::t(Token::ValueSep, ","), T::t(Token::White, " ").pos(1, 1, 2), 1, 3)]
+    #[case(",\t\t\r\n\n ", T::t(Token::ValueSep, ","), T::t(Token::White, "\t\t\r\n\n ").pos(1, 1, 2), 3, 2)]
+    // =============================================================================================
+    // Literal `false` followed by something...
+    // =============================================================================================
+    #[case("false{", T::t(Token::LitFalse, "false"), T::t(Token::ObjBegin, "{").pos(5, 1, 6), 1, 7)]
+    #[case("false}", T::t(Token::LitFalse, "false"), T::t(Token::ObjEnd, "}").pos(5, 1, 6), 1, 7)]
+    #[case("false[", T::t(Token::LitFalse, "false"), T::t(Token::ArrBegin, "[").pos(5, 1, 6), 1, 7)]
+    #[case("false]", T::t(Token::LitFalse, "false"), T::t(Token::ArrEnd, "]").pos(5, 1, 6), 1, 7)]
+    #[case("false:", T::t(Token::LitFalse, "false"), T::t(Token::NameSep, ":").pos(5, 1, 6), 1, 7)]
+    #[case("false,", T::t(Token::LitFalse, "false"), T::t(Token::ValueSep, ",").pos(5, 1, 6), 1, 7)]
+    #[case("false ", T::t(Token::LitFalse, "false"), T::t(Token::White, " ").pos(5, 1, 6), 1, 7)]
+    #[case("false\t", T::t(Token::LitFalse, "false"), T::t(Token::White, "\t").pos(5, 1, 6), 1, 7)]
+    #[case("false\r", T::t(Token::LitFalse, "false"), T::t(Token::White, "\r").pos(5, 1, 6), 2, 1)]
+    #[case("false\n", T::t(Token::LitFalse, "false"), T::t(Token::White, "\n").pos(5, 1, 6), 2, 1)]
+    #[case("false\r\n", T::t(Token::LitFalse, "false"), T::t(Token::White, "\r\n").pos(5, 1, 6), 2, 1)]
+    #[case("false\n\r", T::t(Token::LitFalse, "false"), T::t(Token::White, "\n\r").pos(5, 1, 6), 3, 1)]
+    // =============================================================================================
+    // Literal `null` followed by something...
+    // =============================================================================================
+    #[case("null{", T::t(Token::LitNull, "null"), T::t(Token::ObjBegin, "{").pos(4, 1, 5), 1, 6)]
+    #[case("null}", T::t(Token::LitNull, "null"), T::t(Token::ObjEnd, "}").pos(4, 1, 5), 1, 6)]
+    #[case("null[", T::t(Token::LitNull, "null"), T::t(Token::ArrBegin, "[").pos(4, 1, 5), 1, 6)]
+    #[case("null]", T::t(Token::LitNull, "null"), T::t(Token::ArrEnd, "]").pos(4, 1, 5), 1, 6)]
+    #[case("null:", T::t(Token::LitNull, "null"), T::t(Token::NameSep, ":").pos(4, 1, 5), 1, 6)]
+    #[case("null,", T::t(Token::LitNull, "null"), T::t(Token::ValueSep, ",").pos(4, 1, 5), 1, 6)]
+    #[case("null ", T::t(Token::LitNull, "null"), T::t(Token::White, " ").pos(4, 1, 5), 1, 6)]
+    #[case("null\t", T::t(Token::LitNull, "null"), T::t(Token::White, "\t").pos(4, 1, 5), 1, 6)]
+    #[case("null\r", T::t(Token::LitNull, "null"), T::t(Token::White, "\r").pos(4, 1, 5), 2, 1)]
+    #[case("null\n", T::t(Token::LitNull, "null"), T::t(Token::White, "\n").pos(4, 1, 5), 2, 1)]
+    // =============================================================================================
+    // Literal `true` followed by something...
+    // =============================================================================================
+    #[case("true{", T::t(Token::LitTrue, "true"), T::t(Token::ObjBegin, "{").pos(4, 1, 5), 1, 6)]
+    #[case("true}", T::t(Token::LitTrue, "true"), T::t(Token::ObjEnd, "}").pos(4, 1, 5), 1, 6)]
+    #[case("true[", T::t(Token::LitTrue, "true"), T::t(Token::ArrBegin, "[").pos(4, 1, 5), 1, 6)]
+    #[case("true]", T::t(Token::LitTrue, "true"), T::t(Token::ArrEnd, "]").pos(4, 1, 5), 1, 6)]
+    #[case("true:", T::t(Token::LitTrue, "true"), T::t(Token::NameSep, ":").pos(4, 1, 5), 1, 6)]
+    #[case("true,", T::t(Token::LitTrue, "true"), T::t(Token::ValueSep, ",").pos(4, 1, 5), 1, 6)]
+    #[case("true ", T::t(Token::LitTrue, "true"), T::t(Token::White, " ").pos(4, 1, 5), 1, 6)]
+    #[case("true\t", T::t(Token::LitTrue, "true"), T::t(Token::White, "\t").pos(4, 1, 5), 1, 6)]
+    #[case("true\r", T::t(Token::LitTrue, "true"), T::t(Token::White, "\r").pos(4, 1, 5), 2, 1)]
+    #[case("true\n", T::t(Token::LitTrue, "true"), T::t(Token::White, "\n").pos(4, 1, 5), 2, 1)]
+    // =============================================================================================
+    // Number followed by something...
+    // =============================================================================================
+    #[case("0{", T::t(Token::Num, "0"), T::t(Token::ObjBegin, "{").pos(1, 1, 2), 1, 3)]
+    #[case("0}", T::t(Token::Num, "0"), T::t(Token::ObjEnd, "}").pos(1, 1, 2), 1, 3)]
+    #[case("0[", T::t(Token::Num, "0"), T::t(Token::ArrBegin, "[").pos(1, 1, 2), 1, 3)]
+    #[case("0]", T::t(Token::Num, "0"), T::t(Token::ArrEnd, "]").pos(1, 1, 2), 1, 3)]
+    #[case("0:", T::t(Token::Num, "0"), T::t(Token::NameSep, ":").pos(1, 1, 2), 1, 3)]
+    #[case("0,", T::t(Token::Num, "0"), T::t(Token::ValueSep, ",").pos(1, 1, 2), 1, 3)]
+    #[case("0 ", T::t(Token::Num, "0"), T::t(Token::White, " ").pos(1, 1, 2), 1, 3)]
+    #[case("0\t", T::t(Token::Num, "0"), T::t(Token::White, "\t").pos(1, 1, 2), 1, 3)]
+    #[case("0\r", T::t(Token::Num, "0"), T::t(Token::White, "\r").pos(1, 1, 2), 2, 1)]
+    #[case("0\n", T::t(Token::Num, "0"), T::t(Token::White, "\n").pos(1, 1, 2), 2, 1)]
+    #[case("1{", T::t(Token::Num, "1"), T::t(Token::ObjBegin, "{").pos(1, 1, 2), 1, 3)]
+    #[case("-9}", T::t(Token::Num, "-9"), T::t(Token::ObjEnd, "}").pos(2, 1, 3), 1, 4)]
+    #[case("0.0[", T::t(Token::Num, "0.0"), T::t(Token::ArrBegin, "[").pos(3, 1, 4), 1, 5)]
+    #[case("-0]", T::t(Token::Num, "-0"), T::t(Token::ArrEnd, "]").pos(2, 1, 3), 1, 4)]
+    #[case("-0.0123456789:", T::t(Token::Num, "-0.0123456789"), T::t(Token::NameSep, ":").pos(13, 1, 14), 1, 15)]
+    #[case("123456789e10,", T::t(Token::Num, "123456789e10"), T::t(Token::ValueSep, ",").pos(12, 1, 13), 1, 14)]
+    #[case("0e-1 ", T::t(Token::Num, "0e-1"), T::t(Token::White, " ").pos(4, 1, 5), 1, 6)]
+    #[case("2e+3\t", T::t(Token::Num, "2e+3"), T::t(Token::White, "\t").pos(4, 1, 5), 1, 6)]
+    #[case("-5e6\r", T::t(Token::Num, "-5e6"), T::t(Token::White, "\r").pos(4, 1, 5), 2, 1)]
+    #[case("6.7e89\n", T::t(Token::Num, "6.7e89"), T::t(Token::White, "\n").pos(6, 1, 7), 2, 1)]
+    // =============================================================================================
+    // String followed by something...
+    // =============================================================================================
+    #[case(r#"""{"#, T::t(Token::Str, r#""""#), T::t(Token::ObjBegin, "{").pos(2, 1, 3), 1, 4)]
+    #[case(r#"""}"#, T::t(Token::Str, r#""""#), T::t(Token::ObjEnd, "}").pos(2, 1, 3), 1, 4)]
+    #[case(r#"""["#, T::t(Token::Str, r#""""#), T::t(Token::ArrBegin, "[").pos(2, 1, 3), 1, 4)]
+    #[case(r#"""]"#, T::t(Token::Str, r#""""#), T::t(Token::ArrEnd, "]").pos(2, 1, 3), 1, 4)]
+    #[case(r#""":"#, T::t(Token::Str, r#""""#), T::t(Token::NameSep, ":").pos(2, 1, 3), 1, 4)]
+    #[case(r#""","#, T::t(Token::Str, r#""""#), T::t(Token::ValueSep, ",").pos(2, 1, 3), 1, 4)]
+    #[case(r#""" "#, T::t(Token::Str, r#""""#), T::t(Token::White, " ").pos(2, 1, 3), 1, 4)]
+    #[case("\"\"\t", T::t(Token::Str, r#""""#), T::t(Token::White, "\t").pos(2, 1, 3), 1, 4)]
+    #[case("\"\"\r", T::t(Token::Str, r#""""#), T::t(Token::White, "\r").pos(2, 1, 3), 2, 1)]
+    #[case("\"\"\n", T::t(Token::Str, r#""""#), T::t(Token::White, "\n").pos(2, 1, 3), 2, 1)]
+    #[case(r#""x"}"#, T::t(Token::Str, r#""x""#), T::t(Token::ObjEnd, "}").pos(3, 1, 4), 1, 5)]
+    #[case(r#""foo bar"]"#, T::t(Token::Str, r#""foo bar""#), T::t(Token::ArrEnd, "]").pos(9, 1, 10), 1, 11)]
+    #[case(r#""🧶":"#, T::t(Token::Str, r#""🧶""#), T::t(Token::NameSep, ":").pos(6, 1, 7), 1, 8)]
+    #[case(r#""\"\t\r\n\\\/\u0020\"","#, T::t(Token::Str, r#""\"\t\r\n\\\/\u0020\"""#).unescaped("\"\"\t\r\n\\/ \"\""), T::t(Token::ValueSep, ",").pos(22, 1, 23), 1, 24)]
+    // =============================================================================================
+    // Whitespace followed by something...
+    // =============================================================================================
+    #[case(" {", T::t(Token::White, " "), T::t(Token::ObjBegin, "{").pos(1, 1, 2), 1, 3)]
+    #[case(" }", T::t(Token::White, " "), T::t(Token::ObjEnd, "}").pos(1, 1, 2), 1, 3)]
+    #[case(" [", T::t(Token::White, " "), T::t(Token::ArrBegin, "[").pos(1, 1, 2), 1, 3)]
+    #[case(" ]", T::t(Token::White, " "), T::t(Token::ArrEnd, "]").pos(1, 1, 2), 1, 3)]
+    #[case(" :", T::t(Token::White, " "), T::t(Token::NameSep, ":").pos(1, 1, 2), 1, 3)]
+    #[case(" ,", T::t(Token::White, " "), T::t(Token::ValueSep, ",").pos(1, 1, 2), 1, 3)]
+    #[case(" false", T::t(Token::White, " "), T::t(Token::LitFalse, "false").pos(1, 1, 2), 1, 7)]
+    #[case(" null", T::t(Token::White, " "), T::t(Token::LitNull, "null").pos(1, 1, 2), 1, 6)]
+    #[case(" true", T::t(Token::White, " "), T::t(Token::LitTrue, "true").pos(1, 1, 2), 1, 6)]
+    #[case(" 0", T::t(Token::White, " "), T::t(Token::Num, "0").pos(1, 1, 2), 1, 3)]
+    #[case(r#" """#, T::t(Token::White, " "), T::t(Token::Str, r#""""#).pos(1, 1, 2), 1, 4)]
+    #[case("\t{", T::t(Token::White, "\t"), T::t(Token::ObjBegin, "{").pos(1, 1, 2), 1, 3)]
+    #[case("  {", T::t(Token::White, "  "), T::t(Token::ObjBegin, "{").pos(2, 1, 3), 1, 4)]
+    #[case("\n{", T::t(Token::White, "\n"), T::t(Token::ObjBegin, "{").pos(1, 2, 1), 2, 2)]
+    #[case("\r{", T::t(Token::White, "\r"), T::t(Token::ObjBegin, "{").pos(1, 2, 1), 2, 2)]
+    #[case("\r\n{", T::t(Token::White, "\r\n"), T::t(Token::ObjBegin, "{").pos(2, 2, 1), 2, 2)]
+    #[case("\n\r{", T::t(Token::White, "\n\r"), T::t(Token::ObjBegin, "{").pos(2, 3, 1), 3, 2)]
+    #[case("\n\n{", T::t(Token::White, "\n\n"), T::t(Token::ObjBegin, "{").pos(2, 3, 1), 3, 2)]
+    #[case("\r\r{", T::t(Token::White, "\r\r"), T::t(Token::ObjBegin, "{").pos(2, 3, 1), 3, 2)]
+    fn test_two_tokens(
+        #[case] input: &str,
+        #[case] t1: T,
+        #[case] t2: T,
+        #[case] line: usize,
+        #[case] col: usize,
+    ) {
+        // With value fetch.
+        {
+            let mut an = BufAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(t1.token, an.next());
+            assert_eq!(t1.pos, *an.pos());
+
+            let mut value1 = an.value().unwrap();
+            assert_eq!(t1.literal, value1.literal());
+            assert_eq!(t1.is_escaped(), value1.is_escaped());
+            assert_eq!(t1.unescaped, value1.unescaped());
+
+            assert_eq!(t2.token, an.next());
+            assert_eq!(t2.pos, *an.pos());
+
+            let mut value2 = an.value().unwrap();
+            assert_eq!(t2.literal, value2.literal());
+            assert_eq!(t2.is_escaped(), value2.is_escaped());
+            assert_eq!(t2.unescaped, value2.unescaped());
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line,
+                    col
+                },
+                *an.pos()
+            );
+        }
+
+        // Without value fetch.
+        {
+            let mut an = BufAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(t1.token, an.next());
+            assert_eq!(t1.pos, *an.pos());
+
+            assert_eq!(t2.token, an.next());
+            assert_eq!(t2.pos, *an.pos());
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line,
+                    col
+                },
+                *an.pos()
+            );
+        }
+    }
+
+    #[derive(Debug)]
+    struct T {
+        token: Token,
+        pos: Pos,
+        literal: &'static str,
+        unescaped: &'static str,
+    }
+
+    impl T {
+        fn t(token: Token, literal: &'static str) -> Self {
+            Self {
+                token,
+                pos: Pos::default(),
+                literal,
+                unescaped: literal,
+            }
+        }
+
+        fn pos(mut self, offset: usize, line: usize, col: usize) -> Self {
+            self.pos = Pos { offset, line, col };
+            self
+        }
+
+        fn unescaped(mut self, unescaped: &'static str) -> Self {
+            self.unescaped = unescaped;
+            self
+        }
+
+        fn is_escaped(&self) -> bool {
+            self.unescaped != self.literal
+        }
+    }
+}
