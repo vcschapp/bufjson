@@ -513,6 +513,12 @@ impl Machine {
     }
 
     fn str(&mut self, str: Str, b: Option<u8>) -> State {
+        // Flag indicating that the current state is within a UTF-8 byte sequence after the first
+        // character. We want one column per UTF-8 character, so having incremented the column count
+        // transitioning to the first character, we don't want to continue incrementing it until we
+        // have finished the character.
+        let mut in_utf8_seq = false;
+
         let s = match (str, b) {
             // Double quote closes the string.
             (Str::Ready { escaped }, Some(b'"')) => {
@@ -537,6 +543,8 @@ impl Machine {
 
             // [1/2] Two-byte UTF-8 sequence start...
             (Str::Ready { escaped }, Some(0xc2..=0xdf)) => {
+                in_utf8_seq = true;
+
                 self.state = InnerState::Str(Str::Utf821 { escaped });
 
                 State::Mid
@@ -544,6 +552,8 @@ impl Machine {
 
             // [1/3] Three-byte UTF-8 sequence start...
             (Str::Ready { escaped }, Some(b0)) if (0xe0..=0xef).contains(&b0) => {
+                in_utf8_seq = true;
+
                 self.state = InnerState::Str(Str::Utf831 { escaped, b0 });
 
                 State::Mid
@@ -551,6 +561,8 @@ impl Machine {
 
             // [1/4] Four-byte UTF-8 sequence start...
             (Str::Ready { escaped }, Some(b0)) if (0xf0..=0xf4).contains(&b0) => {
+                in_utf8_seq = true;
+
                 self.state = InnerState::Str(Str::Utf841 { escaped, b0 });
 
                 State::Mid
@@ -741,6 +753,8 @@ impl Machine {
 
             // [2/3]: Three-byte UTF-8 sequence continuation...
             (Str::Utf831 { escaped, b0 }, Some(b1)) => {
+                in_utf8_seq = true;
+
                 self.state = InnerState::Str(Str::Utf832 { escaped, b0, b1 });
 
                 State::Mid
@@ -775,6 +789,8 @@ impl Machine {
 
             // [2/4]: Four-byte UTF-8 sequence continuation...
             (Str::Utf841 { escaped, b0 }, Some(b1)) => {
+                in_utf8_seq = true;
+
                 self.state = InnerState::Str(Str::Utf842 { escaped, b0, b1 });
 
                 State::Mid
@@ -782,6 +798,8 @@ impl Machine {
 
             // [3/4]: Four-byte UTF-8 sequence continuation...
             (Str::Utf842 { escaped, b0, b1 }, Some(b2)) => {
+                in_utf8_seq = true;
+
                 self.state = InnerState::Str(Str::Utf843 {
                     escaped,
                     b0,
@@ -845,8 +863,10 @@ impl Machine {
             }
         };
 
-        if self.state != InnerState::Err {
+        if self.state != InnerState::Err && !in_utf8_seq {
             self.pos.advance_col();
+        } else if in_utf8_seq {
+            self.pos.advance_offset(1);
         }
 
         s
@@ -999,16 +1019,6 @@ mod tests {
     #[case(r#""\uD800\uDFFF""#, Token::Str, true, true)] // High surrogate with highest low surrogate → U+103FF
     #[case(r#""\uDBFF\uDC00""#, Token::Str, true, true)] // Highest high surrogate with lowest low surrogate → U+10FC00
     #[case(r#""\udbFf\udfff""#, Token::Str, true, true)] // Highest valid surrogate pair → U+10FFFF (max Unicode scalar value)
-    #[case("\"\u{0020}\"", Token::Str, true, false)]
-    #[case("\"\u{007f}\"", Token::Str, true, false)] // DEL, the highest 1-byte UTF-8 character
-    #[case("\"\u{0080}\"", Token::Str, true, false)] // Lowest two-byte UTF-8 character
-    #[case("\"\u{07ff}\"", Token::Str, true, false)] // Highest two-byte UTF-8 character
-    #[case("\"\u{0800}\"", Token::Str, true, false)] // Lowest three-byte UTF-8 character
-    #[case("\"\u{d7ff}\"", Token::Str, true, false)] // Highest BMP code point before surrogates
-    #[case("\"\u{e000}\"", Token::Str, true, false)] // Lowest BMP code point after surrogates
-    #[case("\"\u{ffff}\"", Token::Str, true, false)] // Highest BMP code point: non-character but still valid JSON
-    #[case("\"\u{10000}\"", Token::Str, true, false)] // Lowest four-byte UTF-8 character
-    #[case("\"\u{10ffff}\"", Token::Str, true, false)] // Highest valid Unicode scalar value
     #[case(" ", Token::White, false, false)]
     #[case("\t", Token::White, false, false)]
     #[case("  ", Token::White, false, false)]
@@ -1101,6 +1111,114 @@ mod tests {
         assert_eq!(input.len(), mach.pos().offset);
         assert_eq!(1, mach.pos().line);
         assert_eq!(input.len() + 1, mach.pos().col);
+    }
+
+    #[rstest]
+    #[case("\"\u{007f}\"")] // DEL, the highest 1-byte UTF-8 character
+    #[case("\"\u{0080}\"")] // Lowest two-byte UTF-8 character
+    #[case("\"\u{07ff}\"")] // Highest two-byte UTF-8 character
+    #[case("\"\u{0800}\"")] // Lowest three-byte UTF-8 character
+    #[case("\"\u{d7ff}\"")] // Highest BMP code point before surrogates
+    #[case("\"\u{e000}\"")] // Lowest BMP code point after surrogates
+    #[case("\"\u{ffff}\"")] // Highest BMP code point: non-character but still valid JSON
+    #[case("\"\u{10000}\"")] // Lowest four-byte UTF-8 character
+    #[case("\"\u{10ffff}\"")] // Highest valid Unicode scalar value
+    fn test_utf8_seq(#[case] input: &str) {
+        let mut mach = Machine::default();
+        assert_eq!(Pos::default(), *mach.pos());
+
+        // Calculate number of UTF-8 bytes in sequence.
+        let n = input.len() - 2 /* quotes */;
+
+        let mut iter = input.bytes();
+
+        // Consume opening `"` of string token.
+        assert_eq!(State::Mid, mach.next(Some(iter.next().unwrap())));
+        assert_eq!(
+            Pos {
+                offset: 1,
+                line: 1,
+                col: 2
+            },
+            *mach.pos()
+        );
+
+        // Consume first n-1 bytes of UTF-8 sequence. Column should not advance.
+        for i in 1..n {
+            assert_eq!(State::Mid, mach.next(Some(iter.next().unwrap())));
+            assert_eq!(
+                Pos {
+                    offset: 1 + i,
+                    line: 1,
+                    col: 2
+                },
+                *mach.pos()
+            );
+        }
+
+        // Consume last byte of UTF-8 sequence. Column is now advanced.
+        assert_eq!(State::Mid, mach.next(Some(iter.next().unwrap())));
+        assert_eq!(
+            Pos {
+                offset: 1 + n,
+                line: 1,
+                col: 3
+            },
+            *mach.pos()
+        );
+
+        // Consume closing `"` of string token.
+        assert_eq!(
+            State::End {
+                token: Token::Str,
+                escaped: false,
+                repeat: false
+            },
+            mach.next(Some(iter.next().unwrap()))
+        );
+        assert_eq!(
+            Pos {
+                offset: 2 + n,
+                line: 1,
+                col: 4
+            },
+            *mach.pos()
+        );
+
+        // Verify we're now at EOF.
+        assert!(matches!(iter.next(), None));
+        assert_eq!(
+            State::End {
+                token: Token::Eof,
+                escaped: false,
+                repeat: false
+            },
+            mach.next(None)
+        );
+        assert_eq!(
+            Pos {
+                offset: 2 + n,
+                line: 1,
+                col: 4
+            },
+            *mach.pos()
+        );
+        assert_eq!(
+            State::End {
+                token: Token::Eof,
+                escaped: false,
+                repeat: false
+            },
+            mach.next(None)
+        );
+        assert_eq!(
+            Pos {
+                offset: 2 + n,
+                line: 1,
+                col: 4
+            },
+            *mach.pos()
+        );
     }
 
     #[rstest]

@@ -355,16 +355,6 @@ mod tests {
     #[case(r#""\uD800\uDFFF""#, Token::Str, Some("\"\u{103ff}\""))] // High surrogate with highest low surrogate → U+103FF
     #[case(r#""\uDBFF\uDC00""#, Token::Str, Some("\"\u{10fc00}\""))] // Highest high surrogate with lowest low surrogate → U+10FC00
     #[case(r#""\udbFf\udfff""#, Token::Str, Some("\"\u{10ffff}\""))] // Highest valid surrogate pair → U+10FFFF (max Unicode scalar value)
-    #[case("\"\u{0020}\"", Token::Str, None)]
-    #[case("\"\u{007f}\"", Token::Str, None)] // DEL, the highest 1-byte UTF-8 character
-    #[case("\"\u{0080}\"", Token::Str, None)] // Lowest two-byte UTF-8 character
-    #[case("\"\u{07ff}\"", Token::Str, None)] // Highest two-byte UTF-8 character
-    #[case("\"\u{0800}\"", Token::Str, None)] // Lowest three-byte UTF-8 character
-    #[case("\"\u{d7ff}\"", Token::Str, None)] // Highest BMP code point before surrogates
-    #[case("\"\u{e000}\"", Token::Str, None)] // Lowest BMP code point after surrogates
-    #[case("\"\u{ffff}\"", Token::Str, None)] // Highest BMP code point: non-character but still valid JSON
-    #[case("\"\u{10000}\"", Token::Str, None)] // Lowest four-byte UTF-8 character
-    #[case("\"\u{10ffff}\"", Token::Str, None)] // Highest valid Unicode scalar value
     #[case(" ", Token::White, None)]
     #[case("\t", Token::White, None)]
     #[case("  ", Token::White, None)]
@@ -437,6 +427,82 @@ mod tests {
                     offset: input.len(),
                     line: 1,
                     col: input.len() + 1
+                },
+                *an.pos()
+            );
+        }
+    }
+
+    #[rstest]
+    #[case("\"\u{0020}\"")]
+    #[case("\"\u{007f}\"")] // DEL, the highest 1-byte UTF-8 character
+    #[case("\"\u{0080}\"")] // Lowest two-byte UTF-8 character
+    #[case("\"\u{07ff}\"")] // Highest two-byte UTF-8 character
+    #[case("\"\u{0800}\"")] // Lowest three-byte UTF-8 character
+    #[case("\"\u{d7ff}\"")] // Highest BMP code point before surrogates
+    #[case("\"\u{e000}\"")] // Lowest BMP code point after surrogates
+    #[case("\"\u{ffff}\"")] // Highest BMP code point: non-character but still valid JSON
+    #[case("\"\u{10000}\"")] // Lowest four-byte UTF-8 character
+    #[case("\"\u{10ffff}\"")] // Highest valid Unicode scalar value
+    fn test_utf8_seq(#[case] input: &str) {
+        // With value fetch.
+        {
+            let mut an = BufAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Str, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            let mut value = an.value().unwrap();
+            assert_eq!(input, value.literal());
+            assert!(!value.is_escaped());
+            assert_eq!(input, value.unescaped());
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: 4,
+                },
+                *an.pos()
+            );
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: 4,
+                },
+                *an.pos()
+            );
+        }
+
+        // Without value fetch.
+        {
+            let mut an = BufAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Str, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: 4,
+                },
+                *an.pos()
+            );
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: 4,
                 },
                 *an.pos()
             );
@@ -707,7 +773,7 @@ mod tests {
     #[case("\"\"\n", T::t(Token::Str, r#""""#), T::t(Token::White, "\n").pos(2, 1, 3), 2, 1)]
     #[case(r#""x"}"#, T::t(Token::Str, r#""x""#), T::t(Token::ObjEnd, "}").pos(3, 1, 4), 1, 5)]
     #[case(r#""foo bar"]"#, T::t(Token::Str, r#""foo bar""#), T::t(Token::ArrEnd, "]").pos(9, 1, 10), 1, 11)]
-    #[case(r#""🧶":"#, T::t(Token::Str, r#""🧶""#), T::t(Token::NameSep, ":").pos(6, 1, 7), 1, 8)]
+    #[case(r#""🧶":"#, T::t(Token::Str, r#""🧶""#), T::t(Token::NameSep, ":").pos(6, 1, 4), 1, 5)]
     #[case(r#""\"\t\r\n\\\/\u0020\"","#, T::t(Token::Str, r#""\"\t\r\n\\\/\u0020\"""#).unescaped("\"\"\t\r\n\\/ \"\""), T::t(Token::ValueSep, ",").pos(22, 1, 23), 1, 24)]
     // =============================================================================================
     // Whitespace followed by something...
