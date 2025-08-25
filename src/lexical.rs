@@ -49,6 +49,104 @@ pub enum Token {
     White,
 }
 
+impl Token {
+    /// Returns `true` for lexical tokens that are JSON values and `false` otherwise.
+    ///
+    /// The following tokens are considered values:
+    /// - [`LitFalse`]
+    /// - [`LitNull`]
+    /// - [`LitTrue`]
+    /// - [`Num`]
+    /// - [`Str`]
+    ///
+    /// [`LitFalse`]: Token::LitFalse
+    /// [`LitNull`]: Token::LitNull
+    /// [`LitTrue`]: Token::LitTrue
+    /// [`Num`]: Token::Num
+    /// [`Str`]: Token::Str
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bufjson::lexical::Token;
+    /// assert!(Token::LitNull.is_value());
+    /// assert!(Token::Num.is_value());
+    /// assert!(Token::Str.is_value());
+    ///
+    /// assert!(!Token::ObjEnd.is_value());
+    /// assert!(!Token::White.is_value());
+    /// ```
+    pub fn is_value(&self) -> bool {
+        match self {
+            Self::LitFalse | Self::LitNull | Self::LitTrue | Self::Num | Self::Str => true,
+            _ => false,
+        }
+    }
+
+    /// Returns `true` for lexical tokens that are punctuation and `false` otherwise.
+    ///
+    /// The following tokens are considered punctuation:
+    ///
+    /// - [`ArrBegin`]
+    /// - [`ArrEnd`]
+    /// - [`NameSep`]
+    /// - [`ObjBegin`]
+    /// - [`ObjEnd`]
+    /// - [`ValueSep`]
+    ///
+    /// [`ArrBegin`]: Token::ArrBegin
+    /// [`ArrEnd`]: Token::ArrEnd
+    /// [`NameSep`]: Token::NameSep
+    /// [`ObjBegin`]: Token::ObjBegin
+    /// [`ObjEnd`]: Token::ObjEnd
+    /// [`ValueSep`]: Token::ValueSep
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bufjson::lexical::Token;
+    /// assert!(Token::ArrBegin.is_punct());
+    /// assert!(Token::ValueSep.is_punct());
+    ///
+    /// assert!(!Token::Num.is_punct());
+    /// assert!(!Token::White.is_punct());
+    /// assert!(!Token::Err.is_punct());
+    /// ```
+    pub fn is_punct(&self) -> bool {
+        match self {
+            Self::ArrBegin | Self::ArrEnd | Self::NameSep | Self::ObjBegin | Self::ObjEnd | Self::ValueSep => true,
+            _ => false,
+        }
+    }
+
+    /// Returns the static text for lexical tokens that always have the same static text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bufjson::lexical::Token;
+    /// assert_eq!(Some("["), Token::ArrBegin.static_text());
+    /// assert_eq!(Some("true"), Token::LitTrue.static_text());
+    ///
+    /// assert_eq!(None, Token::Str.static_text());
+    /// assert_eq!(None, Token::White.static_text());
+    /// ```
+    pub fn static_text(&self) -> Option<&'static str> {
+        match self {
+            Self::ArrBegin => Some("["),
+            Self::ArrEnd => Some("]"),
+            Self::LitFalse => Some("false"),
+            Self::LitNull => Some("null"),
+            Self::LitTrue => Some("true"),
+            Self::NameSep => Some(":"),
+            Self::ObjBegin => Some("{"),
+            Self::ObjEnd => Some("}"),
+            Self::ValueSep => Some(","),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
@@ -696,6 +794,63 @@ pub(crate) fn unescape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    #[rstest]
+    #[case(Token::ArrBegin, false)]
+    #[case(Token::ArrEnd, false)]
+    #[case(Token::Eof, false)]
+    #[case(Token::Err, false)]
+    #[case(Token::LitFalse, true)]
+    #[case(Token::LitNull, true)]
+    #[case(Token::LitTrue, true)]
+    #[case(Token::NameSep, false)]
+    #[case(Token::Num, true)]
+    #[case(Token::ObjBegin, false)]
+    #[case(Token::ObjEnd, false)]
+    #[case(Token::Str, true)]
+    #[case(Token::ValueSep, false)]
+    #[case(Token::White, false)]
+    fn test_token_is_value(#[case] token: Token, #[case] is_value: bool) {
+        assert_eq!(is_value, token.is_value());
+    }
+
+    #[rstest]
+    #[case(Token::ArrBegin, true)]
+    #[case(Token::ArrEnd, true)]
+    #[case(Token::Eof, false)]
+    #[case(Token::Err, false)]
+    #[case(Token::LitFalse, false)]
+    #[case(Token::LitNull, false)]
+    #[case(Token::LitTrue, false)]
+    #[case(Token::NameSep, true)]
+    #[case(Token::Num, false)]
+    #[case(Token::ObjBegin, true)]
+    #[case(Token::ObjEnd, true)]
+    #[case(Token::Str, false)]
+    #[case(Token::ValueSep, true)]
+    #[case(Token::White, false)]
+    fn test_token_is_punct(#[case] token: Token, #[case] is_punct: bool) {
+        assert_eq!(is_punct, token.is_punct());
+    }
+
+    #[rstest]
+    #[case(Token::ArrBegin, Some("["))]
+    #[case(Token::ArrEnd, Some("]"))]
+    #[case(Token::Eof, None)]
+    #[case(Token::Err, None)]
+    #[case(Token::LitFalse, Some("false"))]
+    #[case(Token::LitNull, Some("null"))]
+    #[case(Token::LitTrue, Some("true"))]
+    #[case(Token::NameSep, Some(":"))]
+    #[case(Token::Num, None)]
+    #[case(Token::ObjBegin, Some("{"))]
+    #[case(Token::ObjEnd, Some("}"))]
+    #[case(Token::Str, None)]
+    #[case(Token::ValueSep, Some(","))]
+    #[case(Token::White, None)]
+    fn test_token_static_text(#[case] token: Token, #[case] static_text: Option<&str>) {
+        assert_eq!(static_text, token.static_text());
+    }
 
     #[rstest]
     #[case(r#""""#, r#""""#)]

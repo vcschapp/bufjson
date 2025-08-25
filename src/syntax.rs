@@ -467,6 +467,27 @@ where
         token
     }
 
+    pub fn next_non_white(&mut self) -> Token {
+        let token = self.next();
+
+        if token != Token::White {
+            token
+        } else {
+            self.next()
+        }
+    }
+
+    pub fn next_meaningful(&mut self) -> Token {
+        let mut token = self.next();
+
+        loop {
+            match token {
+                Token::NameSep | Token::ValueSep | Token::White => token = self.next(),
+                _ => break token,
+            }
+        }
+    }
+
     pub fn value(&self) -> Result<L::Value, Error> {
         match &self.value {
             Value::Lazy => match self.lexer.value() {
