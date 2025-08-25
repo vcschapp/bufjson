@@ -572,7 +572,7 @@ impl Machine {
             (Str::Ready { escaped: _ }, Some(c)) => {
                 self.state = InnerState::Err;
 
-                State::Err(ErrorKind::expect_string_char(c))
+                State::Err(ErrorKind::expect_str_char(c))
             }
 
             // Completing a short-form escape sequence.

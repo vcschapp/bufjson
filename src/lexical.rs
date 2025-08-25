@@ -166,10 +166,36 @@ pub trait Value {
     fn unescaped(&mut self) -> &str;
 }
 
+/// Position in an input buffer or stream.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Pos {
+    /// Zero-based byte offset from the start of the stream.
+    ///
+    /// The first byte in the stream has `offset` zero, the second `offset` one, and so on.
     pub offset: usize,
+
+    /// One-based line offset from the start of the stream.
+    ///
+    /// The first byte in the stream is on `line` one, the first byte following the first line
+    /// breaking sequence is on line two, and so on. One-based indexing is used for `line` because
+    /// line numbers are primarily for consumption by humans, as opposed to byte offsets, which are
+    /// primarily for consumption by computers.
     pub line: usize,
+
+    /// One based column offset from the start of the line, where columns are measured in
+    /// characters. One-based indexing is used for `col` because column numbers are primarily for
+    /// consumption by humans, as opposed to byte offsets, which are primarily for consumption by
+    /// computers.
+    ///
+    /// The first byte in the stream is at `col` one, and whenever the line number is incremented,
+    /// the first byte on the next line is at `col` one. Each column number increment corresponds
+    /// to a full valid UTF-8 character.
+    ///
+    /// Note that the [JSON spec][rfc] only allows multi-byte UTF-8 within string values. Outside of
+    /// strings, every one byte always equals one column; but inside a string, a valid two-, three-,
+    /// or four-byte UTF-8 sequence will only increment the column count by 1.
+    ///
+    /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
     pub col: usize,
 }
 
@@ -218,17 +244,93 @@ impl fmt::Display for Pos {
         )
     }
 }
+
+/// Character or class of characters that a lexical analyzer expecs to see at the next input
+/// position.
+///
+/// This enumeration used to provide detail information for [`ErrorKind::UnexpectedByte`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Expect {
+    /// Any token boundary character.
+    ///
+    /// One of:
+    /// - `'{'` (opening brace, U+007B)
+    /// - `'}'` (closing brace, U+007D)
+    /// - `'['` (opening bracket, U+005B)
+    /// - `']'` (closing bracket, U+005D)
+    /// - `':'` (colon, U+003A)
+    /// - `','` (comma, U+002C)
+    /// - `' '` (space, U+0020)
+    /// - `'\t'` (horizontal tab, U+0009)
+    /// - `'\n'` (line feed, U+000A)
+    /// - `'\r'` (carriage return, U+000D).
     Boundary,
+
+    /// A specific character.
     Char(char),
+
+    /// Any decimal digit character, `'0'`..`'9'` (U+0030..U+0039).
     Digit,
+
+    /// Any decimal digit character ([`Digit`]) or one of the two exponent sign characters `'+'`
+    /// (U+002B) or `'-'` (U+002D).
+    ///
+    /// [`Digit`]: Expect::Digit
+    DigitOrExpSign,
+
+    /// Any decimal digit character ([`Digit`]) or token boundary character ([`Boundary`]).
+    ///
+    /// [`Digit`]: Expect::Digit
+    /// [`Boundary`]: Expect::Boundary
     DigitOrBoundary,
+
+    /// The dot or period character `'.'` (U+002E) or any token boundary character ([`Boundary`]).
+    ///
+    /// [`Boundary`]: Expect::Boundary
     DotOrBoundary,
+
+    /// Any character that completes a short-form escape sequence or starts a Unicode escape
+    /// sequence.
+    ///
+    /// One of:
+    /// - `'"'` (double quotation mark, U+0022)
+    /// - `'\\'` (reverse solidus, U+005C)
+    /// - `'/'` (solidus, U+002F)
+    /// - `'b'` (lowercase 'b', U+0062)
+    /// - `'f'` (lowercase 'f', U+0066)
+    /// - `'n'` (lowercase 'n', U+006E)
+    /// - `'r'` (lowercase 'r', U+0072)
+    /// - `'t'` (lowercase 't', U+0074)
+    /// - `'u'` (lowercase 'u', U+0075)
     EscChar,
-    ExpSignOrDigit,
+
+    /// Any character that is valid in a JSON string token, the string token termination character
+    /// `'"'` (double quotation mark, U+0022).
+    ///
+    /// This essentially means any valid Unicode character at or above the space `' '` (U+0020).
     StrChar,
+
+    /// Any character that validly starts a JSON token.
+    ///
+    /// One of:
+    ///
+    /// - A boundary character ([`Boundary`])
+    /// - A digit ([`Digit`])
+    /// - `'"'` (double quotation mark, U+0022)
+    /// - `'f'` (U+0066)
+    /// - `'n'` (U+006E)
+    /// - `'t'` (U+0074)
+    ///
+    /// [`Digit`]: Expect::Digit
+    /// [`Boundary`]: Expect::Boundary
     TokenStartChar,
+
+    /// Any hexadecimal digit character allowed in a Unicode escape sequence.
+    ///
+    /// One of:
+    /// - A decimal digit character ([`Digit`])
+    /// - An uppercase letter `'A'`..`'F'` (U+0041..U+0046)
+    /// - A lowercase letter `'a'`..`'f'` (U+0061..0066)
     UnicodeEscHexDigit,
 }
 
@@ -241,14 +343,14 @@ impl fmt::Display for Expect {
             Self::DigitOrBoundary => {
                 write!(f, "digit character '0'..'9', boundary character, or EOF")
             }
+            Self::DigitOrExpSign => write!(
+                f,
+                "exponent sign character '+' or '-', or exponent digit character '0'..'9'"
+            ),
             Self::DotOrBoundary => write!(f, "character '.', boundary character, or EOF"),
             Self::EscChar => write!(
                 f,
                 "escape sequence character '\\', '\"', '/', 'r', 'n', 't', or 'u'"
-            ),
-            Self::ExpSignOrDigit => write!(
-                f,
-                "exponent sign character '+' or '-', or exponent digit character '0'..'9'"
             ),
             Self::StrChar => write!(f, "string character"),
             Self::TokenStartChar => write!(f, "token start character"),
@@ -348,7 +450,7 @@ impl ErrorKind {
     }
 
     pub(crate) fn expect_exp_sign_or_digit(actual: u8) -> ErrorKind {
-        let expect = Expect::ExpSignOrDigit;
+        let expect = Expect::DigitOrExpSign;
 
         ErrorKind::UnexpectedByte {
             token: Some(Token::Num),
@@ -357,7 +459,7 @@ impl ErrorKind {
         }
     }
 
-    pub(crate) fn expect_string_char(actual: u8) -> ErrorKind {
+    pub(crate) fn expect_str_char(actual: u8) -> ErrorKind {
         let expect = Expect::StrChar;
 
         ErrorKind::UnexpectedByte {
