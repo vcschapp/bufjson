@@ -167,7 +167,7 @@ impl fmt::Display for Token {
             Self::White => "whitespace",
         };
 
-        write!(f, "{s}")
+        f.write_str(s)
     }
 }
 
