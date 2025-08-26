@@ -647,7 +647,7 @@ impl Machine {
                     0xdc00..=0xdfff => {
                         self.state = InnerState::Err;
 
-                        State::Err(ErrorKind::BadSurrogate(c, None))
+                        State::Err(ErrorKind::BadSurrogate { first: c, second: None, offset: 5 })
                     }
                 }
             }
@@ -662,10 +662,10 @@ impl Machine {
 
             // If we don't get a reverse solidus signalling the start of the low surrogate after a
             // Unicode high surrogate sequence, it's an error.
-            (Str::EscHi(_), Some(c)) => {
+            (Str::EscHi(hi), Some(_)) => {
                 self.state = InnerState::Err;
 
-                State::Err(ErrorKind::expect_unicode_esc_lo_surrogate(c, '\\'))
+                State::Err(ErrorKind::BadSurrogate { first: hi, second: None, offset: 6 })
             }
 
             // Starting a Unicode escape sequence representing the low surrogate of a surrogate
@@ -678,10 +678,10 @@ impl Machine {
 
             // If we don't get a '\u' signalling the start of the low surrogate after a Unicode high
             // surrogate sequence, it's an error.
-            (Str::EscLoEsc(_), Some(c)) => {
+            (Str::EscLoEsc(hi), Some(_)) => {
                 self.state = InnerState::Err;
 
-                State::Err(ErrorKind::expect_unicode_esc_lo_surrogate(c, 'u'))
+                State::Err(ErrorKind::BadSurrogate { first: hi, second: None, offset: 7 })
             }
 
             // [1/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
@@ -707,9 +707,9 @@ impl Machine {
 
             // [4/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
             (Str::EscLoEscU3(hi, acc), Some(x)) if Self::is_hex_byte(x) => {
-                let lo = acc << 4 | lexical::hex2u16(x);
+                let c = acc << 4 | lexical::hex2u16(x);
 
-                match lo {
+                match c {
                     0xdc00..=0xdfff => {
                         self.state = InnerState::Str(Str::Ready { escaped: true });
 
@@ -719,7 +719,7 @@ impl Machine {
                     _ => {
                         self.state = InnerState::Err;
 
-                        State::Err(ErrorKind::BadSurrogate(hi, Some(lo)))
+                        State::Err(ErrorKind::BadSurrogate { first: hi, second: Some(c), offset: 5 })
                     }
                 }
             }
@@ -1288,5 +1288,58 @@ mod tests {
         assert_eq!(input.len(), mach.pos().offset);
         assert_eq!(line, mach.pos().line);
         assert_eq!(col, mach.pos().col);
+    }
+
+    #[rstest]
+    #[case(r#""\uDC00""#, 0xdc00, None, 5, 6)]
+    #[case(r#""\udc00""#, 0xdc00, None, 5, 6)]
+    #[case(r#""\uDFFF""#, 0xdfff, None, 5, 6)]
+    #[case(r#""\udfff""#, 0xdfff, None, 5, 6)]
+    #[case(r#""\uD800""#, 0xd800, None, 6, 7)]
+    #[case(r#""\ud800""#, 0xd800, None, 6, 7)]
+    #[case(r#""\uDBFF""#, 0xdbff, None, 6, 7)]
+    #[case(r#""\udbff""#, 0xdbff, None, 6, 7)]
+    #[case(r#""\uD800x""#, 0xd800, None, 6, 7)]
+    #[case(r#""\ud800x""#, 0xd800, None, 6, 7)]
+    #[case(r#""\uDBFFx""#, 0xdbff, None, 6, 7)]
+    #[case(r#""\udbffx""#, 0xdbff, None, 6, 7)]
+    #[case(r#""\uD800\""#, 0xd800, None, 7, 8)]
+    #[case(r#""\ud800\""#, 0xd800, None, 7, 8)]
+    #[case(r#""\uDBFF\""#, 0xdbff, None, 7, 8)]
+    #[case(r#""\udbff\""#, 0xdbff, None, 7, 8)]
+    #[case(r#""\uD800\/""#, 0xd800, None, 7, 8)]
+    #[case(r#""\ud800\t""#, 0xd800, None, 7, 8)]
+    #[case(r#""\uDBFF\r""#, 0xdbff, None, 7, 8)]
+    #[case(r#""\udbff\n""#, 0xdbff, None, 7, 8)]
+    #[case(r#""\uD800\ud800""#, 0xd800, Some(0xd800), 5, 12)]
+    #[case(r#""\uD800\uDBFF""#, 0xd800, Some(0xdbff), 5, 12)]
+    #[case(r#""\udbff\ue000""#, 0xdbff, Some(0xe000), 5, 12)]
+    #[case(r#""\udbff\u0000""#, 0xdbff, Some(0x0000), 5, 12)]
+    fn test_single_error_bad_surrogate(#[case] input: &str, #[case] first: u16, #[case] second: Option<u16>, #[case] offset: u8, #[case] trigger_offset: usize) {
+        let mut mach = Machine::default();
+
+        assert_eq!(Pos::default(), *mach.pos());
+
+        let mut iter = input.bytes().enumerate();
+
+        let b = loop {
+            let (i, b) = iter.next().unwrap();
+            if i == trigger_offset {
+                break b;
+            }
+
+            let s = mach.next(Some(b));
+
+            assert_eq!(State::Mid, s, "i={i}");
+
+            assert_eq!(i + 1, mach.pos().offset, "i={i}");
+            assert_eq!(1, mach.pos().line, "i={i}");
+            assert_eq!(i + 2, mach.pos().col, "i={i}");
+        };
+
+        let s = mach.next(Some(b));
+
+        assert!(matches!(s, State::Err(ErrorKind::BadSurrogate { first: f, second: s, offset: o }) if f == first && s == second && o == offset as u8), "s = {s:?}, but first = {first:?}, second = {second:?}, and offset = {offset} at {}", mach.pos());
+        assert_eq!(Pos { offset: trigger_offset, line: 1, col: trigger_offset + 1 }, *mach.pos());
     }
 }

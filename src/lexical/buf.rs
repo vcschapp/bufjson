@@ -137,6 +137,16 @@ pub struct Error {
     pos: Pos,
 }
 
+impl Error {
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
+    }
+
+    pub fn pos(&self) -> &Pos {
+        &self.pos
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.kind.fmt_at(f, Some(&self.pos))
@@ -147,11 +157,11 @@ impl std::error::Error for Error {}
 
 impl lexical::Error for Error {
     fn kind(&self) -> ErrorKind {
-        self.kind
+        Error::kind(self)
     }
 
     fn pos(&self) -> &Pos {
-        &self.pos
+        Error::pos(self)
     }
 }
 
@@ -242,7 +252,20 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
                 }
 
                 state::State::Err(kind) => {
-                    let pos = *self.mach.pos();
+                    let mut pos = *self.mach.pos();
+
+                    match &kind {
+                        ErrorKind::BadSurrogate { first: _, second: _, offset } => {
+                            pos.offset -= *offset as usize;
+                            pos.col -= *offset as usize;
+                        },
+
+                        ErrorKind::BadUtf8ContByte { seq_len: _, offset, value: _ } => {
+                            pos.offset -= *offset as usize;
+                        },
+
+                        _ => (),
+                    }
 
                     self.value = StoredValue::Err(Error { kind, pos });
 
@@ -460,7 +483,7 @@ mod tests {
     #[case("\"\u{10000}\"")] // Lowest four-byte UTF-8 character
     #[case("\"\u{10ffff}\"")] // Highest valid Unicode scalar value
     fn test_utf8_seq(#[case] input: &str) {
-        // With value fetch.
+        // With content fetch.
         {
             let mut an = BufAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
@@ -468,10 +491,10 @@ mod tests {
             assert_eq!(Token::Str, an.next());
             assert_eq!(Pos::default(), *an.pos());
 
-            let mut value = an.content().unwrap();
-            assert_eq!(input, value.literal());
-            assert!(!value.is_escaped());
-            assert_eq!(input, value.unescaped());
+            let mut content = an.content().unwrap();
+            assert_eq!(input, content.literal());
+            assert!(!content.is_escaped());
+            assert_eq!(input, content.unescaped());
 
             assert_eq!(Token::Eof, an.next());
             assert_eq!(
@@ -543,7 +566,7 @@ mod tests {
     #[case("\t\r", 2, 1)]
     #[case("\r\t", 2, 2)]
     fn test_whitespace_multiline(#[case] input: &str, #[case] line: usize, #[case] col: usize) {
-        // With value fetch.
+        // With content fetch.
         {
             let mut an = BufAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
@@ -551,10 +574,10 @@ mod tests {
             assert_eq!(Token::White, an.next());
             assert_eq!(Pos::default(), *an.pos());
 
-            let mut value = an.content().unwrap();
-            assert_eq!(input, value.literal());
-            assert!(!value.is_escaped());
-            assert_eq!(input, value.unescaped());
+            let mut content = an.content().unwrap();
+            assert_eq!(input, content.literal());
+            assert!(!content.is_escaped());
+            assert_eq!(input, content.unescaped());
 
             assert_eq!(Token::Eof, an.next());
             assert_eq!(
@@ -827,18 +850,18 @@ mod tests {
             assert_eq!(t1.token, an.next());
             assert_eq!(t1.pos, *an.pos());
 
-            let mut value1 = an.content().unwrap();
-            assert_eq!(t1.literal, value1.literal());
-            assert_eq!(t1.is_escaped(), value1.is_escaped());
-            assert_eq!(t1.unescaped, value1.unescaped());
+            let mut content1 = an.content().unwrap();
+            assert_eq!(t1.literal, content1.literal());
+            assert_eq!(t1.is_escaped(), content1.is_escaped());
+            assert_eq!(t1.unescaped, content1.unescaped());
 
             assert_eq!(t2.token, an.next());
             assert_eq!(t2.pos, *an.pos());
 
-            let mut value2 = an.content().unwrap();
-            assert_eq!(t2.literal, value2.literal());
-            assert_eq!(t2.is_escaped(), value2.is_escaped());
-            assert_eq!(t2.unescaped, value2.unescaped());
+            let mut content2 = an.content().unwrap();
+            assert_eq!(t2.literal, content2.literal());
+            assert_eq!(t2.is_escaped(), content2.is_escaped());
+            assert_eq!(t2.unescaped, content2.unescaped());
 
             assert_eq!(Token::Eof, an.next());
             assert_eq!(
@@ -904,6 +927,61 @@ mod tests {
 
         fn is_escaped(&self) -> bool {
             self.unescaped != self.literal
+        }
+    }
+
+    #[rstest]
+    #[case(r#""\uDC00""#, 0xdc00, None, 5, 1)]
+    #[case(r#""\udc00""#, 0xdc00, None, 5, 1)]
+    #[case(r#""\uDFFF""#, 0xdfff, None, 5, 1)]
+    #[case(r#""\udfff""#, 0xdfff, None, 5, 1)]
+    #[case(r#""\uD800""#, 0xd800, None, 6, 1)]
+    #[case(r#""\ud800""#, 0xd800, None, 6, 1)]
+    #[case(r#""\uDBFF""#, 0xdbff, None, 6, 1)]
+    #[case(r#""\udbff""#, 0xdbff, None, 6, 1)]
+    #[case(r#""\uD800x""#, 0xd800, None, 6, 1)]
+    #[case(r#""\ud800x""#, 0xd800, None, 6, 1)]
+    #[case(r#""\uDBFFx""#, 0xdbff, None, 6, 1)]
+    #[case(r#""\udbffx""#, 0xdbff, None, 6, 1)]
+    #[case(r#""\uD800\""#, 0xd800, None, 7, 1)]
+    #[case(r#""\ud800\""#, 0xd800, None, 7, 1)]
+    #[case(r#""\uDBFF\""#, 0xdbff, None, 7, 1)]
+    #[case(r#""\udbff\""#, 0xdbff, None, 7, 1)]
+    #[case(r#""\uD800\/""#, 0xd800, None, 7, 1)]
+    #[case(r#""\ud800\t""#, 0xd800, None, 7, 1)]
+    #[case(r#""\uDBFF\r""#, 0xdbff, None, 7, 1)]
+    #[case(r#""\udbff\n""#, 0xdbff, None, 7, 1)]
+    #[case(r#""\uD800\ud800""#, 0xd800, Some(0xd800), 5, 7)]
+    #[case(r#""\uD800\uDBFF""#, 0xd800, Some(0xdbff), 5, 7)]
+    #[case(r#""\udbff\ue000""#, 0xdbff, Some(0xe000), 5, 7)]
+    #[case(r#""\udbff\u0000""#, 0xdbff, Some(0x0000), 5, 7)]
+    fn test_single_error_bad_surrogate(#[case] input: &str, #[case] first: u16, #[case] second: Option<u16>, #[case] kind_offset: u8, #[case] pos_offset: usize) {
+        // With content fetch.
+        {
+            let mut an = BufAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            let err = an.content().err().unwrap();
+            assert_eq!(ErrorKind::BadSurrogate { first, second, offset: kind_offset }, err.kind());
+            assert_eq!(Pos { offset: pos_offset, line: 1, col:pos_offset + 1 }, *err.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+        }
+
+        // Without value fetch.
+        {
+            let mut an = BufAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
         }
     }
 }

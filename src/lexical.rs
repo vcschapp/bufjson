@@ -186,7 +186,7 @@ impl fmt::Display for Token {
 pub trait Content {
     /// Returns the literal content of the token exactly as it appears in the JSON text.
     ///
-    /// # Static value tokens
+    /// # Static content tokens
     ///
     /// For token types with a static text content, *e.g.* [`Token::NameSep`], the value returned
     /// is the static content.
@@ -388,14 +388,24 @@ impl fmt::Display for Expect {
 pub enum ErrorKind {
     /// A Unicode escape sequence of the form `\uLLLL` or `\uHHHH\uLLLL`within a
     /// [string token][Token::Str] has a bad Unicode surrogate.
-    ///
-    /// - If the second element is `None`, the first element is a low surrogate from an escape
-    ///   sequence `\uLLLL` that is not preceded in the JSON text by a valid high surrogate escape
-    ///   sequence.
-    /// - If the second element is `Some`, the first element is a valid high surrogate from a high
-    ///   surrogate escape sequence `\uHHHH` and the second element the invalid low surrogate escape
-    ///   sequence `\uLLLL` that followed it.
-    BadSurrogate(u16, Option<u16>),
+    BadSurrogate {
+        /// The 16-bit number read from the first Unicode escape sequence.
+        ///
+        /// This will always be a valid Unicode surrogate code unit, either a high surrogate or a
+        /// low surrogate code pair.
+        first: u16,
+
+        /// The 16-bit number read from Unicode escape sequence that immediately followed the first
+        /// escape sequence (if there was one).
+        ///
+        /// This may be a Unicode high surrogate code unit, or it may be a valid Unicode code point,
+        /// but will never be a low surrogate code unit.
+        second: Option<u16>,
+
+        /// Byte offset from the start of the last Unicode escape sequence (`first` if `second` is
+        /// `None, otherwise `second`) where the error was detected.
+        offset: u8,
+    },
 
     /// A UTF-8 continuation byte within a [string token][Token::Str] has an invalid value.
     BadUtf8ContByte {
@@ -538,26 +548,23 @@ impl ErrorKind {
         }
     }
 
-    pub(crate) fn expect_unicode_esc_lo_surrogate(actual: u8, expect: char) -> ErrorKind {
-        let expect = Expect::Char(expect);
-
-        ErrorKind::UnexpectedByte {
-            token: Some(Token::Str),
-            expect,
-            actual,
-        }
-    }
-
     pub(crate) fn fmt_at(&self, f: &mut fmt::Formatter, pos: Option<&Pos>) -> fmt::Result {
         match self {
-            Self::BadSurrogate(hi, None) => {
+            Self::BadSurrogate{ first: lo, second: None, offset: _} if (0xdc00..=0xdfff).contains(lo) => {
                 write!(
                     f,
-                    "bad Unicode escape sequence: low surrogate '\\u{hi:04X}' without preceding high surrogate"
+                    "bad Unicode escape sequence: low surrogate '\\u{lo:04X}' without preceding high surrogate"
                 )?;
             }
 
-            Self::BadSurrogate(hi, Some(lo)) => {
+            Self::BadSurrogate { first: hi, second: None, offset: _ } => {
+                write!(
+                    f,
+                    "bad Unicode escape sequence: high surrogate '\\u{hi:04X}' not followed by low surrogate"
+                )?;
+            }
+
+            Self::BadSurrogate{ first: hi, second: Some(lo), offset: _ } => {
                 write!(
                     f,
                     "bad Unicode escape sequence surogate pair: high surrogate '\\u{hi:04X}' followed by invalid low surrogate '\\u{lo:04X}'"
