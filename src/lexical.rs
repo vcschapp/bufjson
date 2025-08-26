@@ -120,19 +120,19 @@ impl Token {
         }
     }
 
-    /// Returns the static text for lexical tokens that always have the same static text.
+    /// Returns the static content for lexical tokens that always have the same static text content.
     ///
     /// # Examples
     ///
     /// ```
     /// # use bufjson::lexical::Token;
-    /// assert_eq!(Some("["), Token::ArrBegin.static_text());
-    /// assert_eq!(Some("true"), Token::LitTrue.static_text());
+    /// assert_eq!(Some("["), Token::ArrBegin.static_content());
+    /// assert_eq!(Some("true"), Token::LitTrue.static_content());
     ///
-    /// assert_eq!(None, Token::Str.static_text());
-    /// assert_eq!(None, Token::White.static_text());
+    /// assert_eq!(None, Token::Str.static_content());
+    /// assert_eq!(None, Token::White.static_content());
     /// ```
-    pub fn static_text(&self) -> Option<&'static str> {
+    pub fn static_content(&self) -> Option<&'static str> {
         match self {
             Self::ArrBegin => Some("["),
             Self::ArrEnd => Some("]"),
@@ -171,10 +171,10 @@ impl fmt::Display for Token {
     }
 }
 
-/// JSON lexical token value.
+/// Text content of a JSON token.
 ///
-/// Contains the actual *value* of the JSON token read from the JSON text. This is in distinction to
-/// [`Token`], which only indicates the *type* of the token.
+/// Contains the actual textual *content* of the JSON token read from the JSON text. This is in
+/// distinction to [`Token`], which only indicates the *type* of the token.
 ///
 /// For example, consider the following JSON text:
 ///
@@ -182,14 +182,14 @@ impl fmt::Display for Token {
 /// "foo"
 /// ```
 ///
-/// The above JSON text contains one token whose type is [`Token::Str`] and whose value is `"foo"`.
-pub trait Value {
-    /// Returns the literal value of the token exactly as it appears in the JSON text.
+/// The above JSON text contains one token whose type is [`Token::Str`] and whose content is `"foo"`.
+pub trait Content {
+    /// Returns the literal content of the token exactly as it appears in the JSON text.
     ///
-    /// # Fixed value tokens
+    /// # Static value tokens
     ///
-    /// For token types with a fixed literal value, *e.g.* [`Token::NameSep`], the value returned
-    /// is the fixed value.
+    /// For token types with a static text content, *e.g.* [`Token::NameSep`], the value returned
+    /// is the static content.
     ///
     /// # Numbers
     ///
@@ -226,15 +226,15 @@ pub trait Value {
     /// For the pseudo-token [`Token::Eof`], the value is the empty string.
     fn literal(&self) -> &str;
 
-    /// Indicates whether the token value contains escape sequences.
+    /// Indicates whether the token content contains escape sequences.
     ///
     /// This method must always return `false` for all token types except [`Token::Str`]. For
     /// [`Token::Str`], it must return `true` if the literal text of the string token contains at
     /// least one escape sequence, and `false` otherwise.
     fn is_escaped(&self) -> bool;
 
-    /// Returns a normalized version of [`literal`] with all escape sequences encountered in the
-    /// JSON text fully expanded.
+    /// Returns a normalized version of [`literal`] with all escape sequences  in the JSON text
+    /// fully expanded.
     ///
     /// For non-string tokens, and string tokens for which [`is_escaped`] returns `false`, this
     /// method does nothing and simply returns the same value returned by [`literal`].
@@ -635,31 +635,31 @@ pub trait Error: std::error::Error {
 ///
 /// Converts JSON text into a stream of lexical tokens.
 pub trait Analyzer {
-    /// The type that contains token values, returned by the [`value`] method.
+    /// The type that contains token content, returned by the [`content`] method.
     ///
-    /// [`value`]: method@Self::value
-    type Value: Value;
+    /// [`content`]: method@Self::content
+    type Content: Content;
 
-    /// The type that reports errors during the lexical analysis process, returned by the [`value`]
+    /// The type that reports errors during the lexical analysis process, returned by the [`content`]
     /// method.
     ///
-    /// [`value`]: method@Self::value
+    /// [`content`]: method@Self::content
     type Error: Error;
 
     /// Recognizes the next lexical token in the JSON text.
     ///
     /// Returns the type of the token recognized. After this method returns, the text content of the
-    /// recognized token can be obtained by calling the [`value`] method.
+    /// recognized token can be obtained by calling the [`content`] method.
     ///
     /// If the end of the JSON text is reached, without encountering an error, the token type
     /// returned is `Token::Eof`; and this token type is also returned on all subsequent calls. For
-    /// `Token::Eof`, the [`value`] method returns an `Ok` result containing empty text.
+    /// `Token::Eof`, the [`content`] method returns an `Ok` result containing empty text.
     ///
     /// If an error is encountered while analyzing the JSON text, the token type returned is
     /// `Token::Err`; and this token type is also returned on all subsequent calls. For
-    /// `Token::Err`, the [`value`] method returns an `Ok` result containing empty text.
+    /// `Token::Err`, the [`content`] method returns an `Ok` result containing empty text.
     ///
-    /// [`value`]: method@Self::value
+    /// [`content`]: method@Self::content
     ///
     /// # Performance considerations
     ///
@@ -689,7 +689,7 @@ pub trait Analyzer {
     /// token is not needed for some reason, the best course is not to call this method at all.
     ///
     /// [`next`]: method@Self::next
-    fn value(&self) -> Result<Self::Value, Self::Error>;
+    fn content(&self) -> Result<Self::Content, Self::Error>;
 
     /// Returns the position of the lexical analyzer's cursor within the JSON text.
     ///
@@ -705,12 +705,12 @@ pub trait Analyzer {
 }
 
 pub trait AsyncAnalyzer {
-    type Value: Value;
+    type Content: Content;
     type Error: Error;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Token>>;
 
-    fn value(&self) -> Option<Result<Self::Value, Self::Error>>;
+    fn value(&self) -> Option<Result<Self::Content, Self::Error>>;
 
     fn pos(&self) -> Pos;
 }
@@ -860,8 +860,8 @@ mod tests {
     #[case(Token::Str, None)]
     #[case(Token::ValueSep, Some(","))]
     #[case(Token::White, None)]
-    fn test_token_static_text(#[case] token: Token, #[case] static_text: Option<&str>) {
-        assert_eq!(static_text, token.static_text());
+    fn test_token_static_content(#[case] token: Token, #[case] static_content: Option<&str>) {
+        assert_eq!(static_content, token.static_content());
     }
 
     #[rstest]

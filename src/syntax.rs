@@ -431,7 +431,7 @@ where
             (_, Token::Err) => {
                 let err = self
                     .lexer
-                    .value()
+                    .content()
                     .err()
                     .expect("lexer returned error token, must contain error value");
 
@@ -488,9 +488,9 @@ where
         }
     }
 
-    pub fn value(&self) -> Result<L::Value, Error> {
+    pub fn value(&self) -> Result<L::Content, Error> {
         match &self.value {
-            Value::Lazy => match self.lexer.value() {
+            Value::Lazy => match self.lexer.content() {
                 Ok(v) => Ok(v),
                 Err(_) => panic!("lexer must not be in an error state"),
             },

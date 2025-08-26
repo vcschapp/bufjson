@@ -52,9 +52,9 @@ impl<B: Deref<Target = [u8]>> Default for InnerValue<B> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Value<B: Deref<Target = [u8]>>(InnerValue<B>);
+pub struct Content<B: Deref<Target = [u8]>>(InnerValue<B>);
 
-impl<B: Deref<Target = [u8]>> Value<B> {
+impl<B: Deref<Target = [u8]>> Content<B> {
     fn from_static(s: &'static str) -> Self {
         Self(InnerValue::Static(s))
     }
@@ -86,7 +86,7 @@ impl<B: Deref<Target = [u8]>> Value<B> {
     }
 }
 
-impl<B: Deref<Target = [u8]>> super::Value for Value<B> {
+impl<B: Deref<Target = [u8]>> super::Content for Content<B> {
     fn literal(&self) -> &str {
         match &self.0 {
             InnerValue::Static(s) => s,
@@ -129,7 +129,7 @@ impl<B: Deref<Target = [u8]>> super::Value for Value<B> {
 }
 
 // Assert that `Value` does not grow beyond 48 bytes (six 64-bit words).
-const _: [(); 48] = [(); std::mem::size_of::<Value<Vec<u8>>>()];
+const _: [(); 48] = [(); std::mem::size_of::<Content<Vec<u8>>>()];
 
 #[derive(Copy, Clone, Debug)]
 pub struct Error {
@@ -210,7 +210,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
 }
 
 impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
-    type Value = Value<B>;
+    type Content = Content<B>;
     type Error = Error;
 
     fn next(&mut self) -> Token {
@@ -268,10 +268,10 @@ impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
         }
     }
 
-    fn value(&self) -> Result<Self::Value, Error> {
+    fn content(&self) -> Result<Self::Content, Error> {
         match &self.value {
-            StoredValue::Literal(s) => Ok(Value::from_static(s)),
-            StoredValue::Range(r, escaped) => Ok(Value::from_buf(&self.buf, r.clone(), *escaped)),
+            StoredValue::Literal(s) => Ok(Content::from_static(s)),
+            StoredValue::Range(r, escaped) => Ok(Content::from_buf(&self.buf, r.clone(), *escaped)),
             StoredValue::Err(err) => Err(*err),
         }
     }
@@ -285,7 +285,7 @@ impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexical::Value;
+    use crate::lexical::Content;
     use rstest::rstest;
 
     #[rstest]
@@ -373,7 +373,7 @@ mod tests {
             assert_eq!(expect, an.next());
             assert_eq!(Pos::default(), *an.pos());
 
-            let mut value = an.value().unwrap();
+            let mut value = an.content().unwrap();
             assert_eq!(input, value.literal());
             assert_eq!(unescaped.is_some(), value.is_escaped());
             if let Some(u) = unescaped {
@@ -453,7 +453,7 @@ mod tests {
             assert_eq!(Token::Str, an.next());
             assert_eq!(Pos::default(), *an.pos());
 
-            let mut value = an.value().unwrap();
+            let mut value = an.content().unwrap();
             assert_eq!(input, value.literal());
             assert!(!value.is_escaped());
             assert_eq!(input, value.unescaped());
@@ -536,7 +536,7 @@ mod tests {
             assert_eq!(Token::White, an.next());
             assert_eq!(Pos::default(), *an.pos());
 
-            let mut value = an.value().unwrap();
+            let mut value = an.content().unwrap();
             assert_eq!(input, value.literal());
             assert!(!value.is_escaped());
             assert_eq!(input, value.unescaped());
@@ -812,7 +812,7 @@ mod tests {
             assert_eq!(t1.token, an.next());
             assert_eq!(t1.pos, *an.pos());
 
-            let mut value1 = an.value().unwrap();
+            let mut value1 = an.content().unwrap();
             assert_eq!(t1.literal, value1.literal());
             assert_eq!(t1.is_escaped(), value1.is_escaped());
             assert_eq!(t1.unescaped, value1.unescaped());
@@ -820,7 +820,7 @@ mod tests {
             assert_eq!(t2.token, an.next());
             assert_eq!(t2.pos, *an.pos());
 
-            let mut value2 = an.value().unwrap();
+            let mut value2 = an.content().unwrap();
             assert_eq!(t2.literal, value2.literal());
             assert_eq!(t2.is_escaped(), value2.is_escaped());
             assert_eq!(t2.unescaped, value2.unescaped());
