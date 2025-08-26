@@ -197,23 +197,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
         self.buf
     }
 
-    #[inline(always)]
-    fn byte(&self) -> Option<u8> {
-        let offset = self.mach.pos().offset;
-
-        if offset < self.buf.len() {
-            Some(self.buf[offset])
-        } else {
-            None
-        }
-    }
-}
-
-impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
-    type Content = Content<B>;
-    type Error = Error;
-
-    fn next(&mut self) -> Token {
+    pub fn next(&mut self) -> Token {
         if matches!(self.value, StoredValue::Err(_)) {
             return Token::Err;
         }
@@ -268,7 +252,7 @@ impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
         }
     }
 
-    fn content(&self) -> Result<Self::Content, Error> {
+    pub fn content(&self) -> Result<Content<B>, Error> {
         match &self.value {
             StoredValue::Literal(s) => Ok(Content::from_static(s)),
             StoredValue::Range(r, escaped) => Ok(Content::from_buf(&self.buf, r.clone(), *escaped)),
@@ -277,8 +261,39 @@ impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
     }
 
     #[inline(always)]
-    fn pos(&self) -> &Pos {
+    pub fn pos(&self) -> &Pos {
         &self.value_pos
+    }
+
+    #[inline(always)]
+    fn byte(&self) -> Option<u8> {
+        let offset = self.mach.pos().offset;
+
+        if offset < self.buf.len() {
+            Some(self.buf[offset])
+        } else {
+            None
+        }
+    }
+}
+
+impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
+    type Content = Content<B>;
+    type Error = Error;
+
+    #[inline(always)]
+    fn next(&mut self) -> Token {
+        BufAnalyzer::next(self)
+    }
+
+    #[inline(always)]
+    fn content(&self) -> Result<Self::Content, Error> {
+        BufAnalyzer::content(self)
+    }
+
+    #[inline(always)]
+    fn pos(&self) -> &Pos {
+        BufAnalyzer::pos(self)
     }
 }
 
