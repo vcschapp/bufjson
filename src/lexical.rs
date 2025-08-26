@@ -5,7 +5,7 @@ use std::task::{Context, Poll};
 pub mod buf;
 pub mod state;
 
-/// JSON lexical token type, such as begin object (`{`), literal true (`true`), or string.
+/// Type of lexical token in a JSON text, such as begin object `{`, literal `true`, or string.
 ///
 /// This is a list of the JSON lexical token types as described in the [JSON spec][rfc]. The names
 /// of enumeration members are aligned with the names as they appear in the spec.
@@ -343,8 +343,7 @@ impl fmt::Display for Pos {
     }
 }
 
-/// Character or class of characters that a lexical analyzer expecs to see at the next input
-/// position.
+/// Character or class of characters expected at the next input position of a JSON text.
 ///
 /// This enumeration used to provide detail information for [`ErrorKind::UnexpectedByte`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -429,6 +428,8 @@ pub enum Expect {
     /// - A decimal digit character ([`Digit`])
     /// - An uppercase letter `'A'`..`'F'` (U+0041..U+0046)
     /// - A lowercase letter `'a'`..`'f'` (U+0061..0066)
+    ///
+    /// [`Digit`]: Expect::Digit
     UnicodeEscHexDigit,
 }
 
@@ -460,21 +461,49 @@ impl fmt::Display for Expect {
     }
 }
 
+/// Category of lexical error that can occur in a JSON text.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ErrorKind {
-    BadSurrogatePair(u16, Option<u16>),
-    BadUtf8Seq,
+    /// A Unicode escape sequence of the form `\uLLLL` or `\uHHHH\uLLLL`within a
+    /// [string token][Token::Str] has a bad Unicode surrogate.
+    ///
+    /// - If the second element is `None`, the first element is a low surrogate from an escape
+    ///   sequence `\uLLLL` that is not preceded in the JSON text by a valid high surrogate escape
+    ///   sequence.
+    /// - If the second element is `Some`, the first element is a valid high surrogate from a high
+    ///   surrogate escape sequence `\uHHHH` and the second element the invalid low surrogate escape
+    ///   sequence `\uLLLL` that followed it.
+    BadSurrogate(u16, Option<u16>),
+
+    /// A UTF-8 continuation byte within a [string token][Token::Str] has an invalid value.
     BadUtf8ContByte {
+        /// Length of the UTF-8 byte sequence.
         seq_len: u8,
+
+        /// Zero-based offset of the invalid byte value within the sequence.
         offset: u8,
+
+        /// Invalid byte value.
         value: u8,
     },
+
+    /// The underlying source of JSON text (*e.g.* a file or stream) reported an error when the
+    /// lexical analyzer tried to read the next block of JSON text to analyze.
     Read,
+
+    /// An unexpected byte was encountered in a token.
     UnexpectedByte {
+        /// Type of token within which the unexpected byte was encountered.
         token: Option<Token>,
+
+        /// Character or characters expected.
         expect: Expect,
+
+        /// The unexpected byte actually encountered.
         actual: u8,
     },
+
+    /// The JSON text ended abruptly in the middle of an incomplete lexical token.
     UnexpectedEof(Token),
 }
 
@@ -599,22 +628,18 @@ impl ErrorKind {
 
     pub(crate) fn fmt_at(&self, f: &mut fmt::Formatter, pos: Option<&Pos>) -> fmt::Result {
         match self {
-            Self::BadSurrogatePair(hi, None) => {
+            Self::BadSurrogate(hi, None) => {
                 write!(
                     f,
                     "bad Unicode escape sequence: low surrogate '\\u{hi:04X}' without preceding high surrogate"
                 )?;
             }
 
-            Self::BadSurrogatePair(hi, Some(lo)) => {
+            Self::BadSurrogate(hi, Some(lo)) => {
                 write!(
                     f,
                     "bad Unicode escape sequence surogate pair: high surrogate '\\u{hi:04X}' followed by invalid low surrogate '\\u{lo:04X}'"
                 )?;
-            }
-
-            Self::BadUtf8Seq => {
-                write!(f, "bad UTF-8 byte sequence")?;
             }
 
             Self::BadUtf8ContByte {
@@ -624,7 +649,7 @@ impl ErrorKind {
             } => {
                 write!(
                     f,
-                    "bad continuation byte 0x{value:02x} in {seq_len}-byte UTF-8 sequence (byte #{offset})"
+                    "bad UTF-8 continuation byte 0x{value:02x} in {seq_len}-byte UTF-8 sequence (byte #{offset})"
                 )?;
             }
 
@@ -675,20 +700,85 @@ impl fmt::Display for ErrorKind {
     }
 }
 
+/// An error encountered during lexical analysis of JSON text.
 pub trait Error: std::error::Error {
+    /// Returns the category of error.
     fn kind(&self) -> ErrorKind;
 
+    /// Returns the position in the JSON text where the error was encountered.
     fn pos(&self) -> &Pos;
 }
 
+/// Lexical analyzer for JSON text.
+///
+/// Converts JSON text into a stream of lexical tokens.
 pub trait Analyzer {
+    /// The type that contains token values, returned by the [`value`] method.
+    ///
+    /// [`value`]: method@Self::value
     type Value: Value;
+
+    /// The type that reports errors during the lexical analysis process, returned by the [`value`]
+    /// method.
+    ///
+    /// [`value`]: method@Self::value
     type Error: Error;
 
+    /// Recognizes the next lexical token in the JSON text.
+    ///
+    /// Returns the type of the token recognized. After this method returns, the text content of the
+    /// recognized token can be obtained by calling the [`value`] method.
+    ///
+    /// If the end of the JSON text is reached, without encountering an error, the token type
+    /// returned is `Token::Eof`; and this token type is also returned on all subsequent calls. For
+    /// `Token::Eof`, the [`value`] method returns an `Ok` result containing empty text.
+    ///
+    /// If an error is encountered while analyzing the JSON text, the token type returned is
+    /// `Token::Err`; and this token type is also returned on all subsequent calls. For
+    /// `Token::Err`, the [`value`] method returns an `Ok` result containing empty text.
+    ///
+    /// [`value`]: method@Self::value
+    ///
+    /// # Performance considerations
+    ///
+    /// Implementations of this method should not trigger an allocation unless an allocation is
+    /// required to read in more input from an underlying source of JSON text, *e.g.* a file or
+    /// stream. Outside this singular scenario, the process of recognizing the next JSON token
+    /// should never allocate.
     fn next(&mut self) -> Token;
 
+    /// Returns the text content of the token most recently recognized by [`next`].
+    ///
+    /// If the most recent call to `next` returned [`Token::Err`], an `Err` result is returned.
+    /// Otherwise, an `Ok` result containing the text content of the recognied lexical token is
+    /// returned.
+    ///
+    /// If called before any call to `next`, this method returns an `Ok` result containing empty
+    /// text.
+    ///
+    /// If called repeatedly between calls to `next`, subsequent calls return a value equivalent to
+    /// the value returned by the first call.
+    ///
+    /// # Performance considerations
+    ///
+    /// A call to this method may allocate, although implementations should avoid allocation if
+    /// possible. Therefore, it is best to cache the result of this method rather than calling it
+    /// repeatedly to fetch the same value between calls to `next`. If the text content of the last
+    /// token is not needed for some reason, the best course is not to call this method at all.
+    ///
+    /// [`next`]: method@Self::next
     fn value(&self) -> Result<Self::Value, Self::Error>;
 
+    /// Returns the position of the lexical analyzer's cursor within the JSON text.
+    ///
+    /// Before the first call to [`next`], the return value is [`Pos::default`].
+    ///
+    /// After `next` is called, the return value is the position of the first character of the
+    /// recognized token. In the case where `next` returns `Token::Err`, the return value is the
+    /// position of the first character of the token that was being recognized at the time when the
+    /// error was detected.
+    ///
+    /// [`next`]: method@Self::next
     fn pos(&self) -> &Pos;
 }
 

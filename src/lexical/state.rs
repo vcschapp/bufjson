@@ -647,7 +647,7 @@ impl Machine {
                     0xdc00..=0xdfff => {
                         self.state = InnerState::Err;
 
-                        State::Err(ErrorKind::BadSurrogatePair(c, None))
+                        State::Err(ErrorKind::BadSurrogate(c, None))
                     }
                 }
             }
@@ -719,7 +719,7 @@ impl Machine {
                     _ => {
                         self.state = InnerState::Err;
 
-                        State::Err(ErrorKind::BadSurrogatePair(hi, Some(lo)))
+                        State::Err(ErrorKind::BadSurrogate(hi, Some(lo)))
                     }
                 }
             }
