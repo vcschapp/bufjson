@@ -498,12 +498,18 @@ where
         }
     }
 
+    #[inline(always)]
     pub fn pos(&self) -> &Pos {
         self.lexer.pos()
     }
 
     pub fn context(&self) -> Context {
         self.context.clone()
+    }
+
+    #[inline(always)]
+    pub fn level(&self) -> usize {
+        self.context.len()
     }
 
     pub fn into_inner(self) -> L {
