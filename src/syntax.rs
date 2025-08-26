@@ -1,10 +1,10 @@
-use crate::lexical;
+use crate::{Pos, lexical};
 use bitvec::prelude::*;
 use std::fmt;
 use std::iter::Take;
 use std::sync::Arc;
 
-pub use crate::lexical::{Error as _, Pos, Token};
+pub use crate::lexical::{Error as _, Token};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
@@ -326,7 +326,7 @@ impl fmt::Display for ErrorKind {
 #[derive(Debug, Clone)]
 pub struct Error {
     kind: ErrorKind,
-    pos: lexical::Pos,
+    pos: Pos,
     source: Option<Arc<dyn std::error::Error + 'static>>,
 }
 
