@@ -1,3 +1,5 @@
+//! Convert a fixed-size in-memory buffer into a stream of JSON lexical tokens.
+
 use crate::lexical::{
     self, state, {Analyzer, ErrorKind, Pos, Token},
 };

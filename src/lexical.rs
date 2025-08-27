@@ -1,3 +1,5 @@
+//! Scan JSON text, extracting a stream of tokens (lexical analysis).
+
 use crate::Pos;
 use std::fmt;
 

@@ -1,6 +1,12 @@
-use crate::lexical;
+//! Simple state machine for lexical analysis of JSON text.
+//!
+//! This module contains the reusable finite state machine that underlies all implementations of
+//! [`lexical::Analyzer`] within the crate. You likely do not need to interact with this module
+//! directly *unless* you have a need to create *either* a custom `lexical::Analyzer` implementation
+//! *or* some other custom lexical scanner for JSON tokens and you want to reuse the state machine
+//! logic.
 
-use super::{ErrorKind, Pos, Token};
+use crate::lexical::{self, ErrorKind, Pos, Token};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum Num {
@@ -111,17 +117,34 @@ enum InnerState {
     WhiteCr,
 }
 
+/// Current state of a state machine.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum State {
+    /// The machine is in the middle of a lexical token and needs more input to finish it.
     Mid,
+
+    /// The machine has identified the end of a lexical token.
     End {
+        /// Type of lexical token whose end has been identified.
         token: Token,
+
+        /// Whether the token contains an escape sequence.
+        ///
+        /// This can only ever be `true` for a [string token][Token::Str]; and only then if the
+        /// string contains at least one escape sequence.
         escaped: bool,
+
+        /// Whether the input character passed to the last [`Machine::next`] call must be repeated
+        /// in the next [`Machine::next`] call to ensure that the start of the next token is
+        /// correctly recognized.
         repeat: bool,
     },
+
+    /// The machine has identified a lexical error.
     Err(ErrorKind),
 }
 
+/// Finite state machine for identifying lexical tokens in a JSON text.
 #[derive(Debug, Default, Clone)]
 pub struct Machine {
     state: InnerState,
@@ -129,6 +152,51 @@ pub struct Machine {
 }
 
 impl Machine {
+    /// Provides the input to the state machine and transitions it to its next state.
+    ///
+    /// A `Some` value represents an actual input byte; `None` represents the end of the input.
+    ///
+    /// # Example
+    ///
+    /// Recognizing a string token.
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, state::{Machine, State}};
+    ///
+    /// let mut mach = Machine::default();
+    /// _ = mach.next(Some(b'"')); // These state transitions are ignored to keep the example short,
+    /// _ = mach.next(Some(b'f')); // but normally you would not ignore any of them.
+    /// _ = mach.next(Some(b'o'));
+    /// _ = mach.next(Some(b'o'));
+    ///
+    /// let state = mach.next(Some(b'"'));
+    /// assert_eq!(State::End { token: Token::Str, escaped: false, repeat: false }, state);
+    /// ```
+    ///
+    /// Sometimes the last input character needs to be repeated at a token boundary. If this is
+    /// necessary, the machine will request it by setting the `repeat` field to `true` in
+    /// [`State::End`].
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, state::{Machine, State}};
+    ///
+    /// let mut mach = Machine::default();
+    /// _ = mach.next(Some(b'[')); // These state transitions are ignored to keep the example short,
+    /// _ = mach.next(Some(b't')); // but normally you would not ignore any of them.
+    /// _ = mach.next(Some(b'r'));
+    /// _ = mach.next(Some(b'u'));
+    /// _ = mach.next(Some(b'e'));
+    ///
+    /// let state = mach.next(Some(b']'));
+    /// assert_eq!(State::End { token: Token::LitTrue, escaped: false, repeat: true }, state);
+    ///
+    /// let state = mach.next(Some(b']')); // Repeat last input as indicated 👆 in previous state.
+    /// assert_eq!(State::End { token: Token::ArrEnd, escaped: false, repeat: false }, state);
+    ///
+    /// let state = mach.next(None); // End of input.
+    /// assert_eq!(State::End { token: Token::Eof, escaped: false, repeat: false }, state);
+    /// ```
+    #[must_use = "transition to a new state will be lost unless you handle it"]
     pub fn next(&mut self, b: Option<u8>) -> State {
         match self.state {
             InnerState::Start => self.start(b),
@@ -164,6 +232,21 @@ impl Machine {
         }
     }
 
+    /// Returns the current position of the state machine.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::{Pos, lexical::state::Machine};
+    ///
+    /// let mut mach = Machine::default();
+    /// assert_eq!(Pos::default(), *mach.pos());
+    ///
+    /// _ = mach.next(Some(b'1'));
+    /// _ = mach.next(Some(b'2'));
+    /// _ = mach.next(None);       // None indicates end of input.
+    /// assert_eq!(Pos { offset: 2, line: 1, col: 3 }, *mach.pos());
+    /// ```
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
         &self.pos

@@ -1,3 +1,5 @@
+//! Parse the structural meaning of a stream of JSON lexical tokens (syntactic analysis).
+
 use crate::{
     Pos,
     lexical::{self, Error as _, Token},
