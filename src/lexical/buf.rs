@@ -267,11 +267,14 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
                         }
 
                         ErrorKind::BadUtf8ContByte {
-                            seq_len: _,
-                            offset,
+                            seq_len,
+                            offset: _,
                             value: _,
                         } => {
-                            pos.offset -= *offset as usize;
+                            // Current `pos.offset` is at the end of the multibyte UTF-8 sequence.
+                            // Rewind it to the start of the sequence.
+                            let rewind = seq_len - 1;
+                            pos.offset -= rewind as usize;
                         }
 
                         _ => (),
@@ -1013,5 +1016,63 @@ mod tests {
             assert_eq!(Token::Err, an.next());
             assert_eq!(Pos::default(), *an.pos());
         }
+    }
+
+        #[rstest]
+    #[case(&[0xc2, 0xc0], 1)]
+    #[case(&[0xdf, 0xd0], 1)]
+    #[case(&[0xe0, 0x7f, 0x80], 1)]
+    #[case(&[0xe0, 0xc0, 0x80], 1)]
+    #[case(&[0xef, 0x7f, 0x80], 1)]
+    #[case(&[0xef, 0xc0, 0x80], 1)]
+    #[case(&[0xe0, 0x80, 0x7f], 2)]
+    #[case(&[0xe0, 0x80, 0xc0], 2)]
+    #[case(&[0xe0, 0xbf, 0x7f], 2)]
+    #[case(&[0xe0, 0xbf, 0xc0], 2)]
+    #[case(&[0xf0, 0x7f, 0x80, 0x80], 1)]
+    #[case(&[0xf0, 0xc0, 0x80, 0x80], 1)]
+    #[case(&[0xf4, 0x7f, 0x80, 0x80], 1)]
+    #[case(&[0xf4, 0xc0, 0x80, 0x80], 1)]
+    #[case(&[0xf0, 0x80, 0x7f, 0x80], 2)]
+    #[case(&[0xf0, 0x80, 0xc0, 0x80], 2)]
+    #[case(&[0xf0, 0xbf, 0x7f, 0x80], 2)]
+    #[case(&[0xf0, 0xbf, 0xc0, 0x80], 2)]
+    #[case(&[0xf0, 0x80, 0x80, 0x7f], 3)]
+    #[case(&[0xf0, 0x80, 0x80, 0xc0], 3)]
+    #[case(&[0xf0, 0xbf, 0xbf, 0x7f], 3)]
+    #[case(&[0xf0, 0xbf, 0xbf, 0xc0], 3)]
+    fn test_single_error_bad_utf8_cont_byte(#[case] input: &[u8], #[case] offset: u8) {
+        // Construct input buffer.
+        let mut buf = Vec::with_capacity(input.len() + 1);
+        buf.push(b'"');
+        buf.extend_from_slice(input);
+
+        // With content fetch.
+        {
+            let mut an = BufAnalyzer::new(buf.clone());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            let err = an.content().err().unwrap();
+            assert_eq!(
+                ErrorKind::BadUtf8ContByte { seq_len: input.len() as u8, offset, value: input[offset as usize] },
+                err.kind()
+            );
+            assert_eq!(
+                Pos {
+                    offset: 1,
+                    line: 1,
+                    col: 2, // Second column is the entire multi-byte UTF-8 sequence.
+                },
+                *err.pos()
+            );
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+        }
+
+        // Without value fetch.
     }
 }

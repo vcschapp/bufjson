@@ -156,7 +156,7 @@ impl Machine {
     ///
     /// A `Some` value represents an actual input byte; `None` represents the end of the input.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// Recognizing a string token.
     ///
@@ -1422,7 +1422,6 @@ mod tests {
         #[case] trigger_offset: usize,
     ) {
         let mut mach = Machine::default();
-
         assert_eq!(Pos::default(), *mach.pos());
 
         let mut iter = input.bytes().enumerate();
@@ -1454,6 +1453,83 @@ mod tests {
                 offset: trigger_offset,
                 line: 1,
                 col: trigger_offset + 1
+            },
+            *mach.pos()
+        );
+    }
+
+    #[rstest]
+    #[case(&[0xc2, 0xc0], 1)]
+    #[case(&[0xdf, 0xd0], 1)]
+    #[case(&[0xe0, 0x7f, 0x80], 1)]
+    #[case(&[0xe0, 0xc0, 0x80], 1)]
+    #[case(&[0xef, 0x7f, 0x80], 1)]
+    #[case(&[0xef, 0xc0, 0x80], 1)]
+    #[case(&[0xe0, 0x80, 0x7f], 2)]
+    #[case(&[0xe0, 0x80, 0xc0], 2)]
+    #[case(&[0xe0, 0xbf, 0x7f], 2)]
+    #[case(&[0xe0, 0xbf, 0xc0], 2)]
+    #[case(&[0xf0, 0x7f, 0x80, 0x80], 1)]
+    #[case(&[0xf0, 0xc0, 0x80, 0x80], 1)]
+    #[case(&[0xf4, 0x7f, 0x80, 0x80], 1)]
+    #[case(&[0xf4, 0xc0, 0x80, 0x80], 1)]
+    #[case(&[0xf0, 0x80, 0x7f, 0x80], 2)]
+    #[case(&[0xf0, 0x80, 0xc0, 0x80], 2)]
+    #[case(&[0xf0, 0xbf, 0x7f, 0x80], 2)]
+    #[case(&[0xf0, 0xbf, 0xc0, 0x80], 2)]
+    #[case(&[0xf0, 0x80, 0x80, 0x7f], 3)]
+    #[case(&[0xf0, 0x80, 0x80, 0xc0], 3)]
+    #[case(&[0xf0, 0xbf, 0xbf, 0x7f], 3)]
+    #[case(&[0xf0, 0xbf, 0xbf, 0xc0], 3)]
+    fn test_single_error_bad_utf8_cont_byte(#[case] input: &[u8], #[case] offset: u8) {
+        let mut mach = Machine::default();
+        assert_eq!(Pos::default(), *mach.pos());
+
+        // Start the string literal.
+        let s = mach.next(Some(b'"'));
+        assert_eq!(State::Mid, s);
+        assert_eq!(
+            Pos {
+                offset: 1,
+                line: 1,
+                col: 2
+            },
+            *mach.pos()
+        );
+
+        // Put in the first N-1 bytes.
+        for i in 0..input.len() - 1 {
+            let s = mach.next(Some(input[i]));
+            assert_eq!(State::Mid, s, "i={i}");
+            assert_eq!(
+                Pos {
+                    offset: i + 2,
+                    line: 1,
+                    col: 2
+                },
+                *mach.pos(),
+                "i={i}"
+            );
+        }
+
+        // Put in the last byte. This is the one that causes the error state to be observed, but it
+        // is not necessarily the one that causes the error state to occur.
+        let last_byte = *input.last().unwrap();
+        let s = mach.next(Some(last_byte));
+        let err_byte = input[offset as usize];
+        assert_eq!(
+            State::Err(ErrorKind::BadUtf8ContByte {
+                seq_len: input.len() as u8,
+                offset,
+                value: err_byte
+            }),
+            s
+        );
+        assert_eq!(
+            Pos {
+                offset: input.len(),
+                line: 1,
+                col: 2
             },
             *mach.pos()
         );
