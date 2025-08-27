@@ -1,10 +1,10 @@
-use std::fmt;
-use std::ops::Deref;
-use std::ops::Range;
-use std::sync::Arc;
-
 use crate::lexical::{
     self, state, {Analyzer, ErrorKind, Pos, Token},
+};
+use std::{
+    fmt,
+    ops::{Deref, Range},
+    sync::Arc,
 };
 
 #[derive(Debug)]
@@ -255,14 +255,22 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
                     let mut pos = *self.mach.pos();
 
                     match &kind {
-                        ErrorKind::BadSurrogate { first: _, second: _, offset } => {
+                        ErrorKind::BadSurrogate {
+                            first: _,
+                            second: _,
+                            offset,
+                        } => {
                             pos.offset -= *offset as usize;
                             pos.col -= *offset as usize;
-                        },
+                        }
 
-                        ErrorKind::BadUtf8ContByte { seq_len: _, offset, value: _ } => {
+                        ErrorKind::BadUtf8ContByte {
+                            seq_len: _,
+                            offset,
+                            value: _,
+                        } => {
                             pos.offset -= *offset as usize;
-                        },
+                        }
 
                         _ => (),
                     }
@@ -955,7 +963,13 @@ mod tests {
     #[case(r#""\uD800\uDBFF""#, 0xd800, Some(0xdbff), 5, 7)]
     #[case(r#""\udbff\ue000""#, 0xdbff, Some(0xe000), 5, 7)]
     #[case(r#""\udbff\u0000""#, 0xdbff, Some(0x0000), 5, 7)]
-    fn test_single_error_bad_surrogate(#[case] input: &str, #[case] first: u16, #[case] second: Option<u16>, #[case] kind_offset: u8, #[case] pos_offset: usize) {
+    fn test_single_error_bad_surrogate(
+        #[case] input: &str,
+        #[case] first: u16,
+        #[case] second: Option<u16>,
+        #[case] kind_offset: u8,
+        #[case] pos_offset: usize,
+    ) {
         // With content fetch.
         {
             let mut an = BufAnalyzer::new(input.as_bytes());
@@ -965,8 +979,22 @@ mod tests {
             assert_eq!(Pos::default(), *an.pos());
 
             let err = an.content().err().unwrap();
-            assert_eq!(ErrorKind::BadSurrogate { first, second, offset: kind_offset }, err.kind());
-            assert_eq!(Pos { offset: pos_offset, line: 1, col:pos_offset + 1 }, *err.pos());
+            assert_eq!(
+                ErrorKind::BadSurrogate {
+                    first,
+                    second,
+                    offset: kind_offset
+                },
+                err.kind()
+            );
+            assert_eq!(
+                Pos {
+                    offset: pos_offset,
+                    line: 1,
+                    col: pos_offset + 1
+                },
+                *err.pos()
+            );
 
             assert_eq!(Token::Err, an.next());
             assert_eq!(Pos::default(), *an.pos());

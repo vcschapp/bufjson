@@ -647,7 +647,11 @@ impl Machine {
                     0xdc00..=0xdfff => {
                         self.state = InnerState::Err;
 
-                        State::Err(ErrorKind::BadSurrogate { first: c, second: None, offset: 5 })
+                        State::Err(ErrorKind::BadSurrogate {
+                            first: c,
+                            second: None,
+                            offset: 5,
+                        })
                     }
                 }
             }
@@ -665,7 +669,11 @@ impl Machine {
             (Str::EscHi(hi), Some(_)) => {
                 self.state = InnerState::Err;
 
-                State::Err(ErrorKind::BadSurrogate { first: hi, second: None, offset: 6 })
+                State::Err(ErrorKind::BadSurrogate {
+                    first: hi,
+                    second: None,
+                    offset: 6,
+                })
             }
 
             // Starting a Unicode escape sequence representing the low surrogate of a surrogate
@@ -681,7 +689,11 @@ impl Machine {
             (Str::EscLoEsc(hi), Some(_)) => {
                 self.state = InnerState::Err;
 
-                State::Err(ErrorKind::BadSurrogate { first: hi, second: None, offset: 7 })
+                State::Err(ErrorKind::BadSurrogate {
+                    first: hi,
+                    second: None,
+                    offset: 7,
+                })
             }
 
             // [1/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
@@ -719,7 +731,11 @@ impl Machine {
                     _ => {
                         self.state = InnerState::Err;
 
-                        State::Err(ErrorKind::BadSurrogate { first: hi, second: Some(c), offset: 5 })
+                        State::Err(ErrorKind::BadSurrogate {
+                            first: hi,
+                            second: Some(c),
+                            offset: 5,
+                        })
                     }
                 }
             }
@@ -1315,7 +1331,13 @@ mod tests {
     #[case(r#""\uD800\uDBFF""#, 0xd800, Some(0xdbff), 5, 12)]
     #[case(r#""\udbff\ue000""#, 0xdbff, Some(0xe000), 5, 12)]
     #[case(r#""\udbff\u0000""#, 0xdbff, Some(0x0000), 5, 12)]
-    fn test_single_error_bad_surrogate(#[case] input: &str, #[case] first: u16, #[case] second: Option<u16>, #[case] offset: u8, #[case] trigger_offset: usize) {
+    fn test_single_error_bad_surrogate(
+        #[case] input: &str,
+        #[case] first: u16,
+        #[case] second: Option<u16>,
+        #[case] offset: u8,
+        #[case] trigger_offset: usize,
+    ) {
         let mut mach = Machine::default();
 
         assert_eq!(Pos::default(), *mach.pos());
@@ -1339,7 +1361,18 @@ mod tests {
 
         let s = mach.next(Some(b));
 
-        assert!(matches!(s, State::Err(ErrorKind::BadSurrogate { first: f, second: s, offset: o }) if f == first && s == second && o == offset as u8), "s = {s:?}, but first = {first:?}, second = {second:?}, and offset = {offset} at {}", mach.pos());
-        assert_eq!(Pos { offset: trigger_offset, line: 1, col: trigger_offset + 1 }, *mach.pos());
+        assert!(
+            matches!(s, State::Err(ErrorKind::BadSurrogate { first: f, second: s, offset: o }) if f == first && s == second && o == offset as u8),
+            "s = {s:?}, but first = {first:?}, second = {second:?}, and offset = {offset} at {}",
+            mach.pos()
+        );
+        assert_eq!(
+            Pos {
+                offset: trigger_offset,
+                line: 1,
+                col: trigger_offset + 1
+            },
+            *mach.pos()
+        );
     }
 }

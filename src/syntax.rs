@@ -1,10 +1,9 @@
-use crate::{Pos, lexical};
+use crate::{
+    Pos,
+    lexical::{self, Error as _, Token},
+};
 use bitvec::prelude::*;
-use std::fmt;
-use std::iter::Take;
-use std::sync::Arc;
-
-pub use crate::lexical::{Error as _, Token};
+use std::{fmt, iter::Take, sync::Arc};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]

@@ -1,7 +1,5 @@
 use crate::Pos;
 use std::fmt;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
 pub mod buf;
 pub mod state;
@@ -115,7 +113,12 @@ impl Token {
     /// ```
     pub fn is_punct(&self) -> bool {
         match self {
-            Self::ArrBegin | Self::ArrEnd | Self::NameSep | Self::ObjBegin | Self::ObjEnd | Self::ValueSep => true,
+            Self::ArrBegin
+            | Self::ArrEnd
+            | Self::NameSep
+            | Self::ObjBegin
+            | Self::ObjEnd
+            | Self::ValueSep => true,
             _ => false,
         }
     }
@@ -550,21 +553,33 @@ impl ErrorKind {
 
     pub(crate) fn fmt_at(&self, f: &mut fmt::Formatter, pos: Option<&Pos>) -> fmt::Result {
         match self {
-            Self::BadSurrogate{ first: lo, second: None, offset: _} if (0xdc00..=0xdfff).contains(lo) => {
+            Self::BadSurrogate {
+                first: lo,
+                second: None,
+                offset: _,
+            } if (0xdc00..=0xdfff).contains(lo) => {
                 write!(
                     f,
                     "bad Unicode escape sequence: low surrogate '\\u{lo:04X}' without preceding high surrogate"
                 )?;
             }
 
-            Self::BadSurrogate { first: hi, second: None, offset: _ } => {
+            Self::BadSurrogate {
+                first: hi,
+                second: None,
+                offset: _,
+            } => {
                 write!(
                     f,
                     "bad Unicode escape sequence: high surrogate '\\u{hi:04X}' not followed by low surrogate"
                 )?;
             }
 
-            Self::BadSurrogate{ first: hi, second: Some(lo), offset: _ } => {
+            Self::BadSurrogate {
+                first: hi,
+                second: Some(lo),
+                offset: _,
+            } => {
                 write!(
                     f,
                     "bad Unicode escape sequence surogate pair: high surrogate '\\u{hi:04X}' followed by invalid low surrogate '\\u{lo:04X}'"
@@ -709,17 +724,6 @@ pub trait Analyzer {
     ///
     /// [`next`]: method@Self::next
     fn pos(&self) -> &Pos;
-}
-
-pub trait AsyncAnalyzer {
-    type Content: Content;
-    type Error: Error;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Token>>;
-
-    fn value(&self) -> Option<Result<Self::Content, Self::Error>>;
-
-    fn pos(&self) -> Pos;
 }
 
 pub(crate) fn hex2u16(b: u8) -> u16 {
