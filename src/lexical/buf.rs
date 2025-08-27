@@ -57,6 +57,49 @@ impl<B: Deref<Target = [u8]>> Default for InnerValue<B> {
 pub struct Content<B: Deref<Target = [u8]>>(InnerValue<B>);
 
 impl<B: Deref<Target = [u8]>> Content<B> {
+    // TODO: Docs for all this.
+    pub fn literal(&self) -> &str {
+        match &self.0 {
+            InnerValue::Static(s) => s,
+            InnerValue::Inline(len, buf) => Self::inline_str(*len, buf),
+            InnerValue::NotEscaped(r) | InnerValue::Escaped(r) | InnerValue::UnEscaped(r, _) => {
+                r.as_str()
+            }
+        }
+    }
+
+    pub fn is_escaped(&self) -> bool {
+        matches!(self.0, InnerValue::Escaped(_) | InnerValue::UnEscaped(_, _))
+    }
+
+    pub fn unescaped(&mut self) -> &str {
+        if let InnerValue::Escaped(_) = &self.0 {
+            match std::mem::take(&mut self.0) {
+                InnerValue::Escaped(r) => {
+                    let mut buf = Vec::new();
+                    lexical::unescape(r.as_str(), &mut buf);
+
+                    // SAFETY: `r` was valid UTF-8 before it was de-escaped, and the de-escaping process
+                    //         maintains UTF-8 safety.
+                    let s = unsafe { String::from_utf8_unchecked(buf) };
+
+                    self.0 = InnerValue::UnEscaped(r, s);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        match &self.0 {
+            InnerValue::Static(s) => s,
+            InnerValue::Inline(len, buf) => Self::inline_str(*len, buf),
+            InnerValue::NotEscaped(r) => r.as_str(),
+            InnerValue::UnEscaped(_, s) => s,
+            InnerValue::Escaped(_) => unreachable!(),
+        }
+    }
+}
+
+impl<B: Deref<Target = [u8]>> Content<B> {
     fn from_static(s: &'static str) -> Self {
         Self(InnerValue::Static(s))
     }
@@ -88,45 +131,26 @@ impl<B: Deref<Target = [u8]>> Content<B> {
     }
 }
 
+impl<B: Deref<Target = [u8]>> fmt::Display for Content<B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.literal())
+    }
+}
+
 impl<B: Deref<Target = [u8]>> super::Content for Content<B> {
+    #[inline(always)]
     fn literal(&self) -> &str {
-        match &self.0 {
-            InnerValue::Static(s) => s,
-            InnerValue::Inline(len, buf) => Self::inline_str(*len, buf),
-            InnerValue::NotEscaped(r) | InnerValue::Escaped(r) | InnerValue::UnEscaped(r, _) => {
-                r.as_str()
-            }
-        }
+        Content::literal(self)
     }
 
+    #[inline(always)]
     fn is_escaped(&self) -> bool {
-        matches!(self.0, InnerValue::Escaped(_) | InnerValue::UnEscaped(_, _))
+        Content::is_escaped(self)
     }
 
+    #[inline(always)]
     fn unescaped(&mut self) -> &str {
-        if let InnerValue::Escaped(_) = &self.0 {
-            match std::mem::take(&mut self.0) {
-                InnerValue::Escaped(r) => {
-                    let mut buf = Vec::new();
-                    lexical::unescape(r.as_str(), &mut buf);
-
-                    // SAFETY: `r` was valid UTF-8 before it was de-escaped, and the de-escaping process
-                    //         maintains UTF-8 safety.
-                    let s = unsafe { String::from_utf8_unchecked(buf) };
-
-                    self.0 = InnerValue::UnEscaped(r, s);
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        match &self.0 {
-            InnerValue::Static(s) => s,
-            InnerValue::Inline(len, buf) => Self::inline_str(*len, buf),
-            InnerValue::NotEscaped(r) => r.as_str(),
-            InnerValue::UnEscaped(_, s) => s,
-            InnerValue::Escaped(_) => unreachable!(),
-        }
+        Content::unescaped(self)
     }
 }
 
@@ -336,7 +360,6 @@ impl<B: Deref<Target = [u8]>> Analyzer for BufAnalyzer<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexical::Content;
     use rstest::rstest;
 
     #[rstest]

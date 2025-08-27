@@ -13,4 +13,5 @@ categories = ["parsing", "encoding", "network-programming", "web-programming"]
 bitvec = { version = "^1.0.1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
+doc-comment = "^0.3.3"
 rstest = "^0.26.1"

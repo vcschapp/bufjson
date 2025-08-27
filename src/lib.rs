@@ -3,6 +3,11 @@ use std::fmt;
 pub mod lexical;
 pub mod syntax;
 
+#[cfg(doctest)]
+use doc_comment::doctest;
+#[cfg(doctest)]
+doctest!("../README.md");
+
 /// Position in an input buffer or stream.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Pos {
