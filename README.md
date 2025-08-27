@@ -1,5 +1,5 @@
 
-No frills, low-alloc, low-copy JSON lexer and syntax parser for fast stream parsing
+No frills, low-alloc, low-copy fast JSON lexer/parser for stream parsing
 
 # Examples
 
@@ -11,12 +11,12 @@ Tokenize JSON text from a fixed-size buffer.
 use bufjson::lexical::{Token, buf::BufAnalyzer};
 
 fn main() {
-    let mut scanner = BufAnalyzer::new(r#"{ "foo": "bar", "baz": [null, 123] }"#.as_bytes());
+    let mut lexer = BufAnalyzer::new(r#"{ "foo": "bar", "baz": [null, 123] }"#.as_bytes());
     loop {
-        let token = scanner.next();
+        let token = lexer.next();
         match token {
             Token::Eof | Token::Err => break,
-            _ => println!("{token:?} => {}", scanner.content().unwrap()),
+            _ => println!("{token:?} => {}", lexer.content().unwrap()),
         }
     }
 }
