@@ -416,7 +416,7 @@ mod tests {
         #[case] expect: Token,
         #[case] unescaped: Option<&str>,
     ) {
-        // With value fetch.
+        // With content fetch.
         {
             let mut an = BufAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
@@ -454,7 +454,7 @@ mod tests {
             );
         }
 
-        // Without value fetch.
+        // Without content fetch.
         {
             let mut an = BufAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
@@ -530,7 +530,7 @@ mod tests {
             );
         }
 
-        // Without value fetch.
+        // Without content fetch.
         {
             let mut an = BufAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
@@ -603,7 +603,7 @@ mod tests {
             );
         }
 
-        // Without value fetch.
+        // Without content fetch.
         {
             let mut an = BufAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
@@ -855,7 +855,7 @@ mod tests {
         #[case] line: usize,
         #[case] col: usize,
     ) {
-        // With value fetch.
+        // With content fetch.
         {
             let mut an = BufAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
@@ -887,7 +887,7 @@ mod tests {
             );
         }
 
-        // Without value fetch.
+        // Without content fetch.
         {
             let mut an = BufAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
@@ -1005,7 +1005,7 @@ mod tests {
             assert_eq!(Pos::default(), *an.pos());
         }
 
-        // Without value fetch.
+        // Without content fetch.
         {
             let mut an = BufAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
@@ -1073,6 +1073,16 @@ mod tests {
             assert_eq!(Pos::default(), *an.pos());
         }
 
-        // Without value fetch.
+        // Without content fetch.
+        {
+            let mut an = BufAnalyzer::new(buf.clone());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+        }
     }
 }
