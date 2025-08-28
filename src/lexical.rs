@@ -647,7 +647,7 @@ impl fmt::Display for ErrorKind {
 }
 
 /// An error encountered during lexical analysis of JSON text.
-pub trait Error: std::error::Error {
+pub trait Error: std::error::Error + Send + Sync {
     /// Returns the category of error.
     fn kind(&self) -> ErrorKind;
 

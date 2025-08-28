@@ -328,7 +328,7 @@ impl fmt::Display for ErrorKind {
 pub struct Error {
     kind: ErrorKind,
     pos: Pos,
-    source: Option<Arc<dyn std::error::Error + 'static>>,
+    source: Option<Arc<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
 impl fmt::Display for Error {
@@ -339,7 +339,9 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|arc| &**arc)
+        self.source
+            .as_ref()
+            .map(|arc| &**arc as &(dyn std::error::Error + 'static))
     }
 }
 
@@ -439,7 +441,7 @@ where
                 let (kind, source) = match err.kind() {
                     lexical::ErrorKind::Read => (
                         ErrorKind::Read,
-                        Some(Arc::new(err) as Arc<dyn std::error::Error + 'static>),
+                        Some(Arc::new(err) as Arc<dyn std::error::Error + Send + Sync + 'static>),
                     ),
                     _ => (ErrorKind::Lex(err.kind()), None),
                 };
