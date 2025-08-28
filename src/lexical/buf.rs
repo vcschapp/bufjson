@@ -192,13 +192,13 @@ impl lexical::Error for Error {
 }
 
 #[derive(Debug)]
-enum StoredValue {
+enum StoredContent {
     Literal(&'static str),
     Range(Range<usize>, bool),
     Err(Error),
 }
 
-impl Default for StoredValue {
+impl Default for StoredContent {
     fn default() -> Self {
         Self::Literal("")
     }
@@ -208,7 +208,7 @@ pub struct BufAnalyzer<B: Deref<Target = [u8]>> {
     buf: Arc<B>,
     mach: state::Machine,
     repeat: Option<u8>,
-    value: StoredValue,
+    value: StoredContent,
     value_pos: Pos,
 }
 
@@ -217,7 +217,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
         let buf = Arc::new(buf);
         let mach = state::Machine::default();
         let repeat = None;
-        let value = StoredValue::default();
+        let value = StoredContent::default();
         let value_pos = Pos::default();
 
         Self {
@@ -234,7 +234,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
     }
 
     pub fn next(&mut self) -> Token {
-        if matches!(self.value, StoredValue::Err(_)) {
+        if matches!(self.value, StoredContent::Err(_)) {
             return Token::Err;
         }
 
@@ -256,15 +256,15 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
                     repeat,
                 } => {
                     self.value = match token {
-                        Token::ObjBegin => StoredValue::Literal("{"),
-                        Token::ObjEnd => StoredValue::Literal("}"),
-                        Token::ArrBegin => StoredValue::Literal("["),
-                        Token::NameSep => StoredValue::Literal(":"),
-                        Token::ValueSep => StoredValue::Literal(","),
-                        Token::LitFalse => StoredValue::Literal("false"),
-                        Token::LitNull => StoredValue::Literal("null"),
-                        Token::LitTrue => StoredValue::Literal("true"),
-                        _ => StoredValue::Range(
+                        Token::ObjBegin => StoredContent::Literal("{"),
+                        Token::ObjEnd => StoredContent::Literal("}"),
+                        Token::ArrBegin => StoredContent::Literal("["),
+                        Token::NameSep => StoredContent::Literal(":"),
+                        Token::ValueSep => StoredContent::Literal(","),
+                        Token::LitFalse => StoredContent::Literal("false"),
+                        Token::LitNull => StoredContent::Literal("null"),
+                        Token::LitTrue => StoredContent::Literal("true"),
+                        _ => StoredContent::Range(
                             self.value_pos.offset..self.mach.pos().offset,
                             escaped,
                         ),
@@ -304,7 +304,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
                         _ => (),
                     }
 
-                    self.value = StoredValue::Err(Error { kind, pos });
+                    self.value = StoredContent::Err(Error { kind, pos });
 
                     return Token::Err;
                 }
@@ -314,9 +314,11 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
 
     pub fn content(&self) -> Result<Content<B>, Error> {
         match &self.value {
-            StoredValue::Literal(s) => Ok(Content::from_static(s)),
-            StoredValue::Range(r, escaped) => Ok(Content::from_buf(&self.buf, r.clone(), *escaped)),
-            StoredValue::Err(err) => Err(*err),
+            StoredContent::Literal(s) => Ok(Content::from_static(s)),
+            StoredContent::Range(r, escaped) => {
+                Ok(Content::from_buf(&self.buf, r.clone(), *escaped))
+            }
+            StoredContent::Err(err) => Err(*err),
         }
     }
 
@@ -1041,7 +1043,7 @@ mod tests {
         }
     }
 
-        #[rstest]
+    #[rstest]
     #[case(&[0xc2, 0xc0], 1)]
     #[case(&[0xdf, 0xd0], 1)]
     #[case(&[0xe0, 0x7f, 0x80], 1)]
@@ -1080,7 +1082,11 @@ mod tests {
 
             let err = an.content().err().unwrap();
             assert_eq!(
-                ErrorKind::BadUtf8ContByte { seq_len: input.len() as u8, offset, value: input[offset as usize] },
+                ErrorKind::BadUtf8ContByte {
+                    seq_len: input.len() as u8,
+                    offset,
+                    value: input[offset as usize]
+                },
                 err.kind()
             );
             assert_eq!(

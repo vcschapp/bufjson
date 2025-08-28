@@ -287,7 +287,7 @@ where
     }
 }
 
-enum Value {
+enum Content {
     Lazy,
     Err(Error),
 }
@@ -349,7 +349,7 @@ where
 {
     lexer: L,
     context: Context,
-    value: Value,
+    value: Content,
 }
 
 impl<L: lexical::Analyzer> Parser<L>
@@ -360,13 +360,13 @@ where
         Self {
             lexer,
             context: Context::default(),
-            value: Value::Lazy,
+            value: Content::Lazy,
         }
     }
 
     pub fn next(&mut self) -> Token {
         let token = self.lexer.next();
-        let mut value = Value::Lazy;
+        let mut value = Content::Lazy;
 
         match (self.context.expect, token) {
             (e, Token::ObjBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
@@ -444,7 +444,7 @@ where
                     _ => (ErrorKind::Lex(err.kind()), None),
                 };
 
-                value = Value::Err(Error {
+                value = Content::Err(Error {
                     kind,
                     pos: *self.lexer.pos(),
                     source,
@@ -452,7 +452,7 @@ where
             }
 
             (_, _) => {
-                value = Value::Err(Error {
+                value = Content::Err(Error {
                     kind: ErrorKind::Syn {
                         context: self.context.clone(),
                         token,
@@ -489,13 +489,13 @@ where
         }
     }
 
-    pub fn value(&self) -> Result<L::Content, Error> {
+    pub fn content(&self) -> Result<L::Content, Error> {
         match &self.value {
-            Value::Lazy => match self.lexer.content() {
+            Content::Lazy => match self.lexer.content() {
                 Ok(v) => Ok(v),
                 Err(_) => panic!("lexer must not be in an error state"),
             },
-            Value::Err(err) => Err(err.clone()),
+            Content::Err(err) => Err(err.clone()),
         }
     }
 
