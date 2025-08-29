@@ -39,7 +39,7 @@ const INLINE_LEN: usize = 39;
 type InlineBuf = [u8; INLINE_LEN];
 
 #[derive(Clone, Debug)]
-enum InnerValue<B: Deref<Target = [u8]>> {
+enum InnerContent<B: Deref<Target = [u8]>> {
     Static(&'static str),
     Inline(u8, InlineBuf),
     NotEscaped(Ref<B>),
@@ -47,35 +47,35 @@ enum InnerValue<B: Deref<Target = [u8]>> {
     UnEscaped(Ref<B>, String),
 }
 
-impl<B: Deref<Target = [u8]>> Default for InnerValue<B> {
+impl<B: Deref<Target = [u8]>> Default for InnerContent<B> {
     fn default() -> Self {
         Self::Static("")
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Content<B: Deref<Target = [u8]>>(InnerValue<B>);
+pub struct Content<B: Deref<Target = [u8]>>(InnerContent<B>);
 
 impl<B: Deref<Target = [u8]>> Content<B> {
     // TODO: Docs for all this.
     pub fn literal(&self) -> &str {
         match &self.0 {
-            InnerValue::Static(s) => s,
-            InnerValue::Inline(len, buf) => Self::inline_str(*len, buf),
-            InnerValue::NotEscaped(r) | InnerValue::Escaped(r) | InnerValue::UnEscaped(r, _) => {
+            InnerContent::Static(s) => s,
+            InnerContent::Inline(len, buf) => Self::inline_str(*len, buf),
+            InnerContent::NotEscaped(r) | InnerContent::Escaped(r) | InnerContent::UnEscaped(r, _) => {
                 r.as_str()
             }
         }
     }
 
     pub fn is_escaped(&self) -> bool {
-        matches!(self.0, InnerValue::Escaped(_) | InnerValue::UnEscaped(_, _))
+        matches!(self.0, InnerContent::Escaped(_) | InnerContent::UnEscaped(_, _))
     }
 
     pub fn unescaped(&mut self) -> &str {
-        if let InnerValue::Escaped(_) = &self.0 {
+        if let InnerContent::Escaped(_) = &self.0 {
             match std::mem::take(&mut self.0) {
-                InnerValue::Escaped(r) => {
+                InnerContent::Escaped(r) => {
                     let mut buf = Vec::new();
                     lexical::unescape(r.as_str(), &mut buf);
 
@@ -83,25 +83,25 @@ impl<B: Deref<Target = [u8]>> Content<B> {
                     //         maintains UTF-8 safety.
                     let s = unsafe { String::from_utf8_unchecked(buf) };
 
-                    self.0 = InnerValue::UnEscaped(r, s);
+                    self.0 = InnerContent::UnEscaped(r, s);
                 }
                 _ => unreachable!(),
             }
         }
 
         match &self.0 {
-            InnerValue::Static(s) => s,
-            InnerValue::Inline(len, buf) => Self::inline_str(*len, buf),
-            InnerValue::NotEscaped(r) => r.as_str(),
-            InnerValue::UnEscaped(_, s) => s,
-            InnerValue::Escaped(_) => unreachable!(),
+            InnerContent::Static(s) => s,
+            InnerContent::Inline(len, buf) => Self::inline_str(*len, buf),
+            InnerContent::NotEscaped(r) => r.as_str(),
+            InnerContent::UnEscaped(_, s) => s,
+            InnerContent::Escaped(_) => unreachable!(),
         }
     }
 }
 
 impl<B: Deref<Target = [u8]>> Content<B> {
     fn from_static(s: &'static str) -> Self {
-        Self(InnerValue::Static(s))
+        Self(InnerContent::Static(s))
     }
 
     fn from_buf(buf: &Arc<B>, r: Range<usize>, escaped: bool) -> Self {
@@ -114,14 +114,14 @@ impl<B: Deref<Target = [u8]>> Content<B> {
             let mut inner: InlineBuf = [0; INLINE_LEN];
             inner[..len].copy_from_slice(&buf[r]);
 
-            Self(InnerValue::Inline(len as u8, inner))
+            Self(InnerContent::Inline(len as u8, inner))
         } else {
             let r = Ref::new(Arc::clone(buf), r);
 
             return Self(if !escaped {
-                InnerValue::NotEscaped(r)
+                InnerContent::NotEscaped(r)
             } else {
-                InnerValue::Escaped(r)
+                InnerContent::Escaped(r)
             });
         }
     }
@@ -204,6 +204,76 @@ impl Default for StoredContent {
     }
 }
 
+/// A [`lexical::Analyzer`] to tokenize fixed buffers of JSON text.
+///
+/// Use `BufAnalyzer` for zero-allocation, low-copy, stream-oriented lexical analysis of any
+/// pre-allocated fixed-size buffer.
+///
+/// As with any [`lexical::Analyzer`] implementation, you can construct a [`syntax::Parser`] from a
+/// `BufAnalyzer` to unlock richer stream-oriented syntactic analysis while retaining low overhead
+/// guarantees of the underlying lexical analyzer.
+///
+/// # Performance considerations
+///
+/// The [`next`] method never allocates or copies and has very low overhead, above and beyond just
+/// examining the bytes of the next token in the buffer, for doing state transitions and remembering
+/// state.
+///
+/// The [`content`] method never allocates. For punctuation and literal tokens, it never copies. For
+/// number and string tokens, it may copy if the token is very short; otherwise, it just returns a
+/// reference-counted slice of the internal buffer that was passed to [`new`].
+///
+/// It should be noted that the `Content` structure returned by [`content`] is somewhat "fat", at
+/// 48 bytes; it is preferable not to fetch it for tokens where the content is either statically
+/// knowable (literals and punctuations) or not required (*e.g.* whitespace in some applications).
+///
+/// [Unescaping][`lexical::Content::unescaped`] a [`Content`] value that contains an escaped string
+/// token always allocates; but calling `unescape` on a `Content` value that does not contain any
+/// escape sequences is a no-op that neither allocates nor does any other work.
+///
+/// # Memory considerations
+///
+/// Because the [`Content`] for longer string and number tokens directly reference slices of the
+/// buffer, the buffer will not be dropped until all of these [`Content`] values are dropped.
+///
+/// # Examples
+///
+/// Scan a static string slice into tokens:
+///
+/// ```
+/// use bufjson::lexical::{Token, buf::BufAnalyzer};
+///
+/// let mut lexer = BufAnalyzer::new(r#"[123, "abc"]"#.as_bytes());
+///
+/// assert_eq!(Token::ArrBegin, lexer.next());
+/// assert_eq!(Token::Num, lexer.next());
+/// assert_eq!(Token::ValueSep, lexer.next());
+/// assert_eq!(Token::White, lexer.next());
+/// assert_eq!(Token::Str, lexer.next());
+/// assert_eq!(Token::ArrEnd, lexer.next());
+/// assert_eq!(Token::Eof, lexer.next());
+/// ```
+///
+/// Create a parser wrapping a `BufAnalyzer` that scans a `Vec<u8>`.
+///
+/// ```
+/// use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
+///
+/// let vec = b"  {\"flag\": true}".to_vec();
+/// let lexer = BufAnalyzer::new(vec);
+/// let mut parser = Parser::new(lexer);
+///
+/// assert_eq!(Token::ObjBegin, parser.next_meaningful());
+/// assert_eq!(Token::Str, parser.next_meaningful());
+/// assert_eq!(Token::LitTrue, parser.next_meaningful());
+/// assert_eq!(Token::ObjEnd, parser.next_meaningful());
+/// assert_eq!(Token::Eof, parser.next_meaningful());
+/// ```
+///
+/// [`syntax::Parser`]: crate::syntax::Parser
+/// [`new`]: method@Self::new
+/// [`next`]: method@Self::next
+/// [`content`]: method@Self::content
 pub struct BufAnalyzer<B: Deref<Target = [u8]>> {
     buf: Arc<B>,
     mach: state::Machine,
@@ -213,6 +283,19 @@ pub struct BufAnalyzer<B: Deref<Target = [u8]>> {
 }
 
 impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
+    /// Constructs a new lexer to tokenize the given buffer.
+    ///
+    /// The buffer can be anything that implements `Deref<Target = [u8]>`, including `&[u8]`,
+    /// `Vec<u8>`, `Cow<'_, [u8]>` and data types such as `bytes::Bytes` from the `bytes` crate.
+    /// For non-trivial tokens, the token [content][method@Self::content] is referenced directly
+    /// into the buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bufjson::lexical::buf::BufAnalyzer;
+    /// let mut lexer: BufAnalyzer<Vec<u8>> = BufAnalyzer::new(vec![b'n', b'u', b'l', b'l']);
+    /// ```
     pub fn new(buf: B) -> Self {
         let buf = Arc::new(buf);
         let mach = state::Machine::default();
@@ -229,6 +312,20 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
         }
     }
 
+    /// Recognizes the next lexical token in the buffer without allocating or copying.
+    ///
+    /// This is an inherent implementation of [`lexical::Analyzer::next`] for convenience, so it is
+    /// available even when you don't have the trait imported.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, buf::BufAnalyzer};
+    /// let mut lexer = BufAnalyzer::new(&b"99.9e-1"[..]);
+    /// assert_eq!(Token::Num, lexer.next());
+    /// assert_eq!(Token::Eof, lexer.next());
+    /// assert_eq!(Token::Eof, lexer.next()); // Once EOF is reached, it is returned to infinity.
+    /// ```
     pub fn next(&mut self) -> Token {
         if matches!(self.value, StoredContent::Err(_)) {
             return Token::Err;
@@ -308,6 +405,38 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
         }
     }
 
+    /// Fetches the content for the current lexical token without allocating.
+    ///
+    /// No copying is done except possibly for small number and string tokens. Larger number and
+    /// string tokens directly reference slices of the buffer.
+    ///
+    /// This is an inherent implementation of [`lexical::Analyzer::content`] for convenience, so it
+    /// is available even when you don't have the trait imported.
+    ///
+    /// # Example
+    ///
+    /// An `Ok` value is returned as long as the lexical analyzer isn't in an error state.
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, buf::BufAnalyzer};
+    /// let mut lexer = BufAnalyzer::new(&b"99.9e-1"[..]);
+    /// assert_eq!(Token::Num, lexer.next());
+    /// assert!(matches!(lexer.content(), Ok(c) if c.literal() == "99.9e-1"));
+    /// ```
+    ///
+    /// Once the lexical analyzer encounters a lexical error, it will return an `Err` value
+    /// describing that error.
+    ///
+    /// ```
+    /// use bufjson::{Pos, lexical::{Token, buf::BufAnalyzer}};
+    ///
+    /// let mut lexer = BufAnalyzer::new(&b"[unquoted]"[..]);
+    /// assert_eq!(Token::ArrBegin, lexer.next());
+    /// assert_eq!(Token::Err, lexer.next());
+    /// assert_eq!(Pos { offset: 1, line: 1, col: 2}, *lexer.content().unwrap_err().pos());
+    /// ```
+    ///
+    /// [`next`]: method@Self::next
     pub fn content(&self) -> Result<Content<B>, Error> {
         match &self.value {
             StoredContent::Literal(s) => Ok(Content::from_static(s)),
@@ -318,6 +447,54 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
         }
     }
 
+    /// Returns the position of the start of the token most scanned by [`next`].
+    ///
+    /// This is an inherent implementation of [`lexical::Analyzer::pos`] for convenience, so it is
+    /// available even when you don't have the trait imported.
+    ///
+    /// # Examples
+    ///
+    /// Before any token is scanned, the position is the default position.
+    ///
+    /// ```
+    /// # use bufjson::{Pos, lexical::buf::BufAnalyzer};
+    /// assert_eq!(Pos::default(), *BufAnalyzer::new(&b""[..]).pos());
+    /// ```
+    ///
+    /// The position of the first token returned is always the start of the buffer.
+    ///
+    /// ```
+    /// use bufjson::{Pos, lexical::{Token, buf::BufAnalyzer}};
+    ///
+    /// let mut lexer = BufAnalyzer::new(&b" \n"[..]);
+    ///
+    /// // Read the two-byte whitespace token that starts at offset 0.
+    /// assert_eq!(Token::White, lexer.next());
+    /// assert_eq!(Pos::default(), *lexer.pos());
+    ///
+    /// // The EOF token starts at the end of the whitespace token.
+    /// assert_eq!(Token::Eof, lexer.next());
+    /// assert_eq!(Pos { offset: 2, line: 2, col: 1}, *lexer.pos());
+    /// ```
+    ///
+    /// On errors, the position reported by `pos` may be different than the position reportecd by
+    /// the error returned from [`content`]. This is because the `pos` indicates the start of the
+    /// token where the error occurred, and the error position is the exact position of the error.
+    ///
+    /// ```
+    /// use bufjson::{Pos, lexical::{Token, buf::BufAnalyzer}};
+    ///
+    /// let mut lexer = BufAnalyzer::new(&b"123_"[..]);
+    ///
+    /// assert_eq!(Token::Err, lexer.next());
+    /// // `pos` is at the start of the number token that has the problem...
+    /// assert_eq!(Pos::default(), *lexer.pos());
+    /// // ...but the error contains the exact problem position: offset 3, column 4.
+    /// assert_eq!(Pos { offset: 3, line: 1, col: 4 }, *lexer.content().unwrap_err().pos())
+    /// ```
+    ///
+    /// [`next`]: method@Self::next
+    /// [`content`]: method@Self::content
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
         &self.value_pos
