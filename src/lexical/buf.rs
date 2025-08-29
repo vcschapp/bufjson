@@ -229,10 +229,6 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
         }
     }
 
-    pub fn into_inner(self) -> Arc<B> {
-        self.buf
-    }
-
     pub fn next(&mut self) -> Token {
         if matches!(self.value, StoredContent::Err(_)) {
             return Token::Err;
