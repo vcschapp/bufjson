@@ -8,7 +8,7 @@ on:
     types: [created, prereleased, published]
 
 jobs:
-  default-features:
+  default:
     runs-on: ubuntu-latest
     name: Default Features
     steps:
@@ -21,7 +21,7 @@ jobs:
 
   all-features:
     runs-on: ubuntu-latest
-    name:All Features
+    name: All Features
     steps:
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1

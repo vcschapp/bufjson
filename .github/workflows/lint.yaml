@@ -1,0 +1,64 @@
+name: Lints
+
+on:
+  pull_request:
+    types: [opened, synchronize, edited, enqueued]
+  push:
+  release:
+    types: [created, prereleased, published]
+
+jobs:
+  build-warnings-default-debug:
+    runs-on: ubuntu-latest
+    name: Build Warnings (Debug Profile, Default Features)
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Check for build warnings
+        run: RUSTFLAGS="-D warnings" cargo test --no-run
+
+  build-warnings-default-release:
+    runs-on: ubuntu-latest
+    name: Build Warnings (Release Profile, Default Features)
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Check for build warnings
+        run: RUSTFLAGS="-D warnings" cargo test --release --no-run
+
+  build-warnings-all-features-release:
+    runs-on: ubuntu-latest
+    name: Build Warnings (Release Profile, All Features)
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Check for build warnings
+        run: RUSTFLAGS="-D warnings" cargo test --release --all-features --no-run
+
+  docs-warnings-default:
+    runs-on: ubuntu-latest
+    name: Documentation Warnings (Default)
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Check for docs warnings
+        run: RUSTDOCFLAGS="-D warnings" cargo doc
+
+  docs-warnings-all-features:
+    runs-on: ubuntu-latest
+    name: Documentation Warnings (All Features)
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Check for docs warnings
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --all-features
