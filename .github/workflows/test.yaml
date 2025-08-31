@@ -1,0 +1,53 @@
+name: Test
+
+on:
+  pull_request:
+    types: [opened, synchronize, edited, enqueued]
+  push:
+  release:
+    types: [created, prereleased, published]
+
+jobs:
+  default-debug:
+    runs-on: windows-latest
+    name: Debug
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Test default features (debug profile)
+        run: cargo test
+
+  default-release:
+    runs-on: macos-latest
+    name: Release
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Test default features (release profile)
+        run: cargo test --release
+
+  all-features-debug:
+    runs-on: ubuntu-latest
+    name: All Features Debug
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Test all features (debug profile)
+        run: cargo test --all-features
+
+  all-features-release:
+    runs-on: ubuntu-latest
+    name: All Features Debug
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Test all features (release profile)
+        run: cargo test --release --all-features
