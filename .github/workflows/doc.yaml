@@ -1,0 +1,31 @@
+name: Documentation
+
+on:
+  pull_request:
+    types: [opened, synchronize, edited, enqueued]
+  push:
+  release:
+    types: [created, prereleased, published]
+
+jobs:
+  default-features:
+    runs-on: ubuntu-latest
+    name: Default Features
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Document default features
+        run: cargo doc
+
+  all-features:
+    runs-on: ubuntu-latest
+    name:All Features
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Document all features
+        run: cargo doc --all-features
