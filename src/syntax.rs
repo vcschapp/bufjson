@@ -366,7 +366,7 @@ where
         }
     }
 
-    #[allow(clippy::should_implement_trait)]
+    //#[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Token {
         let token = self.lexer.next();
         let mut value = Content::Lazy;
