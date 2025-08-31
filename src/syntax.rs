@@ -120,10 +120,10 @@ impl StructContext {
             StructContext::Inline(len, array) => {
                 if *len < array.len() {
                     array.set(*len, s.into());
-                    *len = *len + 1;
+                    *len += 1;
                 } else {
                     let mut v = BitVec::with_capacity(2 * array.len());
-                    v.extend_from_bitslice(&array);
+                    v.extend_from_bitslice(array);
                     v.push(s.into());
                     *self = StructContext::Heap(v);
                 }
@@ -137,7 +137,7 @@ impl StructContext {
         match self {
             StructContext::Inline(len, array) => {
                 if *len > 0 {
-                    *len = *len - 1;
+                    *len -= 1;
 
                     Some(array[*len].into())
                 } else {
@@ -366,6 +366,7 @@ where
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Token {
         let token = self.lexer.next();
         let mut value = Content::Lazy;

@@ -449,13 +449,6 @@ impl Machine {
             || b == b'\r'
     }
 
-    fn is_hex_byte(b: u8) -> bool {
-        match b {
-            b'0'..=b'9' | b'A'..=b'F' | b'a'..=b'f' => true,
-            _ => false,
-        }
-    }
-
     fn expect_boundary(&mut self, tok: Token, b: Option<u8>) -> State {
         match b {
             None | Some(b'{') | Some(b'}') | Some(b'[') | Some(b']') | Some(b':') | Some(b',')
@@ -690,28 +683,28 @@ impl Machine {
             }
 
             // [1/4] 4-bit character of a \`uXXXX` Unicode escape sequence.
-            (Str::EscU, Some(x)) if Self::is_hex_byte(x) => {
+            (Str::EscU, Some(x)) if x.is_ascii_hexdigit() => {
                 self.state = InnerState::Str(Str::EscU1(lexical::hex2u16(x)));
 
                 State::Mid
             }
 
             // [2/4] 4-bit character of a \`uXXXX` Unicode escape sequence.
-            (Str::EscU1(acc), Some(x)) if Self::is_hex_byte(x) => {
+            (Str::EscU1(acc), Some(x)) if x.is_ascii_hexdigit() => {
                 self.state = InnerState::Str(Str::EscU2(acc << 4 | lexical::hex2u16(x)));
 
                 State::Mid
             }
 
             // [3/4] 4-bit character of a \`uXXXX` Unicode escape sequence.
-            (Str::EscU2(acc), Some(x)) if Self::is_hex_byte(x) => {
+            (Str::EscU2(acc), Some(x)) if x.is_ascii_hexdigit() => {
                 self.state = InnerState::Str(Str::EscU3(acc << 4 | lexical::hex2u16(x)));
 
                 State::Mid
             }
 
             // [4/4] 4-bit character of a \`uXXXX` Unicode escape sequence.
-            (Str::EscU3(acc), Some(x)) if Self::is_hex_byte(x) => {
+            (Str::EscU3(acc), Some(x)) if x.is_ascii_hexdigit() => {
                 let c = acc << 4 | lexical::hex2u16(x);
 
                 match c {
@@ -780,28 +773,28 @@ impl Machine {
             }
 
             // [1/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
-            (Str::EscLoEscU(hi), Some(x)) if Self::is_hex_byte(x) => {
+            (Str::EscLoEscU(hi), Some(x)) if x.is_ascii_hexdigit() => {
                 self.state = InnerState::Str(Str::EscLoEscU1(hi, lexical::hex2u16(x)));
 
                 State::Mid
             }
 
             // [2/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
-            (Str::EscLoEscU1(hi, acc), Some(x)) if Self::is_hex_byte(x) => {
+            (Str::EscLoEscU1(hi, acc), Some(x)) if x.is_ascii_hexdigit() => {
                 self.state = InnerState::Str(Str::EscLoEscU2(hi, acc << 4 | lexical::hex2u16(x)));
 
                 State::Mid
             }
 
             // [3/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
-            (Str::EscLoEscU2(hi, acc), Some(x)) if Self::is_hex_byte(x) => {
+            (Str::EscLoEscU2(hi, acc), Some(x)) if x.is_ascii_hexdigit() => {
                 self.state = InnerState::Str(Str::EscLoEscU3(hi, acc << 4 | lexical::hex2u16(x)));
 
                 State::Mid
             }
 
             // [4/4] 4-bit character of a \`uXXXX` low surrogate Unicode escape sequence.
-            (Str::EscLoEscU3(hi, acc), Some(x)) if Self::is_hex_byte(x) => {
+            (Str::EscLoEscU3(hi, acc), Some(x)) if x.is_ascii_hexdigit() => {
                 let c = acc << 4 | lexical::hex2u16(x);
 
                 match c {

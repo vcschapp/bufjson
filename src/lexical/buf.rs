@@ -62,14 +62,17 @@ impl<B: Deref<Target = [u8]>> Content<B> {
         match &self.0 {
             InnerContent::Static(s) => s,
             InnerContent::Inline(len, buf) => Self::inline_str(*len, buf),
-            InnerContent::NotEscaped(r) | InnerContent::Escaped(r) | InnerContent::UnEscaped(r, _) => {
-                r.as_str()
-            }
+            InnerContent::NotEscaped(r)
+            | InnerContent::Escaped(r)
+            | InnerContent::UnEscaped(r, _) => r.as_str(),
         }
     }
 
     pub fn is_escaped(&self) -> bool {
-        matches!(self.0, InnerContent::Escaped(_) | InnerContent::UnEscaped(_, _))
+        matches!(
+            self.0,
+            InnerContent::Escaped(_) | InnerContent::UnEscaped(_, _)
+        )
     }
 
     pub fn unescaped(&mut self) -> &str {
@@ -118,11 +121,11 @@ impl<B: Deref<Target = [u8]>> Content<B> {
         } else {
             let r = Ref::new(Arc::clone(buf), r);
 
-            return Self(if !escaped {
+            Self(if !escaped {
                 InnerContent::NotEscaped(r)
             } else {
                 InnerContent::Escaped(r)
-            });
+            })
         }
     }
 
@@ -326,6 +329,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
     /// assert_eq!(Token::Eof, lexer.next());
     /// assert_eq!(Token::Eof, lexer.next()); // Once EOF is reached, it is returned to infinity.
     /// ```
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Token {
         if matches!(self.value, StoredContent::Err(_)) {
             return Token::Err;

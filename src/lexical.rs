@@ -78,10 +78,10 @@ impl Token {
     /// assert!(!Token::White.is_value());
     /// ```
     pub fn is_value(&self) -> bool {
-        match self {
-            Self::LitFalse | Self::LitNull | Self::LitTrue | Self::Num | Self::Str => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            Self::LitFalse | Self::LitNull | Self::LitTrue | Self::Num | Self::Str
+        )
     }
 
     /// Returns `true` for lexical tokens that are punctuation and `false` otherwise.
@@ -114,15 +114,15 @@ impl Token {
     /// assert!(!Token::Err.is_punct());
     /// ```
     pub fn is_punct(&self) -> bool {
-        match self {
+        matches!(
+            self,
             Self::ArrBegin
-            | Self::ArrEnd
-            | Self::NameSep
-            | Self::ObjBegin
-            | Self::ObjEnd
-            | Self::ValueSep => true,
-            _ => false,
-        }
+                | Self::ArrEnd
+                | Self::NameSep
+                | Self::ObjBegin
+                | Self::ObjEnd
+                | Self::ValueSep
+        )
     }
 
     /// Returns the static content for lexical tokens that always have the same static text content.
@@ -737,9 +737,9 @@ pub(crate) fn hex2u16(b: u8) -> u16 {
     }
 }
 
-pub(crate) fn unescape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
+pub(crate) fn unescape(literal: &str, buf: &mut Vec<u8>) {
     debug_assert!(literal.len() >= 2);
-    debug_assert!(matches!(literal.chars().nth(0), Some('"')));
+    debug_assert!(matches!(literal.chars().next(), Some('"')));
     debug_assert!(matches!(literal.chars().nth_back(0), Some('"')));
 
     let bytes = literal.as_bytes();
@@ -752,7 +752,7 @@ pub(crate) fn unescape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
     let mut hi_surrogate: Option<u32> = None;
     while j < bytes.len() {
         if bytes[j] != b'\\' {
-            j = j + 1;
+            j += 1;
         } else {
             buf.extend_from_slice(&bytes[i..j]);
 
@@ -783,7 +783,7 @@ pub(crate) fn unescape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
                         (Some(hi), 0xdc00..=0xdfff) => {
                             hi_surrogate = None;
 
-                            Some(0x10000 + ((hi - 0xd800) << 10 | x - 0xdc00))
+                            Some(0x10000 + (((hi - 0xd800) << 10) | (x - 0xdc00)))
                         }
                         (Some(hi), _) => panic!(
                             "high surrogate followed by invalid low surrogate: [0x{hi:04x}], [0x{x:04x}]"
@@ -805,12 +805,12 @@ pub(crate) fn unescape<'c>(literal: &str, buf: &'c mut Vec<u8>) {
                 _ => panic!("invalid escape sequence byte after '\\': 0x{x:02x}"),
             }
 
-            j = j + len;
+            j += len;
             i = j;
         }
     }
 
-    debug_assert!(matches!(hi_surrogate, None));
+    debug_assert!(hi_surrogate.is_none());
 
     buf.extend_from_slice(&bytes[i..j]);
 }
