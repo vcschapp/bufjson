@@ -12,65 +12,47 @@ jobs:
     runs-on: ubuntu-latest
     name: Build Warnings (Debug Profile, Default Features)
     steps:
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check out repo
-        uses: actions/checkout@v5
-      - name: Check for build warnings
-        run: RUSTFLAGS="-D warnings" cargo test --no-run
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: RUSTFLAGS="-D warnings" cargo test --no-run
 
   build-warnings-default-release:
     runs-on: ubuntu-latest
     name: Build Warnings (Release Profile, Default Features)
     steps:
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check out repo
-        uses: actions/checkout@v5
-      - name: Check for build warnings
-        run: RUSTFLAGS="-D warnings" cargo test --release --no-run
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: RUSTFLAGS="-D warnings" cargo test --release --no-run
 
   build-warnings-all-features-release:
     runs-on: ubuntu-latest
     name: Build Warnings (Release Profile, All Features)
     steps:
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check out repo
-        uses: actions/checkout@v5
-      - name: Check for build warnings
-        run: RUSTFLAGS="-D warnings" cargo test --release --all-features --no-run
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: RUSTFLAGS="-D warnings" cargo test --release --all-features --no-run
 
   docs-warnings-default:
     runs-on: ubuntu-latest
     name: Documentation Warnings (Default)
     steps:
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check out repo
-        uses: actions/checkout@v5
-      - name: Check for docs warnings
-        run: RUSTDOCFLAGS="-D warnings" cargo doc
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc
 
   docs-warnings-all-features:
     runs-on: ubuntu-latest
     name: Documentation Warnings (All Features)
     steps:
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check out repo
-        uses: actions/checkout@v5
-      - name: Check for docs warnings
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --all-features
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --all-features
 
   clippy-all-features:
     runs-on: ubuntu-latest
     name: Clippy (All Features)
     steps:
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with: components: [clippy]
-      - name: Check out repo
-        uses: actions/checkout@v5
-      - name: Check for Clippy warnings
-        run: RUSTFLAGS="-D warnings" cargo clippy --all-features
+      - uses: actions/checkout@v5
+      - run: RUSTFLAGS="-D warnings" cargo clippy --all-features

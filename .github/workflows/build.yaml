@@ -12,42 +12,30 @@ jobs:
     runs-on: ubuntu-latest
     name: Debug
     steps:
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check out repo
-        uses: actions/checkout@v5
-      - name: Build default features (debug profile)
-        run: cargo build
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: cargo build
 
   default-release:
     runs-on: ubuntu-latest
     name: Release
     steps:
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check out repo
-        uses: actions/checkout@v5
-      - name: Build default features (release profile)
-        run: cargo build --release
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: cargo build --release
 
   all-features-debug:
     runs-on: ubuntu-latest
     name: All Features Debug
     steps:
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check out repo
-        uses: actions/checkout@v5
-      - name: Build all features (debug profile)
-        run: cargo build --all-features
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: cargo build --all-features
 
   all-features-release:
     runs-on: ubuntu-latest
     name: All Features Debug
     steps:
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check out repo
-        uses: actions/checkout@v5
-      - name: Build all features (release profile)
-        run: cargo build --release --all-features
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: cargo build --release --all-features

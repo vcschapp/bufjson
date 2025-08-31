@@ -12,20 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     name: Default Features
     steps:
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check out repo
-        uses: actions/checkout@v5
-      - name: Document default features
-        run: cargo doc
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: cargo doc
 
   all-features:
     runs-on: ubuntu-latest
     name: All Features
     steps:
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check out repo
-        uses: actions/checkout@v5
-      - name: Document all features
-        run: cargo doc --all-features
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: cargo doc --all-features
