@@ -1,0 +1,31 @@
+name: Build
+
+on:
+  pull_request:
+    types: [opened, synchronize, edited, enqueued]
+  push:
+  release:
+    types: [created, prereleased, published]
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    name: Debug
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Build default features (debug profile)
+        run: cargo build
+
+  release:
+    runs-on: ubuntu-latest
+    name: Release
+    steps:
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check out repo
+        uses: actions/checkout@v5
+      - name: Build default features (release profile)
+        run: cargo build --release
