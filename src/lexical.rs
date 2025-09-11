@@ -652,6 +652,29 @@ pub trait Error: std::error::Error + Send + Sync {
     fn kind(&self) -> ErrorKind;
 
     /// Returns the position in the JSON text where the error was encountered.
+    ///
+    /// The error position returned by this method is more precise than the position returned by
+    /// [`Analyzer::pos`]. This is because [`Analyzer::pos`] returns the position of the start of
+    /// the token returned by [`Analyzer::next`], while this method provides the granular position
+    /// where the error occurred.
+    ///
+    /// For example, consider the following lexically-invalid JSON text:
+    ///
+    /// ```json
+    /// "foo
+    /// ```
+    ///
+    /// The above text contains an unteriminated string token. A lexical analyzer tokenizing this
+    /// text will return:
+    ///
+    /// 1. [`Token::Err`] on the first call to its [`next`][`Analyzer::next`] method, since the very
+    ///    first token has an error.
+    /// 2. The position of the first `"` character in the text on a subsequent call to its
+    ///    [`pos`][Analyzer::pos] method, because that is the position of the start of the token
+    ///    returned by [`next`][Analyzer::next].
+    /// 3. An `Err` result containing an `Error` whose `pos` method (this method) returns the
+    ///    position immediately right of the last `o` character in the text, because this is where
+    ///    the actual error, an unexpected end of file, was encountered.
     fn pos(&self) -> &Pos;
 }
 

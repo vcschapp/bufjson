@@ -56,11 +56,19 @@ impl<B: Deref<Target = [u8]>> Default for InnerContent<B> {
     }
 }
 
+/// Text content of a JSON token identified by a [`BufAnalyzer`].
+///
+/// See the [`lexical::Content`] trait, implemented by this struct, for detailed conceptual
+/// documentation.
 #[derive(Clone, Debug)]
 pub struct Content<B: Deref<Target = [u8]>>(InnerContent<B>);
 
 impl<B: Deref<Target = [u8]>> Content<B> {
-    // TODO: Docs for all this.
+    /// Returns the literal content of the token exactly as it appears in the JSON text.
+    ///
+    /// This is an inherent implementation of [`lexical::Content::literal`] for convenience, so it
+    /// is available even when you don't have the trait imported. Refer to the trait documentation
+    /// for conceptual details.
     pub fn literal(&self) -> &str {
         match &self.0 {
             InnerContent::Static(s) => s,
@@ -71,6 +79,11 @@ impl<B: Deref<Target = [u8]>> Content<B> {
         }
     }
 
+    /// Indicates whether the token content contains escape sequences.
+    ///
+    /// This is an inherent implementation of [`lexical::Content::is_escaped`] for convenience, so
+    /// it is available even when you don't have the trait imported. Refer to the trait
+    /// documentation for conceptual details.
     pub fn is_escaped(&self) -> bool {
         matches!(
             self.0,
@@ -78,6 +91,23 @@ impl<B: Deref<Target = [u8]>> Content<B> {
         )
     }
 
+    /// Returns a normalized version of literal with all escape sequences in the JSON text fully
+    /// expanded.
+    ///
+    /// This is an inherent implementation of [`lexical::Content::unescaped`] for convenience, so
+    /// it is available even when you don't have the trait imported. Refer to the trait
+    /// documentation for conceptual details.
+    ///
+    /// # Performance considerations
+    ///
+    /// - If this content belongs to a non-string token, or a string token that contains no escape
+    ///   sequences, does not allocate, and simply returns the value returned by [`literal`].
+    /// - If this content belongs to a string token containing at least one escape sequence, the
+    ///   first call to this method will allocate a new buffer to contain the unescaped string text
+    ///   and return a reference into it. All subsequent calls to this method will reuse the same
+    ///   buffer and will not allocate.
+    ///
+    /// [`literal`]: method@Self::literal
     pub fn unescaped(&mut self) -> &str {
         if let InnerContent::Escaped(_) = &self.0 {
             match std::mem::take(&mut self.0) {
@@ -85,8 +115,8 @@ impl<B: Deref<Target = [u8]>> Content<B> {
                     let mut buf = Vec::new();
                     lexical::unescape(r.as_str(), &mut buf);
 
-                    // SAFETY: `r` was valid UTF-8 before it was de-escaped, and the de-escaping process
-                    //         maintains UTF-8 safety.
+                    // SAFETY: `r` was valid UTF-8 before it was de-escaped, and the de-escaping
+                    //         process maintains UTF-8 safety.
                     let s = unsafe { String::from_utf8_unchecked(buf) };
 
                     self.0 = InnerContent::UnEscaped(r, s);
@@ -163,6 +193,9 @@ impl<B: Deref<Target = [u8]>> super::Content for Content<B> {
 // Assert that `Value` does not grow beyond 48 bytes (six 64-bit words).
 const _: [(); 48] = [(); std::mem::size_of::<Content<Vec<u8>>>()];
 
+/// Lexical analysis error detected by [`BufAnalyzer`].
+///
+/// See the [`lexical::Error`] trait, implemented by this struct, for further documentation.
 #[derive(Copy, Clone, Debug)]
 pub struct Error {
     kind: ErrorKind,
@@ -170,10 +203,18 @@ pub struct Error {
 }
 
 impl Error {
+    /// Returns the category of error.
+    ///
+    /// This is an inherent implementation of [`lexical::Error::kind`] for convenience, so it is
+    /// available even when you don't have the trait imported.
     pub fn kind(&self) -> ErrorKind {
         self.kind
     }
 
+    /// Returns the position in the JSON text where the error was encountered.
+    ///
+    /// This is an inherent implementation of [`lexical::Error::pos`] for convenience, so it is
+    /// available even when you don't have the trait imported.
     pub fn pos(&self) -> &Pos {
         &self.pos
     }
