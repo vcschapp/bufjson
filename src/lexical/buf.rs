@@ -1,7 +1,10 @@
 //! Convert a fixed-size in-memory buffer into a stream of JSON lexical tokens.
 
-use crate::lexical::{
-    self, state, {Analyzer, ErrorKind, Pos, Token},
+use crate::{
+    lexical::{
+        self, state, {Analyzer, ErrorKind, Pos, Token},
+    },
+    syntax,
 };
 use std::{
     fmt,
@@ -263,8 +266,7 @@ impl Default for StoredContent {
 /// use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
 ///
 /// let vec = b"  {\"flag\": true}".to_vec();
-/// let lexer = BufAnalyzer::new(vec);
-/// let mut parser = Parser::new(lexer);
+/// let mut parser = BufAnalyzer::new(vec).into_parser();
 ///
 /// assert_eq!(Token::ObjBegin, parser.next_meaningful());
 /// assert_eq!(Token::Str, parser.next_meaningful());
@@ -502,6 +504,27 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
         &self.value_pos
+    }
+
+    /// Converts a lexical analyzer into a syntax parser, consuming the lexical analyzer in the
+    /// process.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, buf::BufAnalyzer};
+    ///
+    /// // Create a lexical analyzer and consume the first token.
+    /// let mut lexer = BufAnalyzer::new(&b"true false"[..]);
+    /// assert_eq!(Token::LitTrue, lexer.next());
+    ///
+    /// // Convert the lexer into a parser. Since `true` is consumed, the next meaningful token is
+    /// // `false`.
+    /// let mut parser = lexer.into_parser();
+    /// assert_eq!(Token::LitFalse, parser.next_meaningful());
+    /// ``````
+    pub fn into_parser(self) -> syntax::Parser<BufAnalyzer<B>> {
+        syntax::Parser::new(self)
     }
 
     #[inline(always)]
