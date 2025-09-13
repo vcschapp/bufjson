@@ -7,11 +7,15 @@ use crate::{
 use bitvec::prelude::*;
 use std::{fmt, iter::Take, sync::Arc};
 
+/// Type of structured JSON value: [`Arr`][Self::Arr] or [`Obj`][Self::Obj].
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 pub enum Struct {
-    Array = 0,
-    Object = 1,
+    /// An array value, *i.e.* `[ ... ]` in a JSON text.
+    Arr = 0,
+
+    /// An object value, *i.e.* `{ ... }` in a JSON text.
+    Obj = 1,
 }
 
 impl From<Struct> for bool {
@@ -23,8 +27,8 @@ impl From<Struct> for bool {
 impl From<bool> for Struct {
     fn from(value: bool) -> Self {
         match value {
-            false => Struct::Array,
-            true => Struct::Object,
+            false => Struct::Arr,
+            true => Struct::Obj,
         }
     }
 }
@@ -37,21 +41,70 @@ impl From<BitRef<'_>> for Struct {
     }
 }
 
+/// Token or class of token the [`Parser`] expects to see next.
+///
+/// Since "insignificant whitespace" is optional in the [JSON spec][rfc], the parser never expects
+/// whitespace and always ignores it. Consequently, no member of this enumeration includes
+/// whitespace.
+///
+/// A parser's next token expectation can be obtained from the parser context contained in a
+/// [`Context`] structure. This context is obtainable from the [`Parser::context`] method. When the
+/// parser detects a syntax error, the context is also obtainable from the [`Error`]'s kind, which
+/// will be [`ErrorKind::Syntax`].
+///
+/// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Expect {
+    /// While parsing an array value, the parser expects one of:
+    /// - the `]` character indicating the end of the array ([`Token::ArrEnd`]); or
+    /// - any lexical token that indicates an array element (this can be a literal value, a number
+    ///   or string value, or the start of a nested structured value via `[` or `{`).
     ArrElementOrEnd,
+
+    /// While parsing an array value, the parser expects one of:
+    /// - the `,` character which separates array elements ([`Token::ValueSep`]);
+    /// - the `]` character indicating the end of the array ([`Token::ArrEnd`]); or
+    /// - any lexical token that indicates an array element (this can be a literal value, a number
+    ///   or string value, or the start of a nested structured value via `[` or `{`).
     ArrElementSepOrEnd,
+
+    /// Having finished parsing a valid JSON text, the parser now expects the end of input.
     Eof,
+
+    /// While parsing an object value, the parser expects a string value representing the name of
+    /// the next object member ([`Token::Str`]).
     ObjName,
+
+    /// While parsing an object value, the parser expects one of:
+    /// - the `}` character indicating the end of an empty object ([`Token::ObjEnd`]); or
+    /// - a string value representing the name of the *first* object member ([`Token::Str`]).
     ObjNameOrEnd,
+
+    /// While parsing an object value member, the parser expects the `:` character which separates
+    /// the member name from the member value ([`Token::NameSep`]).
     ObjNameSep,
+
+    /// While parsing an object value, the parser expects one of:
+    /// - the `,` character which separates object members ([`Token::ValueSep`]); or
+    /// - the `}` character indicating the end of the object ([`Token::ObjEnd`]).
     ObjValueSepOrEnd,
+
+    /// The parser expects any lexical token that indicates a valid JSON value. This can be a
+    /// literal value, a number or string value, or the start of a structured value via `[` or `{`.
     #[default]
     Value,
 }
 
 impl Expect {
-    pub fn allowed_tokens(&self) -> &'static [Token] {
+    /// Returns a slice containing the list of tokens the expectation corresponds to.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bufjson::{lexical::Token, syntax::Expect};
+    /// assert_eq!(&[Token::ObjEnd, Token::ValueSep], Expect::ObjValueSepOrEnd.allowed_tokens());
+    /// ```
+    pub const fn allowed_tokens(&self) -> &'static [Token] {
         match self {
             Expect::Value => &[
                 Token::ArrBegin,
@@ -163,15 +216,15 @@ impl StructContext {
         }
     }
 
-    fn len(&self) -> usize {
+    fn level(&self) -> usize {
         match self {
             StructContext::Inline(len, _) => *len,
             StructContext::Heap(v) => v.len(),
         }
     }
 
-    fn is_empty(&self) -> bool {
-        self.len() == 0
+    fn is_struct(&self) -> bool {
+        self.level() > 0
     }
 
     fn iter(&self) -> StructIter<bitvec::slice::Iter<'_, usize, Lsb0>> {
@@ -226,6 +279,10 @@ impl Default for StructContext {
     }
 }
 
+/// State of the [`Parser`].
+///
+/// Returned from the method [`Parser::context`] and stored on syntax errors in
+/// [`ErrorKind::Syntax`].
 #[derive(Clone, Debug, Default)]
 pub struct Context {
     inner: StructContext,
@@ -233,20 +290,127 @@ pub struct Context {
 }
 
 impl Context {
-    pub fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-
-    pub fn iter(&self) -> StructIter<bitvec::slice::Iter<'_, usize, Lsb0>> {
-        self.inner.iter()
-    }
-
+    /// Returns what the parser expects the next non-whitespace lexical token to be.
     pub fn expect(&self) -> Expect {
         self.expect
+    }
+
+    /// Returns the current nesting level.
+    ///
+    /// The value `0` indicates no nesting is detected: a structured value has not been started and
+    /// [`is_struct`] method will return `false`. A positive value *N* indicates the current parse
+    /// position is inside a structured value nested *N* levels deep, and the [`is_struct`] method
+    /// will return `true`.
+    ///
+    /// [`is_struct`]: method@Self::is_struct
+    ///
+    /// # Examples
+    ///
+    /// The level is always zero at the start of a JSON text, before the parser has consumed any
+    /// tokens.
+    ///
+    /// ```
+    /// use bufjson::lexical::buf::BufAnalyzer;
+    ///
+    /// let parser = BufAnalyzer::new(&b"{}"[..]).into_parser();
+    /// let ctx = parser.context();
+    ///
+    /// assert_eq!(0, ctx.level());
+    /// assert!(!ctx.is_struct());
+    /// ```
+    ///
+    /// The level is one inside the first structured value.
+    ///
+    /// ```
+    /// use bufjson::lexical::buf::BufAnalyzer;
+    ///
+    /// let mut parser = BufAnalyzer::new(&b"[]"[..]).into_parser();
+    /// let _ = parser.next(); // Consume the `[`.
+    /// let ctx = parser.context();
+    ///
+    /// assert_eq!(1, ctx.level());
+    /// assert!(ctx.is_struct());
+    /// ```
+    ///
+    /// The level increases as the parser proceeds deeper into a multi-level nested structure.
+    ///
+    /// ```
+    /// use bufjson::lexical::buf::BufAnalyzer;
+    ///
+    /// let mut parser = BufAnalyzer::new(r#"[{"foo":[]}]"#.as_bytes()).into_parser();
+    /// let _ = parser.next_meaningful(); // Consume the `[`.
+    /// let _ = parser.next_meaningful(); // Consume the `{`.
+    /// let _ = parser.next_meaningful(); // Consume the `"foo"`.
+    /// let _ = parser.next_meaningful(); // Consume the `[`.
+    /// let ctx = parser.context();
+    ///
+    /// assert_eq!(3, ctx.level());
+    /// assert!(ctx.is_struct());
+    /// ```
+    ///
+    /// The level returns to zero after a top-level structured value is fully parsed.
+    ///
+    /// ```
+    /// use bufjson::lexical::buf::BufAnalyzer;
+    ///
+    /// let mut parser = BufAnalyzer::new(&b"{}"[..]).into_parser();
+    /// let _ = parser.next(); // Consume the `{`.
+    /// let _ = parser.next(); // Consume the `}`.
+    /// let ctx = parser.context();
+    ///
+    /// assert_eq!(0, ctx.level());
+    /// assert!(!ctx.is_struct());
+    /// ```
+    pub fn level(&self) -> usize {
+        self.inner.level()
+    }
+
+    /// Returns `true` if the current parse position is within a structured value.
+    ///
+    /// This method returns `false` when [`level`] returns zero, and `true` when [`level`] returns
+    /// a positive value. See the examples on the [`level`] method.
+    ///
+    /// [`level`]: method@Self::level
+    pub fn is_struct(&self) -> bool {
+        self.inner.is_struct()
+    }
+
+    /// Returns an iterator over the structured JSON value types that comprise the current nesting
+    /// level.
+    ///
+    /// # Examples
+    ///
+    /// The iterator is always empty when the level is zero.
+    ///
+    /// ```
+    /// use bufjson::lexical::buf::BufAnalyzer;
+    ///
+    /// let parser = BufAnalyzer::new(&b"{}"[..]).into_parser();
+    /// let ctx = parser.context();
+    ///
+    /// assert_eq!(0, ctx.level());
+    /// assert_eq!(0, ctx.iter().len());
+    /// ```
+    ///
+    /// The iterator contains the structured value types that make up the path from the start of the
+    /// JSON text to the current parse position.
+    ///
+    /// ```
+    /// use bufjson::{lexical::buf::BufAnalyzer, syntax::Struct};
+    ///
+    /// let mut parser = BufAnalyzer::new(r#"[{"foo":{}}]"#.as_bytes()).into_parser();
+    /// let _ = parser.next_meaningful(); // Consume the `[`.
+    /// let _ = parser.next_meaningful(); // Consume the `{`.
+    /// let _ = parser.next_meaningful(); // Consume the `"foo"`.
+    /// let _ = parser.next_meaningful(); // Consume the `{`.
+    /// let ctx = parser.context();
+    ///
+    /// assert_eq!(3, ctx.level());
+    /// assert_eq!(3, ctx.iter().len());
+    /// assert_eq!(vec![Struct::Arr, Struct::Obj, Struct::Obj], ctx.iter().collect::<Vec<_>>());
+    /// ```
+    pub fn iter(&self) -> StructIter<bitvec::slice::Iter<'_, usize, Lsb0>> {
+        self.inner.iter()
     }
 }
 
@@ -294,9 +458,9 @@ enum Content {
 
 #[derive(Clone, Debug)]
 pub enum ErrorKind {
-    Lex(lexical::ErrorKind),
+    Lexical(lexical::ErrorKind),
     Read,
-    Syn {
+    Syntax {
         context: Context,
         token: lexical::Token,
     },
@@ -305,7 +469,7 @@ pub enum ErrorKind {
 impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Lex(inner) => {
+            Self::Lexical(inner) => {
                 write!(f, "lexical error: ")?;
 
                 inner.fmt(f)
@@ -313,7 +477,7 @@ impl fmt::Display for ErrorKind {
 
             Self::Read => write!(f, "read error"),
 
-            Self::Syn { context, token } => {
+            Self::Syntax { context, token } => {
                 write!(
                     f,
                     "syntax error: expected {} but got {token}",
@@ -373,12 +537,12 @@ where
 
         match (self.context.expect, token) {
             (e, Token::ObjBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
-                self.context.inner.push(Struct::Object);
+                self.context.inner.push(Struct::Obj);
                 self.context.expect = Expect::ObjNameOrEnd;
             }
 
             (e, Token::ArrBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
-                self.context.inner.push(Struct::Array);
+                self.context.inner.push(Struct::Arr);
                 self.context.expect = Expect::ArrElementOrEnd;
             }
 
@@ -444,7 +608,7 @@ where
                         ErrorKind::Read,
                         Some(Arc::new(err) as Arc<dyn std::error::Error + Send + Sync + 'static>),
                     ),
-                    _ => (ErrorKind::Lex(err.kind()), None),
+                    _ => (ErrorKind::Lexical(err.kind()), None),
                 };
 
                 value = Content::Err(Error {
@@ -456,7 +620,7 @@ where
 
             (_, _) => {
                 value = Content::Err(Error {
-                    kind: ErrorKind::Syn {
+                    kind: ErrorKind::Syntax {
                         context: self.context.clone(),
                         token,
                     },
@@ -513,7 +677,7 @@ where
 
     #[inline(always)]
     pub fn level(&self) -> usize {
-        self.context.len()
+        self.context.level()
     }
 
     pub fn into_inner(self) -> L {
@@ -528,8 +692,8 @@ where
         };
 
         match s {
-            Some(Struct::Array) => self.context.expect = Expect::ArrElementSepOrEnd,
-            Some(Struct::Object) => self.context.expect = Expect::ObjValueSepOrEnd,
+            Some(Struct::Arr) => self.context.expect = Expect::ArrElementSepOrEnd,
+            Some(Struct::Obj) => self.context.expect = Expect::ObjValueSepOrEnd,
             None => self.context.expect = Expect::Eof,
         }
     }

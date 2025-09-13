@@ -272,7 +272,7 @@ pub trait Content {
 
 /// Character or class of characters expected at the next input position of a JSON text.
 ///
-/// This enumeration used to provide detail information for [`ErrorKind::UnexpectedByte`].
+/// This enumeration provides detail information for [`ErrorKind::UnexpectedByte`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Expect {
     /// Any token boundary character.
