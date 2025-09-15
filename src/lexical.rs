@@ -77,7 +77,7 @@ impl Token {
     /// assert!(!Token::ObjEnd.is_value());
     /// assert!(!Token::White.is_value());
     /// ```
-    pub fn is_value(&self) -> bool {
+    pub const fn is_value(&self) -> bool {
         matches!(
             self,
             Self::LitFalse | Self::LitNull | Self::LitTrue | Self::Num | Self::Str
@@ -113,7 +113,7 @@ impl Token {
     /// assert!(!Token::White.is_punct());
     /// assert!(!Token::Err.is_punct());
     /// ```
-    pub fn is_punct(&self) -> bool {
+    pub const fn is_punct(&self) -> bool {
         matches!(
             self,
             Self::ArrBegin
