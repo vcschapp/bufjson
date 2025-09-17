@@ -214,7 +214,7 @@ impl fmt::Display for Expect {
 }
 
 // Number of bytes a `Parser` will dedicate to inlinining the `Struct` level.
-const INLINE_LEN_BYTES: usize = 24;
+const INLINE_LEN_BYTES: usize = 16;
 
 // Number of `usize` values that provide the "backing storage" for the bytes that inline the level.
 const INLINE_LEN_USIZES: usize = INLINE_LEN_BYTES / std::mem::size_of::<usize>();
@@ -634,15 +634,51 @@ impl std::error::Error for Error {
 /// A `Parser` wraps any value that implements the [`lexical::Analyzer`] trait in a lightweight,
 /// stream-oriented, parsing layer that understands JSON syntax.
 ///
+/// # Maximum nesting level
+///
+/// Every parser has a configurable [maximum nesting level][Self::max_level]. The default maximum
+/// level is `128`, but this can be raised or lowered either on construction using
+/// [`with_max_level`] or after construction with [`set_max_level`].
+///
 /// # Performance considerations
 ///
 /// `Parser` is a very lightweight type. Its performance, allocation behavior, and memory
-/// consumption are entirely determined by the wrapped lexical analyzer, meaning a parser is as
-/// performant as its underlying lexer implementation.
+/// consumption are almost entirely determined by the wrapped lexical analyzer, meaning a parser is
+/// as performant as its underlying lexer implementation.
 ///
-/// `Parser` adds very little overhead beyond the
-/// bare minimum necessary to keep track of nesting levels in order to validate object and array
-/// syntax.
+/// The [`next`] method only triggers allocation in two scenarios:
+///
+/// 1. The underlying lexical analyzer's [`next`][lexical::Analyzer::next] method allocates.
+/// 2. A `{` or `[` causes the parser's [current nesting level][Self::level] to exceed `128` (which
+///    is only possible if the maximum level is set to a higher value).
+///
+/// The `next` method's companion methods, [`next_non_white`] and [`next_meaningful`] have the same
+/// underlying behavior as `next`.
+///
+/// The [`content`] method has the same performance characteristics as the underlying lexer's
+/// [`content`][lexical::Analyzer::content] method.
+///
+/// No other method of parser allocates.
+///
+/// # Memory considerations
+///
+/// The [`content`] method passes through the underlying lexical analyzer's content. The content
+/// value may contain references to internal buffers that will not be deallocated until the content
+/// vlaue is dropped. Refer to the specific lexical analyzer's documentation for more.
+///
+/// # Continuous parsing
+///
+/// A `Parser` is designed to parse a single complete JSON text, after which it expects the end of
+/// the input stream, [`Token::Eof`].
+///
+/// Some use cases involve parsing a continuous stream of JSON texts one after the other (*a.k.a.*
+/// [JSON streaming][json_streaming_wiki]). This use case includes newline-delimited formats like
+/// NDJSON and JSONL as well as other formats. It is also the natural input format for tools like
+/// the [`jq`][jq] command-line JSON processor.
+///
+/// To parse a continuous stream of JSON texts, unwrap the inner lexical analyzer at the end of each
+/// JSON text using [`into_inner`] and construct a fresh parser using the same lexer for the next
+/// JSON text in the stream.
 ///
 /// # Examples
 ///
@@ -651,7 +687,7 @@ impl std::error::Error for Error {
 /// ```
 /// # use bufjson::{lexical::buf::BufAnalyzer, syntax::Parser};
 /// #
-/// // Create the parser by wraing a lexical analyzer.
+/// // Create the parser by wrapping a lexical analyzer.
 /// let lexer = BufAnalyzer::new(&b"[1, 2, 3]"[..]);
 /// let mut parser = Parser::new(lexer);
 ///
@@ -667,8 +703,81 @@ impl std::error::Error for Error {
 /// let lexer = parser.into_inner();
 /// ```
 ///
-/// [`new`]: method@Self::new
+/// Create a parser with a very high maximum nesting level:
+///
+/// ```
+/// # use bufjson::{lexical::buf::BufAnalyzer, syntax::Parser};
+/// #
+/// // Create the parser by wraing a lexical analyzer.
+/// let lexer = BufAnalyzer::new(&b"[1, 2, 3]"[..]);
+/// let mut parser = Parser::with_max_level(lexer, 1_000_000);
+///
+/// // Use the parser ...
+/// ```
+///
+/// Verify the syntax of a JSON text.
+///
+/// ```
+/// # use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
+/// #
+/// let mut parser = Parser::new(BufAnalyzer::new(r#"{"key": [1, 2,]}"#.as_bytes()));
+/// let result = loop {
+///     match parser.next() {
+///         Token::Eof => break Ok(()),
+///         Token::Err => break Err(parser.content().unwrap_err()),
+///         _ => (),
+///     }
+/// };
+///
+/// assert_eq!(
+///     "syntax error: expected value but got ] at line 1, column 15 (offset: 14)",
+///     format!("{}", result.unwrap_err()),
+/// );
+/// ```
+///
+/// Skip insigificant whitespace and unnecessary punctuation.
+///
+/// ```
+/// # use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
+/// #
+/// let mut parser = Parser::new(BufAnalyzer::new(r#"{"key": [1, 2]}"#.as_bytes()));
+/// let mut significant = Vec::new();
+/// loop {
+///     match parser.next_meaningful() {
+///         Token::Eof | Token::Err => break,
+///         t => significant.push((t, parser.content().unwrap().literal().to_string())),
+///     }
+/// };
+///
+/// // Whitespace is skipped by `next_meaningful`, as are the : and , punctuation characters that
+/// // are required by the JSON specification, but redundant when trying to make sense of the parsed
+/// // text.
+/// assert_eq!(
+///     [
+///         (Token::ObjBegin, "{"),
+///         (Token::Str, r#""key""#),
+///         (Token::ArrBegin, "["),
+///         (Token::Num, "1"),
+///         (Token::Num, "2"),
+///         (Token::ArrEnd, "]"),
+///         (Token::ObjEnd, "}"),
+///     ].into_iter().map(|(t, s)| (t, s.to_string())).collect::<Vec<_>>(),
+///     significant,
+/// );
+/// ```
+///
+/// [`content`]: method@Self::content
 /// [`into_inner`]: method@Self::into_inner
+/// [`level`]: method@Self::level
+/// [`max_level`]: method@Self::max_level
+/// [`set_max_level`]: method@Self::set_max_level
+/// [`with_max_level`]: method@Self::with_max_level
+/// [`new`]: method@Self::new
+/// [`next`]: method@Self::next
+/// [`next_non_white`]: method@Self::next_non_white
+/// [`next_meaningful`]: method@Self::next_meaningful
+/// [json_streaming_wiki]: https://en.wikipedia.org/wiki/JSON_streaming
+/// [jq]: https://jqlang.org/
 pub struct Parser<L: lexical::Analyzer>
 where
     L::Error: 'static,
@@ -683,6 +792,24 @@ impl<L: lexical::Analyzer> Parser<L>
 where
     L::Error: 'static,
 {
+    /// Constructs a new parser wrapping an underlying lexical analyzer.
+    ///
+    /// The lexer can be unwrapped using [`into_inner`][Self::into_inner].
+    ///
+    /// Use [`with_max_level`][Self::with_max_level] to construct a new parser with a specific
+    /// maximum nesting level.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bufjson::{lexical::buf::BufAnalyzer, syntax::Parser};
+    /// #
+    /// // Create the parser by wrapping a lexical analyzer.
+    /// let lexer = BufAnalyzer::new(&b"[1, 2, 3]"[..]);
+    /// let mut parser = Parser::new(lexer);
+    ///
+    /// // Use the parser ...
+    /// ```
     pub fn new(lexer: L) -> Self {
         Self {
             lexer,
@@ -692,6 +819,25 @@ where
         }
     }
 
+    /// Returns the next syntactically valid lexical token.
+    ///
+    /// If a lexical or syntax error is detected, returns [`Token::Err`] and the specific error can
+    /// be obtained from [`content`][Self::content]. Otherwise, returns the next non-error token and
+    /// the token content can be obtained from [`content`][Self::content].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
+    /// let mut parser = BufAnalyzer::new(&b"{"[..]).into_parser();
+    /// assert_eq!(Token::ObjBegin, parser.next());
+    /// assert_eq!(Token::Err, parser.next());
+    /// let err = parser.content().unwrap_err();
+    /// assert_eq!(
+    ///     "syntax error: expected object member name or } but got EOF at line 1, column 2 (offset: 1)",
+    ///     format!("{err}")
+    /// );
+    /// ```
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Token {
         if matches!(self.content, Content::Err(_)) {
@@ -818,6 +964,66 @@ where
         token
     }
 
+    /// Returns the next syntactically-valid non-whitespace token, *i.e.* [`next`] but skips
+    /// whitespace.
+    ///
+    /// This is a convenience method to simplify parsing in use cases where whitespace should be
+    /// discarded.
+    ///
+    /// See also [`next_meaningful`].
+    ///
+    /// # Example
+    ///
+    /// Pretty-print some JSON text.
+    ///
+    /// ```
+    /// use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::{Error, Parser}};
+    ///
+    /// fn pretty_print(json_text: &str) -> Result<String, Error>  {
+    ///     let mut parser = Parser::new(BufAnalyzer::new(json_text.as_bytes()));
+    ///     let mut pretty = String::new();
+    ///     let indent = |pretty: &mut String, level: usize| {
+    ///         pretty.push_str(&" ".repeat(level * 2));
+    ///     };
+    ///     loop {
+    ///         let token = parser.next_non_white();
+    ///         match token {
+    ///             Token::Eof => break Ok(pretty),
+    ///             Token::Err => break Err(parser.content().unwrap_err()),
+    ///             Token::ObjBegin | Token::ArrBegin => {
+    ///                 pretty.push_str(token.static_content().unwrap());
+    ///                 pretty.push('\n');
+    ///                 indent(&mut pretty, parser.level());
+    ///             },
+    ///             Token::ObjEnd | Token::ArrEnd => {
+    ///                 pretty.push('\n');
+    ///                 indent(&mut pretty, parser.level());
+    ///                 pretty.push_str(token.static_content().unwrap());
+    ///             },
+    ///             Token::NameSep => pretty.push_str(": "),
+    ///             Token::ValueSep => {
+    ///                 pretty.push_str(",\n");
+    ///                 indent(&mut pretty, parser.level());
+    ///             },
+    ///             _ => pretty.push_str(parser.content().unwrap().literal()),
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let expect = r#"{
+    ///   "foo": "bar",
+    ///   "baz": [
+    ///     1,
+    ///     2
+    ///   ]
+    /// }"#;
+    /// let actual = pretty_print(r#"{"foo":"bar","baz":[1,2]}"#).unwrap();
+    ///
+    /// assert_eq!(expect, actual);
+    /// ```
+    ///
+    /// [`next`]: method@Self::next
+    /// [`next_meaningful`]: method@Self::next_meaningful
     pub fn next_non_white(&mut self) -> Token {
         let token = self.next();
 
@@ -828,6 +1034,42 @@ where
         }
     }
 
+    /// Returns then next syntactically-valid *meaningful* lexical token.
+    ///
+    /// This method skips whitespace like [`next_non_white`] but also skips past the following
+    /// meaningless punctuation characters:
+    ///
+    /// 1. `:` or [`Token::NameSep`];
+    /// 2. `,` or [`Token::ValueSep`].
+    ///
+    /// The colon `:` and comma `,` are meaningless because, even though they are required by the
+    /// [JSON spec][rfc] (and sometimes necessary for tokenization), they don't add any meaning to
+    /// the stream of lexical tokens.
+    ///
+    /// # Example
+    ///
+    /// Consider the following JSON example text: `{"foo": "baz", "bar": "qux"}`. This text contains
+    /// an object value with two members named "foo" and "bar". Since the parser already ensures the
+    /// text is syntactically valid, the consumer does not benefit from receiving the colon and
+    /// comma tokens (or the whitespace). When the parser is inside an object, the members will
+    /// always come in pairs where the first element is a [`Token::Str`] containing the name and the
+    /// second member is the stream of tokens that comprise the value. In the case of the given
+    /// example text, the values are the string tokens "baz" and "qux".
+    ///
+    /// ```
+    /// # use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
+    /// let mut parser = BufAnalyzer::new(r#"{"foo": "baz", "bar": "qux"}"#.as_bytes()).into_parser();
+    /// assert_eq!(Token::ObjBegin, parser.next_meaningful());
+    /// assert_eq!(Token::Str, parser.next_meaningful());
+    /// assert_eq!(Token::Str, parser.next_meaningful());
+    /// assert_eq!(Token::Str, parser.next_meaningful());
+    /// assert_eq!(Token::Str, parser.next_meaningful());
+    /// assert_eq!(Token::ObjEnd, parser.next_meaningful());
+    /// assert_eq!(Token::Eof, parser.next_meaningful());
+    /// ```
+    ///
+    /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
+    /// [`next_non_white`]: method@Self::next_non_white
     pub fn next_meaningful(&mut self) -> Token {
         let mut token = self.next();
 
@@ -839,6 +1081,46 @@ where
         }
     }
 
+    /// Fetches the content for the current lexical token.
+    ///
+    /// The current lexical token is the token last returned by [`next`], [`next_non_white`], or
+    /// [`next_meaningful`].
+    ///
+    /// If the current lexical token is [`Token::Err`], an `Err` result is returned. Otherwise, an
+    /// `Ok` result containing the text content of the recognied lexical token is returned.
+    ///
+    /// This method does not allocate unless the underlying lexical analyzer's [`content`] method
+    /// allocates.
+    ///
+    /// # Examples
+    ///
+    /// An `Ok` value is returned as long as the parser isn't in an error state.
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, buf::BufAnalyzer};
+    /// let mut parser = BufAnalyzer::new(&b"[123"[..]).into_parser();
+    /// assert_eq!(Token::ArrBegin, parser.next());
+    /// assert_eq!(Token::Num, parser.next());
+    /// assert!(matches!(parser.content(), Ok(c) if c.literal() == "123"));
+    /// ```
+    ///
+    /// Once the parser detects an error, it will return an `Err` value describing the error.
+    ///
+    /// ```
+    /// use bufjson::{Pos, lexical::{Token, buf::BufAnalyzer}, syntax::ErrorKind};
+    ///
+    /// let mut parser = BufAnalyzer::new(&b"[123"[..]).into_parser();
+    /// assert_eq!(Token::ArrBegin, parser.next());
+    /// assert_eq!(Token::Num, parser.next());
+    /// assert_eq!(Token::Err, parser.next());
+    /// let error_kind = parser.content().unwrap_err().kind().clone();
+    /// assert!(matches!(error_kind, ErrorKind::Syntax { context: _, token: Token::Eof }));
+    /// ```
+    ///
+    /// [`content`]: lexical::Analyzer::content
+    /// [`next`]: method@Self::next
+    /// [`next_non_white`]: method@Self::next_non_white
+    /// [`next_meaningful`]: method@Self::next_meaningful
     pub fn content(&self) -> Result<L::Content, Error> {
         match &self.content {
             Content::Lazy => match self.lexer.content() {
@@ -849,28 +1131,174 @@ where
         }
     }
 
+    /// Returns the position of the current lexical token.
+    ///
+    /// The current lexical token is the token last returned by [`next`], [`next_non_white`], or
+    /// [`next_meaningful`].
+    ///
+    /// [`next`]: method@Self::next
+    /// [`next_non_white`]: method@Self::next_non_white
+    /// [`next_meaningful`]: method@Self::next_meaningful
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
         self.lexer.pos()
     }
 
-    pub fn context(&self) -> Context {
-        self.context.clone()
+    /// Returns the current parse context, which includes the nesting state and next expected token.
+    ///
+    /// # Example
+    ///
+    /// Before observing any tokens, there is no nesting and the parser expects any valid JSON
+    /// value.
+    ///
+    /// ```
+    /// use bufjson::{lexical::buf::BufAnalyzer, syntax::Expect};
+    ///
+    /// let mut parser = BufAnalyzer::new(&b"\"hello\""[..]).into_parser();
+    /// assert_eq!(0, parser.context().level());
+    /// assert_eq!(Expect::Value, parser.context().expect());
+    /// ```
+    ///
+    /// After observing an object start token, the nesting level increases to 1 and the parser now
+    /// expects either a string (containing the first member name) or an object end token.
+    ///
+    /// ```
+    /// use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::{Expect, Struct}};
+    ///
+    /// let mut parser = BufAnalyzer::new(&b"{"[..]).into_parser();
+    /// assert_eq!(Token::ObjBegin, parser.next());
+    /// assert_eq!(1, parser.context().level());
+    /// assert_eq!(Struct::Obj, parser.context().iter().next().unwrap());
+    /// assert_eq!(Expect::ObjNameOrEnd, parser.context().expect());
+    /// ```
+    pub fn context(&self) -> &Context {
+        &self.context
     }
 
+    /// Returns the current nesting level of the parse.
+    ///
+    /// This is a convenience method that returns the level of the parse context obtainable via the
+    /// [`context`] method.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, buf::BufAnalyzer};
+    ///
+    /// let mut parser = BufAnalyzer::new(&b"[{}]"[..]).into_parser();
+    /// assert_eq!(0, parser.level());
+    /// assert_eq!(Token::ArrBegin, parser.next());
+    /// assert_eq!(1, parser.level());
+    /// assert_eq!(Token::ObjBegin, parser.next());
+    /// assert_eq!(2, parser.level());
+    /// assert_eq!(Token::ObjEnd, parser.next());
+    /// assert_eq!(1, parser.level());
+    /// assert_eq!(Token::ArrEnd, parser.next());
+    /// assert_eq!(0, parser.level());
+    /// ```
+    ///
+    /// [`context`]: method@Self::context
     #[inline(always)]
     pub fn level(&self) -> usize {
         self.context.level()
     }
 
+    /// Returns the maximum nesting level the parser will allow.
+    ///
+    /// When the parser's [current nesting level][Self::level] has reached the maximum level, the
+    /// start of an array or object will trigger a [`Level`][ErrorKind::Level] error.
+    ///
+    /// The maximum nesting level can set at construction time via [`with_max_level`] or after
+    /// construction with [`set_max_level`].
+    ///
+    /// # Default
+    ///
+    /// The default value is `128`.
+    ///
+    /// When the maximum nesting level is set at the default value or lower, the parser will never
+    /// allocate (apart from any allocations performed by the underlying lexer).
+    ///
+    /// # Purpose
+    ///
+    /// The maximum nesting level places a limit on the number of allocations that the parser will
+    /// do to maintain the bookkeeping data structure that tracks the current nesting level. This is
+    /// useful in controlling performance and protecting the parser from malicious or degenerate
+    /// inputs.
+    ///
+    /// For example, consider a 1 GB stream of JSON data consisting only of `{` left brace
+    /// characters. If the maximum nesting level is set to 1,000,000,000 then the parser would,
+    /// after several allocations and reallocations, end up with a 125 MB block of memory to
+    /// track the nesting level. This is almost certainly a malicious, or, at the very minimum,
+    /// erroneous, input; and it could easily bring down a multi-tenant system like a web server.
+    /// The maximum nesting level allows problematic inputs of this type to be detected early,
+    /// before they cause an impact.
+    ///
+    /// [`with_max_level`]: method@Self::with_max_level
+    /// [`set_max_level`]: method@Self::set_max_level
     pub fn max_level(&self) -> usize {
         self.max_level
     }
 
+    /// Sets the maximum nesting level the parser will allow.
+    ///
+    /// The current value is returned by [`max_level`]. It can also be set at construction time
+    /// using [`with_max_level`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the new maximum level exceeds the [current nesting level][Self::level].
+    ///
+    /// # Examples
+    ///
+    /// Set the maximum level to the highest possible value to effectively remove all nesting
+    /// limits.
+    ///
+    /// ```
+    /// # use bufjson::lexical::buf::BufAnalyzer;
+    /// let mut parser = BufAnalyzer::new(&b"\"hello\""[..]).into_parser();
+    /// parser.set_max_level(usize::MAX);
+    /// ```
+    ///
+    /// ```
+    /// use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::{Error, ErrorKind}};
+    ///
+    /// fn parse_primitive(json_text: &str) -> Result<(Token, String), Error> {
+    ///     let mut parser = BufAnalyzer::new(json_text.as_bytes()).into_parser();
+    ///     parser.set_max_level(0); // Disable all nesting.
+    ///
+    ///     let token = parser.next_meaningful();
+    ///
+    ///     Ok((token, parser.content()?.literal().to_string()))
+    /// }
+    ///
+    /// // Flat primitive values can still be parsed.
+    /// assert_eq!((Token::LitTrue, "true".to_string()), parse_primitive("true").unwrap());
+    /// assert_eq!((Token::Num, "123".to_string()), parse_primitive("\n  123").unwrap());
+    ///
+    /// // Arrays and objects will produce a nesting error because we have set max level to 0.
+    /// let err = parse_primitive("[]").unwrap_err();
+    /// assert!(matches!(err.kind(), ErrorKind::Level { level: 0, token: Token::ArrBegin }));
+    /// ```
+    ///
+    /// [`max_level`]: method@Self::max_level
+    /// [`with_max_level`]: method@Self::with_max_level
     pub fn set_max_level(&mut self, max_level: usize) {
-        self.max_level = max_level
+        if self.level() > max_level {
+            panic!(
+                "current level {} exceeds new max level {max_level}",
+                self.level()
+            );
+        }
+
+        self.max_level = max_level;
     }
 
+    /// Constructs a new parser with the given maximum nesting level.
+    ///
+    /// This is a convenience method that combines [`new`] with [`set_max_level`]
+    ///
+    /// [`new`]: method@Self::new
+    /// [`set_max_level`]: method@Self::set_max_level
     pub fn with_max_level(lexer: L, max_level: usize) -> Self {
         let mut parser = Self::new(lexer);
         parser.set_max_level(max_level);
@@ -878,6 +1306,24 @@ where
         parser
     }
 
+    /// Returns the contained lexical analyzer, consuming the `self` value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, buf::BufAnalyzer};
+    /// let mut parser = BufAnalyzer::new(&b"{]"[..]).into_parser();
+    ///
+    /// // Read next token from parser.
+    /// assert_eq!(Token::ObjBegin, parser.next());
+    ///
+    /// // Unwrap the lexical analyzer.
+    /// let mut lexer = parser.into_inner();
+    ///
+    /// // Read next token from lexer (this would cause a syntax error if it was read from a
+    /// // parser).
+    /// assert_eq!(Token::ArrEnd, lexer.next());
+    /// ```
     pub fn into_inner(self) -> L {
         self.lexer
     }

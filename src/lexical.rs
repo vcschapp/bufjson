@@ -719,7 +719,7 @@ pub trait Analyzer {
     /// Returns the text content of the token most recently recognized by [`next`].
     ///
     /// If the most recent call to `next` returned [`Token::Err`], an `Err` result is returned.
-    /// Otherwise, an `Ok` result containing the text content of the recognied lexical token is
+    /// Otherwise, an `Ok` result containing the text content of the recognized lexical token is
     /// returned.
     ///
     /// If called before any call to `next`, this method returns an `Ok` result containing empty

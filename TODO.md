@@ -1,4 +1,5 @@
-- Add `set_max_level` and `max_level` in `Parser`, and make the default max level reasonably low.
+- Add documentation to the `lexical` module top-level docs that explains that it is an interface
+  module and you can find the implementations in X, Y, and Z locations.
 - Add `is_exception()` or something in `Token` to capture error and EOF together?
 - Parameterize `lexical::Content` on `<T>` so it is usable for the
   streaming variants.

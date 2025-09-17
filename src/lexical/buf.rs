@@ -460,7 +460,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
     /// This is an inherent implementation of [`lexical::Analyzer::content`] for convenience, so it
     /// is available even when you don't have the trait imported.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// An `Ok` value is returned as long as the lexical analyzer isn't in an error state.
     ///
