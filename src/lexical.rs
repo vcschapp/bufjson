@@ -36,7 +36,7 @@ pub enum Token {
     LitTrue,
     /// The name separator token, which has the literal value `:`.
     NameSep,
-    /// A numer token such as `0`, `123.4`, or `-1.25e+6`.
+    /// A number token such as `0`, `123.4`, or `-1.25e+6`.
     Num,
     /// The begin object token, which has the literal value `{`.
     ObjBegin,
@@ -391,7 +391,7 @@ impl fmt::Display for Expect {
 /// Category of error that can occur while tokenizing a JSON text.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ErrorKind {
-    /// A Unicode escape sequence of the form `\uLLLL` or `\uHHHH\uLLLL`within a
+    /// A Unicode escape sequence of the form `\uLLLL` or `\uHHHH\uLLLL` within a
     /// [string token][Token::Str] has a bad Unicode surrogate.
     BadSurrogate {
         /// The 16-bit number read from the first Unicode escape sequence.
@@ -408,7 +408,7 @@ pub enum ErrorKind {
         second: Option<u16>,
 
         /// Byte offset from the start of the last Unicode escape sequence (`first` if `second` is
-        /// `None, otherwise `second`) where the error was detected.
+        /// `None`, otherwise `second`) where the error was detected.
         offset: u8,
     },
 
@@ -584,7 +584,7 @@ impl ErrorKind {
             } => {
                 write!(
                     f,
-                    "bad Unicode escape sequence surogate pair: high surrogate '\\u{hi:04X}' followed by invalid low surrogate '\\u{lo:04X}'"
+                    "bad Unicode escape sequence surrogate pair: high surrogate '\\u{hi:04X}' followed by invalid low surrogate '\\u{lo:04X}'"
                 )?;
             }
 

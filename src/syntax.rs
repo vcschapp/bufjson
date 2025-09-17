@@ -664,7 +664,7 @@ impl std::error::Error for Error {
 ///
 /// The [`content`] method passes through the underlying lexical analyzer's content. The content
 /// value may contain references to internal buffers that will not be deallocated until the content
-/// vlaue is dropped. Refer to the specific lexical analyzer's documentation for more.
+/// value is dropped. Refer to the specific lexical analyzer's documentation for more.
 ///
 /// # Continuous parsing
 ///
@@ -708,7 +708,7 @@ impl std::error::Error for Error {
 /// ```
 /// # use bufjson::{lexical::buf::BufAnalyzer, syntax::Parser};
 /// #
-/// // Create the parser by wraing a lexical analyzer.
+/// // Create the parser by wrapping a lexical analyzer.
 /// let lexer = BufAnalyzer::new(&b"[1, 2, 3]"[..]);
 /// let mut parser = Parser::with_max_level(lexer, 1_000_000);
 ///
@@ -735,7 +735,7 @@ impl std::error::Error for Error {
 /// );
 /// ```
 ///
-/// Skip insigificant whitespace and unnecessary punctuation.
+/// Skip insignificant whitespace and unnecessary punctuation.
 ///
 /// ```
 /// # use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
@@ -1034,7 +1034,7 @@ where
         }
     }
 
-    /// Returns then next syntactically-valid *meaningful* lexical token.
+    /// Returns the next syntactically-valid *meaningful* lexical token.
     ///
     /// This method skips whitespace like [`next_non_white`] but also skips past the following
     /// meaningless punctuation characters:

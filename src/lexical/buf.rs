@@ -524,7 +524,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
     /// assert_eq!(Pos { offset: 2, line: 2, col: 1}, *lexer.pos());
     /// ```
     ///
-    /// On errors, the position reported by `pos` may be different than the position reportecd by
+    /// On errors, the position reported by `pos` may be different than the position reported by
     /// the error returned from [`content`]. This is because the `pos` indicates the start of the
     /// token where the error occurred, and the error position is the exact position of the error.
     ///
