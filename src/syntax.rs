@@ -213,11 +213,19 @@ impl fmt::Display for Expect {
     }
 }
 
-const INLINE_LEN: usize = 3; // Number of `usize` values.
+// Number of bytes a `Parser` will dedicate to inlinining the `Struct` level.
+const INLINE_LEN_BYTES: usize = 24;
+
+// Number of `usize` values that provide the "backing storage" for the bytes that inline the level.
+const INLINE_LEN_USIZES: usize = INLINE_LEN_BYTES / std::mem::size_of::<usize>();
+
+// Number of `Struct` levels that can be inlined. Since `Struct` level requires one bit of
+// bookkeeping, we can pack eight levels per byte.
+const NUM_INLINED_LEVELS: usize = INLINE_LEN_BYTES * 8;
 
 #[derive(Clone, Debug)]
 enum StructContext {
-    Inline(usize, BitArray<[usize; INLINE_LEN]>),
+    Inline(usize, BitArray<[usize; INLINE_LEN_USIZES]>),
     Heap(BitVec),
 }
 
@@ -296,7 +304,7 @@ impl IntoIterator for StructContext {
 
 #[doc(hidden)]
 pub enum StructContextIntoIter {
-    Inline(Take<<BitArray<[usize; INLINE_LEN]> as IntoIterator>::IntoIter>),
+    Inline(Take<<BitArray<[usize; INLINE_LEN_USIZES]> as IntoIterator>::IntoIter>),
     Heap(<BitVec as IntoIterator>::IntoIter),
 }
 
@@ -322,7 +330,7 @@ impl ExactSizeIterator for StructContextIntoIter {
 
 impl Default for StructContext {
     fn default() -> Self {
-        Self::Inline(0, BitArray::new([0usize; INLINE_LEN]))
+        Self::Inline(0, BitArray::new([0usize; INLINE_LEN_USIZES]))
     }
 }
 
@@ -513,7 +521,19 @@ enum Content {
 /// Category of parsing error that can occur while parsing a JSON text.
 #[derive(Clone, Debug)]
 pub enum ErrorKind {
+    /// The next lexical token is a `{` or `[` character that would cause the parser's configured
+    /// [maximum nesting level][Parser::max_level] to be exceeded.
+    Level {
+        /// The parser's nesting level processing the new token.
+        level: usize,
+
+        /// The new `{` or `]` token.
+        token: lexical::Token,
+    },
+
     /// The parser's lexical analyzer detected an error.
+    ///
+    /// Contains the [`lexical::ErrorKind`] that describes the lexical error.
     ///
     /// This category includes I/O errors detected by the lexical analyzer, which have the inner
     /// kind [`lexical::ErrorKind::Read`].
@@ -538,6 +558,13 @@ pub enum ErrorKind {
 impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Level { level, token } => {
+                write!(
+                    f,
+                    "level error: level {level} would exceed parser's configured maximum on {token}"
+                )
+            }
+
             Self::Lexical(lexical::ErrorKind::Read) => write!(f, "read error"),
 
             Self::Lexical(inner) => {
@@ -649,6 +676,7 @@ where
     lexer: L,
     context: Context,
     content: Content,
+    max_level: usize,
 }
 
 impl<L: lexical::Analyzer> Parser<L>
@@ -660,6 +688,7 @@ where
             lexer,
             context: Context::default(),
             content: Content::Lazy,
+            max_level: NUM_INLINED_LEVELS,
         }
     }
 
@@ -674,13 +703,33 @@ where
 
         match (self.context.expect, token) {
             (e, Token::ObjBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
-                self.context.inner.push(Struct::Obj);
-                self.context.expect = Expect::ObjNameOrEnd;
+                let level = self.level();
+                if level < self.max_level {
+                    self.context.inner.push(Struct::Obj);
+                    self.context.expect = Expect::ObjNameOrEnd;
+                } else {
+                    content = Content::Err(Error {
+                        kind: ErrorKind::Level { level, token },
+                        pos: *self.pos(),
+                        source: None,
+                    });
+                    token = Token::Err;
+                }
             }
 
             (e, Token::ArrBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
-                self.context.inner.push(Struct::Arr);
-                self.context.expect = Expect::ArrElementOrEnd;
+                let level = self.level();
+                if level < self.max_level {
+                    self.context.inner.push(Struct::Arr);
+                    self.context.expect = Expect::ArrElementOrEnd;
+                } else {
+                    content = Content::Err(Error {
+                        kind: ErrorKind::Level { level, token },
+                        pos: *self.pos(),
+                        source: None,
+                    });
+                    token = Token::Err;
+                }
             }
 
             (Expect::Value, t) | (Expect::ArrElementOrEnd, t)
@@ -812,6 +861,21 @@ where
     #[inline(always)]
     pub fn level(&self) -> usize {
         self.context.level()
+    }
+
+    pub fn max_level(&self) -> usize {
+        self.max_level
+    }
+
+    pub fn set_max_level(&mut self, max_level: usize) {
+        self.max_level = max_level
+    }
+
+    pub fn with_max_level(lexer: L, max_level: usize) -> Self {
+        let mut parser = Self::new(lexer);
+        parser.set_max_level(max_level);
+
+        parser
     }
 
     pub fn into_inner(self) -> L {
