@@ -1,4 +1,58 @@
 //! Parse the structural meaning of a stream of JSON lexical tokens (syntactic analysis).
+//!
+//! The key type in this module is [`Parser`], a JSON syntax parser that wraps any lexical analyzer,
+//! *i.e.*, any value implementing the [`lexical::Analyzer`] trait.
+//!
+//! A `Parser` verifies, in a stream-oriented manner, that a JSON text is syntactically valid
+//! according to the [JSON spec][rfc]. It does not transform a JSON text into any kind of persistent
+//! in-memory data structure, abstract syntax tree, DOM, *etc.* Doing so would interfere with this
+//! crate's focus on streaming, minimizing copies and allocations, and would be redundant given the
+//! multitude of crates that already perform that function.
+//!
+//! # Example
+//!
+//! Parse JSON text containing an array of numbers into a vector.
+//!
+//! ```
+//! use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
+//!
+//! fn parse_numbers(text: &str) -> Result<Vec<u32>, String> {
+//!     let lexer = BufAnalyzer::new(text.as_bytes());
+//!     let mut parser = Parser::new(lexer);        // You can also do `lexer.into_parser()`
+//!
+//!     let token = parser.next_meaningful();       // Skip whitespace ':' and ','
+//!     if token != Token::ArrBegin {
+//!         return Err(format!("expected [ but got {token} at {}", *parser.pos()));
+//!     }
+//!
+//!     let mut numbers = Vec::new();
+//!
+//!     loop {
+//!         let token = parser.next_meaningful();   // Skip whitespace ':' and ','
+//!         match token {
+//!             Token::Num => {
+//!                 match parser.content().unwrap().literal().parse::<u32>() {
+//!                     Ok(number) => numbers.push(number),
+//!                     Err(err) => break Err(format!("{err}")),
+//!                 }
+//!             },
+//!             Token::ArrEnd => break Ok(numbers),
+//!             Token::Err => break Err(format!("{}", parser.content().unwrap_err())),
+//!             _ => break Err(format!("expected number but got {token} at {}", *parser.pos())),
+//!         }
+//!     }
+//! }
+//!
+//! // Successful parses.
+//! assert!(matches!(parse_numbers(" [ ] "), Ok(v) if v == vec![]));
+//! assert!(matches!(parse_numbers("[1, 2, 3]"), Ok(v) if v == vec![1, 2, 3]));
+//!
+//! // Syntax error caught by the parser.
+//! assert!(matches!(parse_numbers("[}"), Err(err)
+//!     if err == "syntax error: expected array element or ] but got } at line 1, column 2 (offset: 1)"));
+//! ```
+//!
+//! [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 
 use crate::{
     Pos,
@@ -145,13 +199,13 @@ impl Expect {
 impl fmt::Display for Expect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            Self::ArrElementOrEnd => "array item",
-            Self::ArrElementSepOrEnd => "',' or ']'",
+            Self::ArrElementOrEnd => "array element or ]",
+            Self::ArrElementSepOrEnd => ", or ]",
             Self::Eof => "EOF",
-            Self::ObjName => "object key",
-            Self::ObjNameOrEnd => "object key or '}'",
-            Self::ObjNameSep => "':'",
-            Self::ObjValueSepOrEnd => "',' or '}'",
+            Self::ObjName => "object member name",
+            Self::ObjNameOrEnd => "object member name or }",
+            Self::ObjNameSep => ":",
+            Self::ObjValueSepOrEnd => ", or }",
             Self::Value => "value",
         };
 
@@ -186,20 +240,13 @@ impl StructContext {
         }
     }
 
-    fn pop(&mut self) -> Option<Struct> {
+    fn pop(&mut self) {
         match self {
-            StructContext::Inline(len, array) => {
-                if *len > 0 {
-                    *len -= 1;
-
-                    Some(array[*len].into())
-                } else {
-                    None
-                }
+            StructContext::Inline(len, _) => *len -= 1,
+            StructContext::Heap(v) => {
+                v.pop().unwrap();
             }
-
-            StructContext::Heap(v) => v.pop().map(Into::<Struct>::into),
-        }
+        };
     }
 
     fn peek(&mut self) -> Option<Struct> {
@@ -279,7 +326,7 @@ impl Default for StructContext {
     }
 }
 
-/// State of the [`Parser`].
+/// State of a [`Parser`].
 ///
 /// Returned from the method [`Parser::context`] and stored on syntax errors in
 /// [`ErrorKind::Syntax`].
@@ -423,6 +470,13 @@ impl IntoIterator for Context {
     }
 }
 
+/// Iterator over the [`Struct`] values that define the nesting level of a parser context.
+///
+/// This iterator can be obtained from a [`Context`] using its [`iter`] method or its implementation
+/// of the [`into_iter`] trait method.
+///
+/// [`iter`]: method@Context::iter
+/// [`into_iter`]: method@IntoIterator::into_iter
 pub struct StructIter<I>(I);
 
 impl<I> Iterator for StructIter<I>
@@ -456,12 +510,27 @@ enum Content {
     Err(Error),
 }
 
+/// Category of parsing error that can occur while parsing a JSON text.
 #[derive(Clone, Debug)]
 pub enum ErrorKind {
+    /// The parser's lexical analyzer detected an error.
+    ///
+    /// This category includes I/O errors detected by the lexical analyzer, which have the inner
+    /// kind [`lexical::ErrorKind::Read`].
+    ///
+    /// A parse [`Error`] with this kind will have a `Some` source that contains the error reported
+    /// by the lexical analyzer.
     Lexical(lexical::ErrorKind),
-    Read,
+
+    /// The parser detected a syntax error.
     Syntax {
+        /// The parser context at the point when the error was detected.
+        ///
+        /// The context includes the nesting level and the expected next lexical token (or category
+        /// of expected next token).
         context: Context,
+
+        /// The actual next token the parser received which didn't match its expectation.
         token: lexical::Token,
     },
 }
@@ -469,13 +538,13 @@ pub enum ErrorKind {
 impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Lexical(lexical::ErrorKind::Read) => write!(f, "read error"),
+
             Self::Lexical(inner) => {
                 write!(f, "lexical error: ")?;
 
                 inner.fmt(f)
             }
-
-            Self::Read => write!(f, "read error"),
 
             Self::Syntax { context, token } => {
                 write!(
@@ -488,11 +557,37 @@ impl fmt::Display for ErrorKind {
     }
 }
 
+/// Parse error detected by [`Parser`].
 #[derive(Debug, Clone)]
 pub struct Error {
     kind: ErrorKind,
     pos: Pos,
     source: Option<Arc<dyn std::error::Error + Send + Sync + 'static>>,
+}
+
+impl Error {
+    /// Returns the category of error.
+    pub fn kind(&self) -> &ErrorKind {
+        &self.kind
+    }
+
+    /// Returns the position within the JSON text where the error was encountered.
+    ///
+    /// For lexical errors, the position returned by this method is more precise than the one
+    /// returned by [`Parser::pos`], as explained in the documentation for [`lexical::Error::pos`].
+    ///
+    /// For syntax errors, the position returned by this method and [`Parser::pos`] should always be
+    /// in sync.
+    pub fn pos(&self) -> &Pos {
+        &self.pos
+    }
+
+    // todo: this is where I left off.
+    pub fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source
+            .as_ref()
+            .map(|arc| &**arc as &(dyn std::error::Error + 'static))
+    }
 }
 
 impl fmt::Display for Error {
@@ -503,19 +598,57 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source
-            .as_ref()
-            .map(|arc| &**arc as &(dyn std::error::Error + 'static))
+        Error::source(self)
     }
 }
 
+/// Parses JSON text at a syntax level.
+///
+/// A `Parser` wraps any value that implements the [`lexical::Analyzer`] trait in a lightweight,
+/// stream-oriented, parsing layer that understands JSON syntax.
+///
+/// # Performance considerations
+///
+/// `Parser` is a very lightweight type. Its performance, allocation behavior, and memory
+/// consumption are entirely determined by the wrapped lexical analyzer, meaning a parser is as
+/// performant as its underlying lexer implementation.
+///
+/// `Parser` adds very little overhead beyond the
+/// bare minimum necessary to keep track of nesting levels in order to validate object and array
+/// syntax.
+///
+/// # Examples
+///
+/// Create a parser with [`new`]:
+///
+/// ```
+/// # use bufjson::{lexical::buf::BufAnalyzer, syntax::Parser};
+/// #
+/// // Create the parser by wraing a lexical analyzer.
+/// let lexer = BufAnalyzer::new(&b"[1, 2, 3]"[..]);
+/// let mut parser = Parser::new(lexer);
+///
+/// // Use the parser ...
+/// ```
+///
+/// Convert back to the underlying lexical analyzer at any time with [`into_inner`]:
+///
+/// ```
+/// # use bufjson::{lexical::buf::BufAnalyzer, syntax::Parser};
+/// #
+/// let parser = Parser::new(BufAnalyzer::new(&b"[1, 2, 3]"[..]));
+/// let lexer = parser.into_inner();
+/// ```
+///
+/// [`new`]: method@Self::new
+/// [`into_inner`]: method@Self::into_inner
 pub struct Parser<L: lexical::Analyzer>
 where
     L::Error: 'static,
 {
     lexer: L,
     context: Context,
-    value: Content,
+    content: Content,
 }
 
 impl<L: lexical::Analyzer> Parser<L>
@@ -526,14 +659,18 @@ where
         Self {
             lexer,
             context: Context::default(),
-            value: Content::Lazy,
+            content: Content::Lazy,
         }
     }
 
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Token {
-        let token = self.lexer.next();
-        let mut value = Content::Lazy;
+        if matches!(self.content, Content::Err(_)) {
+            return Token::Err;
+        }
+
+        let mut token = self.lexer.next();
+        let mut content = Content::Lazy;
 
         match (self.context.expect, token) {
             (e, Token::ObjBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
@@ -546,12 +683,12 @@ where
                 self.context.expect = Expect::ArrElementOrEnd;
             }
 
-            (Expect::Value, t)
+            (Expect::Value, t) | (Expect::ArrElementOrEnd, t)
                 if t == Token::LitFalse
                     || t == Token::LitNull
+                    || t == Token::LitTrue
                     || t == Token::Num
-                    || t == Token::Str
-                    || t == Token::LitTrue =>
+                    || t == Token::Str =>
             {
                 self.got_value(false);
             }
@@ -602,16 +739,11 @@ where
                     .content()
                     .err()
                     .expect("lexer returned error token, must contain error value");
+                let kind = ErrorKind::Lexical(err.kind());
+                let source =
+                    Some(Arc::new(err) as Arc<dyn std::error::Error + Send + Sync + 'static>);
 
-                let (kind, source) = match err.kind() {
-                    lexical::ErrorKind::Read => (
-                        ErrorKind::Read,
-                        Some(Arc::new(err) as Arc<dyn std::error::Error + Send + Sync + 'static>),
-                    ),
-                    _ => (ErrorKind::Lexical(err.kind()), None),
-                };
-
-                value = Content::Err(Error {
+                content = Content::Err(Error {
                     kind,
                     pos: *self.lexer.pos(),
                     source,
@@ -619,7 +751,7 @@ where
             }
 
             (_, _) => {
-                value = Content::Err(Error {
+                content = Content::Err(Error {
                     kind: ErrorKind::Syntax {
                         context: self.context.clone(),
                         token,
@@ -627,10 +759,12 @@ where
                     pos: *self.lexer.pos(),
                     source: None,
                 });
+
+                token = Token::Err;
             }
         }
 
-        self.value = value;
+        self.content = content;
 
         token
     }
@@ -657,7 +791,7 @@ where
     }
 
     pub fn content(&self) -> Result<L::Content, Error> {
-        match &self.value {
+        match &self.content {
             Content::Lazy => match self.lexer.content() {
                 Ok(v) => Ok(v),
                 Err(_) => panic!("lexer must not be in an error state"),
@@ -685,16 +819,51 @@ where
     }
 
     fn got_value(&mut self, pop: bool) {
-        let s = if pop {
-            self.context.inner.pop()
-        } else {
-            self.context.inner.peek()
-        };
+        if pop {
+            self.context.inner.pop();
+        }
 
-        match s {
+        match self.context.inner.peek() {
             Some(Struct::Arr) => self.context.expect = Expect::ArrElementSepOrEnd,
             Some(Struct::Obj) => self.context.expect = Expect::ObjValueSepOrEnd,
             None => self.context.expect = Expect::Eof,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temp_test_to_repro_bug_delete_or_replace_me_pls() {
+        let mut parser = lexical::buf::BufAnalyzer::new(&b"[1]"[..]).into_parser();
+
+        assert_eq!(Token::ArrBegin, parser.next());
+        assert_eq!("[", parser.content().unwrap().literal());
+        assert_eq!(Token::Num, parser.next());
+        assert_eq!("1", parser.content().unwrap().literal());
+    }
+
+    #[test]
+    fn temp_test_to_repro_bug_delete_or_replace_me_pls_2() {
+        let mut parser = lexical::buf::BufAnalyzer::new(&b"[1, 2]"[..]).into_parser();
+
+        assert_eq!(Token::ArrBegin, parser.next_meaningful());
+        assert_eq!("[", parser.content().unwrap().literal());
+        assert_eq!(Token::Num, parser.next_meaningful());
+        assert_eq!("1", parser.content().unwrap().literal());
+        assert_eq!(Token::Num, parser.next_meaningful());
+        assert_eq!("2", parser.content().unwrap().literal());
+    }
+
+    #[test]
+    fn temp_test_to_repro_bug_delete_or_replace_me_pls_3() {
+        let mut parser = lexical::buf::BufAnalyzer::new(&b"[}"[..]).into_parser();
+
+        assert_eq!(Token::ArrBegin, parser.next());
+        assert_eq!("[", parser.content().unwrap().literal());
+        assert_eq!(Token::Err, parser.next());
+        eprintln!("{}", parser.content().unwrap_err());
     }
 }

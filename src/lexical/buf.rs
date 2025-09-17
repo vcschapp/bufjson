@@ -322,10 +322,10 @@ impl Default for StoredContent {
 /// [`content`]: method@Self::content
 pub struct BufAnalyzer<B: Deref<Target = [u8]>> {
     buf: Arc<B>,
+    content: StoredContent,
+    content_pos: Pos,
     mach: state::Machine,
     repeat: Option<u8>,
-    value: StoredContent,
-    value_pos: Pos,
 }
 
 impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
@@ -346,15 +346,15 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
         let buf = Arc::new(buf);
         let mach = state::Machine::default();
         let repeat = None;
-        let value = StoredContent::default();
-        let value_pos = Pos::default();
+        let content = StoredContent::default();
+        let content_pos = Pos::default();
 
         Self {
             buf,
+            content,
+            content_pos,
             mach,
             repeat,
-            value,
-            value_pos,
         }
     }
 
@@ -374,11 +374,11 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
     /// ```
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Token {
-        if matches!(self.value, StoredContent::Err(_)) {
+        if matches!(self.content, StoredContent::Err(_)) {
             return Token::Err;
         }
 
-        self.value_pos = *self.mach.pos();
+        self.content_pos = *self.mach.pos();
 
         let mut b = std::mem::take(&mut self.repeat);
 
@@ -395,7 +395,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
                     escaped,
                     repeat,
                 } => {
-                    self.value = match token {
+                    self.content = match token {
                         Token::ObjBegin => StoredContent::Literal("{"),
                         Token::ObjEnd => StoredContent::Literal("}"),
                         Token::ArrBegin => StoredContent::Literal("["),
@@ -405,7 +405,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
                         Token::LitNull => StoredContent::Literal("null"),
                         Token::LitTrue => StoredContent::Literal("true"),
                         _ => StoredContent::Range(
-                            self.value_pos.offset..self.mach.pos().offset,
+                            self.content_pos.offset..self.mach.pos().offset,
                             escaped,
                         ),
                     };
@@ -444,7 +444,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
                         _ => (),
                     }
 
-                    self.value = StoredContent::Err(Error { kind, pos });
+                    self.content = StoredContent::Err(Error { kind, pos });
 
                     return Token::Err;
                 }
@@ -485,7 +485,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
     ///
     /// [`next`]: method@Self::next
     pub fn content(&self) -> Result<Content<B>, Error> {
-        match &self.value {
+        match &self.content {
             StoredContent::Literal(s) => Ok(Content::from_static(s)),
             StoredContent::Range(r, escaped) => {
                 Ok(Content::from_buf(&self.buf, r.clone(), *escaped))
@@ -544,7 +544,7 @@ impl<B: Deref<Target = [u8]>> BufAnalyzer<B> {
     /// [`content`]: method@Self::content
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
-        &self.value_pos
+        &self.content_pos
     }
 
     /// Converts a lexical analyzer into a syntax parser, consuming the lexical analyzer in the

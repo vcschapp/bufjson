@@ -388,7 +388,7 @@ impl fmt::Display for Expect {
     }
 }
 
-/// Category of lexical error that can occur in a JSON text.
+/// Category of error that can occur while tokenizing a JSON text.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ErrorKind {
     /// A Unicode escape sequence of the form `\uLLLL` or `\uHHHH\uLLLL`within a
