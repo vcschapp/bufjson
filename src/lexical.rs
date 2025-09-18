@@ -137,7 +137,7 @@ impl Token {
     /// assert_eq!(None, Token::Str.static_content());
     /// assert_eq!(None, Token::White.static_content());
     /// ```
-    pub fn static_content(&self) -> Option<&'static str> {
+    pub const fn static_content(&self) -> Option<&'static str> {
         match self {
             Self::ArrBegin => Some("["),
             Self::ArrEnd => Some("]"),
