@@ -1,5 +1,10 @@
 - Add documentation to the `lexical` module top-level docs that explains that it is an interface
   module and you can find the implementations in X, Y, and Z locations.
+  `.content().unwrap()` is unwieldy, as is `.content().unwrap_err()`, because you pretty much always
+  know which one you want. Replace this with:
+     - `fn content(&self) -> Content`
+     - `fn error(&self) -> Error`
+     - `fn try_content(&self) -> Result<Content, Error>`
 - Somehow `Content` should be able to return an owned reference to the unescaped string so user
   doesn't have to allocate again to copy it. There should be some method that returns a `Cow`.
   It ideally would be `unescaped(&self) -> Cow<'a, Foo>` where `Foo` is `String` for the buf use
@@ -90,3 +95,10 @@ enum InnerContent {
 ```
 
 The above enum is also 40 bytes as long as Multi doesn't exceed the size of Single...
+
+
+SKETCH OF LEXICAL MODULE DOCUMENTATION.
+=======================================
+
+SKETCH OF README.
+=================
