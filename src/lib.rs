@@ -42,6 +42,12 @@ pub struct Pos {
 }
 
 impl Pos {
+    /// Creates a new `Pos`.
+    #[inline(always)]
+    pub fn new(offset: usize, line: usize, col: usize) -> Self {
+        Self { offset, line, col }
+    }
+
     #[inline(always)]
     pub(crate) fn advance_line(&mut self) {
         self.offset += 1;
@@ -84,5 +90,46 @@ impl fmt::Display for Pos {
             "line {}, column {} (offset: {})",
             self.line, self.col, self.offset
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pos_new() {
+        assert_eq!(
+            Pos {
+                offset: 1,
+                line: 2,
+                col: 3
+            },
+            Pos::new(1, 2, 3)
+        );
+    }
+
+    #[test]
+    fn test_pos_default() {
+        assert_eq!(
+            Pos {
+                offset: 0,
+                line: 1,
+                col: 1
+            },
+            Pos::default()
+        );
+    }
+
+    #[test]
+    fn test_pos_display() {
+        assert_eq!(
+            "line 1, column 1 (offset: 0)",
+            format!("{}", Pos::default())
+        );
+        assert_eq!(
+            "line 77, column 8 (offset: 103)",
+            format!("{}", Pos::new(103, 77, 8))
+        );
     }
 }
