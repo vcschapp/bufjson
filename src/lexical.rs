@@ -188,7 +188,7 @@ impl fmt::Display for Token {
 /// ```
 ///
 /// The above JSON text contains one token whose type is [`Token::Str`] and whose content is `"foo"`.
-pub trait Content {
+pub trait Content: fmt::Debug {
     /// Returns the literal content of the token exactly as it appears in the JSON text.
     ///
     /// # Static content tokens
@@ -682,15 +682,18 @@ pub trait Error: std::error::Error + Send + Sync {
 ///
 /// Converts JSON text into a stream of lexical tokens.
 pub trait Analyzer {
-    /// The type that contains token content, returned by the [`content`] method.
+    /// The type that contains token content, returned by the [`content`] and [`try_content`]
+    /// methods.
     ///
     /// [`content`]: method@Self::content
+    /// [`try_content`]: method@Self::try_content
     type Content: Content;
 
-    /// The type that reports errors during the lexical analysis process, returned by the [`content`]
-    /// method.
+    /// The type that reports errors during the lexical analysis process, returned by the [`err`]
+    /// and [`try_content`] methods.
     ///
-    /// [`content`]: method@Self::content
+    /// [`err`]: method@Self::err
+    /// [`try_content`]: method@Self::try_content
     type Error: Error;
 
     /// Recognizes the next lexical token in the JSON text.
@@ -716,17 +719,16 @@ pub trait Analyzer {
     /// should never allocate.
     fn next(&mut self) -> Token;
 
-    /// Returns the text content of the token most recently recognized by [`next`].
+    /// Returns the text content of the non-error token most recently recognized by [`next`].
     ///
-    /// If the most recent call to `next` returned [`Token::Err`], an `Err` result is returned.
-    /// Otherwise, an `Ok` result containing the text content of the recognized lexical token is
-    /// returned.
-    ///
-    /// If called before any call to `next`, this method returns an `Ok` result containing empty
-    /// text.
+    /// If called before any call to `next`, returns empty content.
     ///
     /// If called repeatedly between calls to `next`, subsequent calls return a value equivalent to
     /// the value returned by the first call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the token most recently returned by `next` was [`Token::Err`].
     ///
     /// # Performance considerations
     ///
@@ -736,7 +738,25 @@ pub trait Analyzer {
     /// token is not needed for some reason, the best course is not to call this method at all.
     ///
     /// [`next`]: method@Self::next
-    fn content(&self) -> Result<Self::Content, Self::Error>;
+    #[inline]
+    fn content(&self) -> Self::Content {
+        self.try_content().unwrap()
+    }
+
+    /// Returns the error value associated with the error token most recently returned by [`next`].
+    ///
+    /// If called repeatedly after a call to `next` that returned [`Token::Err`], subsequent calls
+    /// return a value equivalent to the value returned by the first call.
+    ///
+    /// # Panics
+    ///
+    /// If the token most recently returned by `next` was not [`Token::Err`].
+    ///
+    /// [`next`]: method@Self::next
+    #[inline]
+    fn err(&self) -> Self::Error {
+        self.try_content().unwrap_err()
+    }
 
     /// Returns the position of the lexical analyzer's cursor within the JSON text.
     ///
@@ -749,6 +769,35 @@ pub trait Analyzer {
     ///
     /// [`next`]: method@Self::next
     fn pos(&self) -> &Pos;
+
+    /// Returns the content or error value associated with the token most recently recognized by
+    /// [`next`].
+    ///
+    /// If the most recent call to `next` returned [`Token::Err`], an `Err` result is returned.
+    /// Otherwise, an `Ok` result containing the text content of the recognized lexical token is
+    /// returned.
+    ///
+    /// If called before any call to `next`, this method returns an `Ok` result containing empty
+    /// text.
+    ///
+    /// If called repeatedly between calls to `next`, subsequent calls return a value equivalent to
+    /// the value returned by the first call.
+    ///
+    /// When the value of the most recent token is known, calling [`content`] or [`err`] directly,
+    /// as the case may be, will produce cleaner and more compact code than calling this method and
+    /// unwrapping the result.
+    ///
+    /// # Performance considerations
+    ///
+    /// A call to this method may allocate, although implementations should avoid allocation if
+    /// possible. Therefore, it is best to cache the result of this method rather than calling it
+    /// repeatedly to fetch the same value between calls to `next`. If the text content of the last
+    /// token is not needed for some reason, the best course is not to call this method at all.
+    ///
+    /// [`next`]: method@Self::next
+    /// [`content`]: method@Self::content
+    /// [`err`]: method@Self::err
+    fn try_content(&self) -> Result<Self::Content, Self::Error>;
 }
 
 pub(crate) fn hex2u16(b: u8) -> u16 {

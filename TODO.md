@@ -1,10 +1,5 @@
 - Add documentation to the `lexical` module top-level docs that explains that it is an interface
   module and you can find the implementations in X, Y, and Z locations.
-  `.content().unwrap()` is unwieldy, as is `.content().unwrap_err()`, because you pretty much always
-  know which one you want. Replace this with:
-     - `fn content(&self) -> Content`
-     - `fn error(&self) -> Error`
-     - `fn try_content(&self) -> Result<Content, Error>`
 - Somehow `Content` should be able to return an owned reference to the unescaped string so user
   doesn't have to allocate again to copy it. There should be some method that returns a `Cow`.
   It ideally would be `unescaped(&self) -> Cow<'a, Foo>` where `Foo` is `String` for the buf use
@@ -16,6 +11,9 @@
   useful in shortening match statements in some cases. (Maybe also want `is_meaningful()`,
   `is_pseudo`, `is_primitive`)?
 - Re-export the following into the root: `Token`, `BufAnalyzer`, `Parser`.
+- Replace `#[inline(always)]` with `#[inline]` except for methods that are just a reference return
+  or single method call.
+- Put `#[must_use]` directives in appropriate places.
 - Parameterize `lexical::Content` on `<T>` so it is usable for the
   streaming variants.
       - `Parser` won't need to care about the contents, but it's

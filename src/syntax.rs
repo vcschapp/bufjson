@@ -31,13 +31,13 @@
 //!         let token = parser.next_meaningful();   // Skip whitespace ':' and ','
 //!         match token {
 //!             Token::Num => {
-//!                 match parser.content().unwrap().literal().parse::<u32>() {
+//!                 match parser.content().literal().parse::<u32>() {
 //!                     Ok(number) => numbers.push(number),
 //!                     Err(err) => break Err(format!("{err}")),
 //!                 }
 //!             },
 //!             Token::ArrEnd => break Ok(numbers),
-//!             Token::Err => break Err(format!("{}", parser.content().unwrap_err())),
+//!             Token::Err => break Err(format!("{}", parser.err())),
 //!             _ => break Err(format!("expected number but got {token} at {}", *parser.pos())),
 //!         }
 //!     }
@@ -724,7 +724,7 @@ impl std::error::Error for Error {
 /// let result = loop {
 ///     match parser.next() {
 ///         Token::Eof => break Ok(()),
-///         Token::Err => break Err(parser.content().unwrap_err()),
+///         Token::Err => break Err(parser.err()),
 ///         _ => (),
 ///     }
 /// };
@@ -745,7 +745,7 @@ impl std::error::Error for Error {
 /// loop {
 ///     match parser.next_meaningful() {
 ///         Token::Eof | Token::Err => break,
-///         t => significant.push((t, parser.content().unwrap().literal().to_string())),
+///         t => significant.push((t, parser.content().literal().to_string())),
 ///     }
 /// };
 ///
@@ -832,7 +832,7 @@ where
     /// let mut parser = BufAnalyzer::new(&b"{"[..]).into_parser();
     /// assert_eq!(Token::ObjBegin, parser.next());
     /// assert_eq!(Token::Err, parser.next());
-    /// let err = parser.content().unwrap_err();
+    /// let err = parser.err();
     /// assert_eq!(
     ///     "syntax error: expected object member name or } but got EOF at line 1, column 2 (offset: 1)",
     ///     format!("{err}")
@@ -931,9 +931,8 @@ where
             (_, Token::Err) => {
                 let err = self
                     .lexer
-                    .content()
-                    .err()
-                    .expect("lexer returned error token, must contain error value");
+                    .try_content()
+                    .expect_err("lexer returned error token, must contain error value");
                 let kind = ErrorKind::Lexical(err.kind());
                 let source =
                     Some(Arc::new(err) as Arc<dyn std::error::Error + Send + Sync + 'static>);
@@ -989,7 +988,7 @@ where
     ///         let token = parser.next_non_white();
     ///         match token {
     ///             Token::Eof => break Ok(pretty),
-    ///             Token::Err => break Err(parser.content().unwrap_err()),
+    ///             Token::Err => break Err(parser.err()),
     ///             Token::ObjBegin | Token::ArrBegin => {
     ///                 pretty.push_str(token.static_content().unwrap());
     ///                 pretty.push('\n');
@@ -1005,7 +1004,7 @@ where
     ///                 pretty.push_str(",\n");
     ///                 indent(&mut pretty, parser.level());
     ///             },
-    ///             _ => pretty.push_str(parser.content().unwrap().literal()),
+    ///             _ => pretty.push_str(parser.content().literal()),
     ///         }
     ///     }
     /// }
@@ -1081,54 +1080,72 @@ where
         }
     }
 
-    /// Fetches the content for the current lexical token.
+    /// Fetches the text content for the current non-error token.
     ///
-    /// The current lexical token is the token last returned by [`next`], [`next_non_white`], or
+    /// The current token is the token most recently returned by [`next`], [`next_non_white`], or
     /// [`next_meaningful`].
     ///
-    /// If the current lexical token is [`Token::Err`], an `Err` result is returned. Otherwise, an
-    /// `Ok` result containing the text content of the recognied lexical token is returned.
+    /// This method does not allocate unless the underlying lexical analyzer's [`try_content`]
+    /// method allocates.
     ///
-    /// This method does not allocate unless the underlying lexical analyzer's [`content`] method
-    /// allocates.
+    /// # Panics
     ///
-    /// # Examples
+    /// Panics if the current token is [`Token::Err`].
     ///
-    /// An `Ok` value is returned as long as the parser isn't in an error state.
+    /// # Example
     ///
     /// ```
     /// # use bufjson::lexical::{Token, buf::BufAnalyzer};
-    /// let mut parser = BufAnalyzer::new(&b"[123"[..]).into_parser();
+    /// let mut parser = BufAnalyzer::new(&b"[ 1, 2]"[..]).into_parser();
+    ///
     /// assert_eq!(Token::ArrBegin, parser.next());
-    /// assert_eq!(Token::Num, parser.next());
-    /// assert!(matches!(parser.content(), Ok(c) if c.literal() == "123"));
+    ///
+    /// assert_eq!(Token::Num, parser.next_non_white());
+    /// assert_eq!("1", parser.content().literal());
+    ///
+    /// assert_eq!(Token::Num, parser.next_meaningful());
+    /// assert_eq!("2", parser.content().literal());
     /// ```
     ///
-    /// Once the parser detects an error, it will return an `Err` value describing the error.
-    ///
-    /// ```
-    /// use bufjson::{Pos, lexical::{Token, buf::BufAnalyzer}, syntax::ErrorKind};
-    ///
-    /// let mut parser = BufAnalyzer::new(&b"[123"[..]).into_parser();
-    /// assert_eq!(Token::ArrBegin, parser.next());
-    /// assert_eq!(Token::Num, parser.next());
-    /// assert_eq!(Token::Err, parser.next());
-    /// let error_kind = parser.content().unwrap_err().kind().clone();
-    /// assert!(matches!(error_kind, ErrorKind::Syntax { context: _, token: Token::Eof }));
-    /// ```
-    ///
-    /// [`content`]: lexical::Analyzer::content
     /// [`next`]: method@Self::next
     /// [`next_non_white`]: method@Self::next_non_white
     /// [`next_meaningful`]: method@Self::next_meaningful
-    pub fn content(&self) -> Result<L::Content, Error> {
-        match &self.content {
-            Content::Lazy => match self.lexer.content() {
-                Ok(v) => Ok(v),
-                Err(_) => panic!("lexer must not be in an error state"),
-            },
-            Content::Err(err) => Err(err.clone()),
-        }
+    /// [`try_content`]: lexical::Analyzer::try_content
+    #[inline]
+    pub fn content(&self) -> L::Content {
+        self.try_content().unwrap()
+    }
+
+    /// Fetches the err value associated with the current error token.
+    ///
+    /// The current token is the token most recently returned by [`next`], [`next_non_white`], or
+    /// [`next_meaningful`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current token is not [`Token::Err`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::ErrorKind};
+    ///
+    /// let mut parser = BufAnalyzer::new(&b"{]}"[..]).into_parser();
+    ///
+    /// assert_eq!(Token::ObjBegin, parser.next());
+    /// assert_eq!(Token::Err, parser.next());
+    /// assert!(matches!(
+    ///     parser.err().kind(),
+    ///     ErrorKind::Syntax { context: _, token: Token::ArrEnd },
+    /// ));
+    /// ```
+    ///
+    /// [`next`]: method@Self::next
+    /// [`next_non_white`]: method@Self::next_non_white
+    /// [`next_meaningful`]: method@Self::next_meaningful
+    #[inline]
+    pub fn err(&self) -> Error {
+        self.try_content().unwrap_err()
     }
 
     /// Returns the position of the current lexical token.
@@ -1142,6 +1159,56 @@ where
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
         self.lexer.pos()
+    }
+
+    /// Fetches the content or error associated with the current token.
+    ///
+    /// The current token is the token most recently returned by [`next`], [`next_non_white`], or
+    /// [`next_meaningful`].
+    ///
+    /// If the current token is [`Token::Err`], an `Err` result is returned. Otherwise, an `Ok`
+    /// result containing the text content of the recognized lexical token is returned.
+    ///
+    /// This method does not allocate unless the underlying lexical analyzer's [`try_content`]
+    /// method allocates.
+    ///
+    /// # Examples
+    ///
+    /// An `Ok` value is returned as long as the parser isn't in an error state.
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, buf::BufAnalyzer};
+    /// let mut parser = BufAnalyzer::new(&b"[123"[..]).into_parser();
+    /// assert_eq!(Token::ArrBegin, parser.next());
+    /// assert_eq!(Token::Num, parser.next());
+    /// assert!(matches!(parser.try_content(), Ok(c) if c.literal() == "123"));
+    /// ```
+    ///
+    /// Once the parser detects an error, it will return an `Err` value describing the error.
+    ///
+    /// ```
+    /// use bufjson::{Pos, lexical::{Token, buf::BufAnalyzer}, syntax::ErrorKind};
+    ///
+    /// let mut parser = BufAnalyzer::new(&b"[123"[..]).into_parser();
+    /// assert_eq!(Token::ArrBegin, parser.next());
+    /// assert_eq!(Token::Num, parser.next());
+    /// assert_eq!(Token::Err, parser.next());
+    /// let error_kind = parser.try_content().unwrap_err().kind().clone();
+    /// assert!(matches!(error_kind, ErrorKind::Syntax { context: _, token: Token::Eof }));
+    /// ```
+    ///
+    /// [`next`]: method@Self::next
+    /// [`next_non_white`]: method@Self::next_non_white
+    /// [`next_meaningful`]: method@Self::next_meaningful
+    /// [`try_content`]: lexical::Analyzer::try_content
+    pub fn try_content(&self) -> Result<L::Content, Error> {
+        match &self.content {
+            Content::Lazy => match self.lexer.try_content() {
+                Ok(v) => Ok(v),
+                Err(_) => panic!("lexer must not be in an error state"),
+            },
+            Content::Err(err) => Err(err.clone()),
+        }
     }
 
     /// Returns the current parse context, which includes the nesting state and next expected token.
@@ -1268,7 +1335,7 @@ where
     ///
     ///     let token = parser.next_meaningful();
     ///
-    ///     Ok((token, parser.content()?.literal().to_string()))
+    ///     Ok((token, parser.try_content()?.literal().to_string()))
     /// }
     ///
     /// // Flat primitive values can still be parsed.
@@ -1350,9 +1417,9 @@ mod tests {
         let mut parser = lexical::buf::BufAnalyzer::new(&b"[1]"[..]).into_parser();
 
         assert_eq!(Token::ArrBegin, parser.next());
-        assert_eq!("[", parser.content().unwrap().literal());
+        assert_eq!("[", parser.content().literal());
         assert_eq!(Token::Num, parser.next());
-        assert_eq!("1", parser.content().unwrap().literal());
+        assert_eq!("1", parser.content().literal());
     }
 
     #[test]
@@ -1360,11 +1427,11 @@ mod tests {
         let mut parser = lexical::buf::BufAnalyzer::new(&b"[1, 2]"[..]).into_parser();
 
         assert_eq!(Token::ArrBegin, parser.next_meaningful());
-        assert_eq!("[", parser.content().unwrap().literal());
+        assert_eq!("[", parser.content().literal());
         assert_eq!(Token::Num, parser.next_meaningful());
-        assert_eq!("1", parser.content().unwrap().literal());
+        assert_eq!("1", parser.content().literal());
         assert_eq!(Token::Num, parser.next_meaningful());
-        assert_eq!("2", parser.content().unwrap().literal());
+        assert_eq!("2", parser.content().literal());
     }
 
     #[test]
@@ -1372,8 +1439,7 @@ mod tests {
         let mut parser = lexical::buf::BufAnalyzer::new(&b"[}"[..]).into_parser();
 
         assert_eq!(Token::ArrBegin, parser.next());
-        assert_eq!("[", parser.content().unwrap().literal());
+        assert_eq!("[", parser.content().literal());
         assert_eq!(Token::Err, parser.next());
-        eprintln!("{}", parser.content().unwrap_err());
     }
 }

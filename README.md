@@ -16,7 +16,7 @@ fn main() {
         let token = lexer.next();
         match token {
             Token::Eof | Token::Err => break,
-            _ => println!("{token:?} => {}", lexer.content().unwrap()),
+            _ => println!("{token:?} => {}", lexer.content()),
         }
     }
 }
