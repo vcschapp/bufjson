@@ -609,7 +609,10 @@ impl Error {
         &self.pos
     }
 
-    // todo: this is where I left off.
+    /// Returns the lower-level source of this error, if any.
+    ///
+    /// This is an inherent implementation of [`std::error::Error::source`] for convenience, so
+    /// it is available even when you don't have the trait imported.
     pub fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.source
             .as_ref()
