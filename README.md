@@ -10,7 +10,8 @@ Add `bufjson` to your `Cargo.toml` or run `$ cargo add bufjson`.
 
 Here's a simple example that parses a JSON text for syntax validity and prints it with the
 insignificant whitespace stripped out.
-```
+
+```rust
 use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
 
 fn strip_whitespace(json_text: &str) {
