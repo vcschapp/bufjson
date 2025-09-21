@@ -1,6 +1,6 @@
 
-> **`bufjson`**. A low-level, low-allocation, low-copy JSON tokenizer and parser geared toward
-> efficient stream processing at scale.
+**`bufjson`**. A low-level, low-allocation, low-copy JSON tokenizer and parser geared toward
+efficient stream processing at scale.
 
 ----------------------------------------------------------------------------------------------------
 
