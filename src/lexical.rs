@@ -1,7 +1,7 @@
 //! Scan JSON text, extracting a stream of tokens (lexical analysis).
 
 use crate::Pos;
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
 pub mod buf;
 pub mod state;
@@ -242,12 +242,12 @@ pub trait Content: fmt::Debug {
     /// fully expanded.
     ///
     /// For non-string tokens, and string tokens for which [`is_escaped`] returns `false`, this
-    /// method does nothing and simply returns the same value returned by [`literal`].
+    /// method returns a [`Cow::Borrowed`] containing the same value returned by [`literal`].
     ///
-    /// For string tokens containing one or more escape sequences, this method returns a normalized
-    /// version of the string value with the escape sequences expanded. At least one allocation is
-    /// likely to be triggered the first time this method is called for a string token value
-    /// containing escape sequences.
+    /// For string tokens with one or more escape sequences, this method returns a [`Cow::Owned`]
+    /// containing a normalized version of the string value with the escape sequences expanded. An
+    /// allocation will be triggered, so it may be preferable to cache the value returned rather
+    /// than calling this method repeatedly on the same content.
     ///
     /// As described in the [JSON spec][rfc], the following escape sequence expansions are done:
     ///
@@ -267,7 +267,7 @@ pub trait Content: fmt::Debug {
     /// [`literal`]: method@Self::literal
     /// [`is_escaped`]: method@Self::is_escaped
     /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
-    fn unescaped(&mut self) -> &str;
+    fn unescaped(&mut self) -> Cow<'_, str>;
 }
 
 /// Character or class of characters expected at the next input position of a JSON text.

@@ -7,6 +7,7 @@ use crate::{
     syntax,
 };
 use std::{
+    borrow::Cow,
     fmt,
     ops::{Deref, Range},
     sync::Arc,
@@ -37,7 +38,7 @@ impl<B: Deref<Target = [u8]>> Ref<B> {
     }
 }
 
-const INLINE_LEN: usize = 39;
+const INLINE_LEN: usize = 30;
 
 type InlineBuf = [u8; INLINE_LEN];
 
@@ -47,7 +48,6 @@ enum InnerContent<B: Deref<Target = [u8]>> {
     Inline(u8, InlineBuf),
     NotEscaped(Ref<B>),
     Escaped(Ref<B>),
-    UnEscaped(Ref<B>, String),
 }
 
 impl<B: Deref<Target = [u8]>> Default for InnerContent<B> {
@@ -73,9 +73,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
         match &self.0 {
             InnerContent::Static(s) => s,
             InnerContent::Inline(len, buf) => Self::inline_str(*len, buf),
-            InnerContent::NotEscaped(r)
-            | InnerContent::Escaped(r)
-            | InnerContent::UnEscaped(r, _) => r.as_str(),
+            InnerContent::NotEscaped(r) | InnerContent::Escaped(r) => r.as_str(),
         }
     }
 
@@ -85,10 +83,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
     /// it is available even when you don't have the trait imported. Refer to the trait
     /// documentation for conceptual details.
     pub fn is_escaped(&self) -> bool {
-        matches!(
-            self.0,
-            InnerContent::Escaped(_) | InnerContent::UnEscaped(_, _)
-        )
+        matches!(self.0, InnerContent::Escaped(_))
     }
 
     /// Returns a normalized version of literal with all escape sequences in the JSON text fully
@@ -101,36 +96,28 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
     /// # Performance considerations
     ///
     /// - If this content belongs to a non-string token, or a string token that contains no escape
-    ///   sequences, does not allocate, and simply returns the value returned by [`literal`].
-    /// - If this content belongs to a string token containing at least one escape sequence, the
-    ///   first call to this method will allocate a new buffer to contain the unescaped string text
-    ///   and return a reference into it. All subsequent calls to this method will reuse the same
-    ///   buffer and will not allocate.
+    ///   sequences, does not allocate, and simply returns a [`Cow::Borrowed`] wrapping the borrow
+    ///   returned by [`literal`], which is a reference to the internals of this content.
+    /// - If this content belongs to a string token containing at least one escape sequence,
+    ///   allocates a new owned string value containing the unescaped string content and returns a
+    ///   [`Cow::Owned`] wraping this string.
     ///
     /// [`literal`]: method@Self::literal
-    pub fn unescaped(&mut self) -> &str {
-        if let InnerContent::Escaped(_) = &self.0 {
-            match std::mem::take(&mut self.0) {
-                InnerContent::Escaped(r) => {
-                    let mut buf = Vec::new();
-                    lexical::unescape(r.as_str(), &mut buf);
-
-                    // SAFETY: `r` was valid UTF-8 before it was de-escaped, and the de-escaping
-                    //         process maintains UTF-8 safety.
-                    let s = unsafe { String::from_utf8_unchecked(buf) };
-
-                    self.0 = InnerContent::UnEscaped(r, s);
-                }
-                _ => unreachable!(),
-            }
-        }
-
+    pub fn unescaped(&mut self) -> Cow<'_, str> {
         match &self.0 {
-            InnerContent::Static(s) => s,
-            InnerContent::Inline(len, buf) => Self::inline_str(*len, buf),
-            InnerContent::NotEscaped(r) => r.as_str(),
-            InnerContent::UnEscaped(_, s) => s,
-            InnerContent::Escaped(_) => unreachable!(),
+            InnerContent::Static(s) => Cow::Borrowed(s),
+            InnerContent::Inline(len, buf) => Cow::Borrowed(Self::inline_str(*len, buf)),
+            InnerContent::NotEscaped(r) => Cow::Borrowed(r.as_str()),
+            InnerContent::Escaped(r) => {
+                let mut buf = Vec::new();
+                lexical::unescape(r.as_str(), &mut buf);
+
+                // SAFETY: `r` was valid UTF-8 before it was de-escaped, and the de-escaping process
+                //         maintains UTF-8 safety.
+                let s = unsafe { String::from_utf8_unchecked(buf) };
+
+                Cow::Owned(s)
+            }
         }
     }
 }
@@ -185,13 +172,13 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> super::Content for Content<B> {
     }
 
     #[inline(always)]
-    fn unescaped(&mut self) -> &str {
+    fn unescaped(&mut self) -> Cow<'_, str> {
         Content::unescaped(self)
     }
 }
 
-// Assert that `Value` does not grow beyond 48 bytes (six 64-bit words).
-const _: [(); 48] = [(); std::mem::size_of::<Content<Vec<u8>>>()];
+// Assert that `Value` does not grow beyond 32 bytes (four 64-bit words).
+const _: [(); 32] = [(); std::mem::size_of::<Content<Vec<u8>>>()];
 
 /// Lexical analysis error detected by [`BufAnalyzer`].
 ///

@@ -1,13 +1,6 @@
 - Add documentation to the `lexical` module top-level docs that explains that it is an interface
   module.
 - Add overall crate documentation.
-- Somehow `Content` should be able to return an owned reference to the unescaped string so user
-  doesn't have to allocate again to copy it. There should be some method that returns a `Cow`.
-  It ideally would be `unescaped(&self) -> Cow<'a, Foo>` where `Foo` is `String` for the buf use
-  case and a Cord/Rope for the other use case, but this is a bit painful because you're going to
-  allocate anyway, so giving Cords/Ropes out is unnecessary. So maybe just `unescaped_owned` and
-  leave it to ther user to decide whether to call it or not. For the buf use case, I think it could
-  "steal" the owned data and switch the internal state back to with-escapes-but-not-unescaped.
 - Consider renaming `BufAnalyzer` as `SliceAnalyzer`.
 - Add `is_exception()` or something in `Token` to capture error and EOF together? This would be
   useful in shortening match statements in some cases. (Maybe also want `is_meaningful()`,
@@ -96,3 +89,12 @@ The above enum is also 40 bytes as long as Multi doesn't exceed the size of Sing
 NOTE: To make `nostd` more viable, probably we should have our own `Read` trait that does the same
       stuff as `std::io::Read`, and for which there is a blanket implementation for every T that is
       `io::Read`....
+
+NOTE: The `Content` trait will be parameterized along the lines of:
+
+```
+trait Content<B>
+where B: Buf + ToOwned
+```
+
+The `ToOwned` part is to allow a `Cow<'_, B>` to produce a concrete owned value for the unescaping.
