@@ -1,4 +1,88 @@
 //! Scan JSON text, extracting a stream of tokens (lexical analysis).
+//!
+//! This module provides the traits, helpers, and type definitions needed to perform stream-oriented
+//! lexical analysis on JSON text.
+//!
+//! The fundamental types are the enum [`Token`], which represents the type of a JSON token, and
+//! the traits [`Analyzer`] (does the lexical analysis); [`Content`] (efficiently provides the
+//! actual content of a token from the JSON text; and [`Error`] (describes errors encountered by
+//! the lexical analyzer).
+//!
+//! The sub-modules provide concrete implementations of JSON tokenizers:
+//!
+//! - [`state`] is a lower-level module containing a simple reusable finite state machine; all the
+//!   concrete lexical analyzers in this crate use this state machine for their core logic.
+//! - [`fixed`] contains an implementation of [`Analyzer`] for tokenizing fixed-size in-memory
+//!   buffers.
+//!
+//! # Performance
+//!
+//! Performance characteristics are documented on all relevant types at the trait level (this
+//! module) and at the concrete implementation level (in the sub-modules).
+//!
+//! In all cases, allocations and copies are avoided except where it is technically infeasible. When
+//! they have to be done, they are minimized.
+//!
+//! # Token content
+//!
+//! By design, the [`Content`] trait provides the literal text of all tokens appearing in the input
+//! JSON, including whitespace, without any change whatsoever. This policy facilitates use cases
+//! such as stream editing, where you might want to make changes to the JSON text, such as deleting
+//! some JSON elements or inserting new ones, while leaving everything else unchanged.
+//!
+//! # Numbers
+//!
+//! For number tokens ([`Token::Num`]), the [`Content`] trait provides the literal content of the
+//! number as it appears in the JSON text, without attempting to coerce it into a Rust numeric type.
+//!
+//! The reason for leaving numbers as text is that the [JSON spec][rfc] places no limits on the
+//! range and precision of numbers \[1\]. Since this module aims to faithfully implement the spec at
+//! the lexical level, it will recognize any valid JSON number, no matter the magnitude or
+//! precision. This would not be possible if it coerced the text into a numeric type, which all have
+//! their own limits on range and precision.
+//!
+//! \[1\]: The spec *does* urge software developers using JSON to be thoughtful
+//! bout interoperability and, kinda sorta, to just stay within the IEEE double-precision floating
+//! point range, *a.k.a.*, `f64`. But that's not a requirement.
+//!
+//! # Strings
+//!
+//! For string tokens ([`Token::Str`]), the [`Content`] trait provides the literal content of the
+//! string as it appears in the JSON text, *including* the quotation marks that surround it, without
+//! attempting to expand the escape sequences.
+//!
+//! Escape sequences can be expanded by explicitly requesting [`Content::unescaped`] instead of
+//! [`Content::literal`]. Note that getting the unescaped content, will trigger an allocation if the
+//! string indeed does contain at least one escape sequence, which may not be desirable in all
+//! circumstances.
+//!
+//! Example of a string token without any escape sequences.
+//!
+//! ```
+//! # use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+//! let mut lexer = FixedAnalyzer::new(&br#""foo""#[..]);
+//! assert_eq!(Token::Str, lexer.next());
+//! assert_eq!(r#""foo""#, lexer.content().literal()); // Note the surrounding quotes.
+//! assert_eq!(r#""foo""#, lexer.content().unescaped()); // No allocation, returns same value.
+//! ```
+//!
+//! Example of a string token containing an escape sequence.
+//!
+//! ```
+//! # use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+//! let mut lexer = FixedAnalyzer::new(&br#""foo\u0020bar""#[..]);
+//! assert_eq!(Token::Str, lexer.next());
+//! assert_eq!(r#""foo\u0020bar""#, lexer.content().literal()); // Note the surrounding quotes.
+//! assert_eq!(r#""foo bar""#, lexer.content().unescaped()); // Allocates, expands \u0020 -> ' '.
+//! ```
+//!
+//! # Roll your own lexer
+//!
+//! The sub-module [`state`] provides the basic state machine for tokenizing JSON text. You can use
+//! it to build your own implementation of [`Analyzer`] or any other application that needs a
+//! low-level ability to identify JSON tokens that is faithful to the [JSON spec][rfc].
+//!
+//! [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 
 use crate::Pos;
 use std::{borrow::Cow, fmt};
@@ -11,9 +95,9 @@ pub mod state;
 /// This is a list of the JSON lexical token types as described in the [JSON spec][rfc]. The names
 /// of enumeration members are aligned with the names as they appear in the spec.
 ///
-/// Note that `Token` just models the token *type*, not the value. Some token types have static
-/// values that never change (*e.g.*, [`ArrBegin`] is always `'['`) while others have variable
-/// values that depend on the specific JSON text being analyzed (*e.g.* [`Str`]).
+/// Note that `Token` just models the token *type*, not the content. Some token types have static
+/// content that never changes (*e.g.*, [`ArrBegin`] is always `'['`) while others have variable
+/// content that depends on the specific JSON text being analyzed (*e.g.* [`Str`]).
 ///
 /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 /// [`ArrBegin`]: Token::ArrBegin

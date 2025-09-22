@@ -1,7 +1,7 @@
-- Add documentation to the `lexical` module top-level docs that explains that it is an interface
-  module.
-- Add overall crate documentation.
-- Consider renaming `FixedAnalyzer` as `SliceAnalyzer`.
+- Add overall crate documentation (`lib.rs`).
+- Once at least one streaming type is available, update module-level documentation for mod `lexical`
+  with an *Examples* heading as the first section and give an example of using each lexer type.
+  Right now with only `FixedAnalyzer` that exercise seems a bit pointless.
 - Add `is_exception()` or something in `Token` to capture error and EOF together? This would be
   useful in shortening match statements in some cases. (Maybe also want `is_meaningful()`,
   `is_pseudo`, `is_primitive`)?
@@ -98,3 +98,9 @@ where B: Buf + ToOwned
 ```
 
 The `ToOwned` part is to allow a `Cow<'_, B>` to produce a concrete owned value for the unescaping.
+
+SKETCH DOCUMENTATION FOR THE LEXICAL MODULE
+===========================================
+
+I started trying to lay out the design tenets and challenges, but it feels a bit premature to me
+until a version of the streaming stuff is in, because
