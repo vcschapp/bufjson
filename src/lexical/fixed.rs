@@ -56,7 +56,7 @@ impl<B: Deref<Target = [u8]>> Default for InnerContent<B> {
     }
 }
 
-/// Text content of a JSON token identified by a [`BufAnalyzer`].
+/// Text content of a JSON token identified by a [`FixedAnalyzer`].
 ///
 /// See the [`lexical::Content`] trait, implemented by this struct, for detailed conceptual
 /// documentation.
@@ -180,7 +180,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> super::Content for Content<B> {
 // Assert that `Value` does not grow beyond 32 bytes (four 64-bit words).
 const _: [(); 32] = [(); std::mem::size_of::<Content<Vec<u8>>>()];
 
-/// Lexical analysis error detected by [`BufAnalyzer`].
+/// Lexical analysis error detected by [`FixedAnalyzer`].
 ///
 /// See the [`lexical::Error`] trait, implemented by this struct, for further documentation.
 #[derive(Copy, Clone, Debug)]
@@ -240,11 +240,11 @@ impl Default for StoredContent {
 
 /// A [`lexical::Analyzer`] to tokenize fixed buffers of JSON text.
 ///
-/// Use `BufAnalyzer` for zero-allocation, low-copy, stream-oriented lexical analysis of any
+/// Use `FixedAnalyzer` for zero-allocation, low-copy, stream-oriented lexical analysis of any
 /// pre-allocated fixed-size buffer.
 ///
 /// As with any [`lexical::Analyzer`] implementation, you can construct a [`syntax::Parser`] from a
-/// `BufAnalyzer` to unlock richer stream-oriented syntactic analysis while retaining low overhead
+/// `FixedAnalyzer` to unlock richer stream-oriented syntactic analysis while retaining low overhead
 /// guarantees of the underlying lexical analyzer.
 ///
 /// # Performance considerations
@@ -275,9 +275,9 @@ impl Default for StoredContent {
 /// Scan a static string slice into tokens:
 ///
 /// ```
-/// use bufjson::lexical::{Token, buf::BufAnalyzer};
+/// use bufjson::lexical::{Token, fixed::FixedAnalyzer};
 ///
-/// let mut lexer = BufAnalyzer::new(r#"[123, "abc"]"#.as_bytes());
+/// let mut lexer = FixedAnalyzer::new(r#"[123, "abc"]"#.as_bytes());
 ///
 /// assert_eq!(Token::ArrBegin, lexer.next());
 /// assert_eq!(Token::Num, lexer.next());
@@ -288,13 +288,13 @@ impl Default for StoredContent {
 /// assert_eq!(Token::Eof, lexer.next());
 /// ```
 ///
-/// Create a parser wrapping a `BufAnalyzer` that scans a `Vec<u8>`.
+/// Create a parser wrapping a `FixedAnalyzer` that scans a `Vec<u8>`.
 ///
 /// ```
-/// use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
+/// use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::Parser};
 ///
 /// let vec = b"  {\"flag\": true}".to_vec();
-/// let mut parser = BufAnalyzer::new(vec).into_parser();
+/// let mut parser = FixedAnalyzer::new(vec).into_parser();
 ///
 /// assert_eq!(Token::ObjBegin, parser.next_meaningful());
 /// assert_eq!(Token::Str, parser.next_meaningful());
@@ -307,7 +307,7 @@ impl Default for StoredContent {
 /// [`new`]: method@Self::new
 /// [`next`]: method@Self::next
 /// [`content`]: method@Self::content
-pub struct BufAnalyzer<B: Deref<Target = [u8]> + fmt::Debug> {
+pub struct FixedAnalyzer<B: Deref<Target = [u8]> + fmt::Debug> {
     buf: Arc<B>,
     content: StoredContent,
     content_pos: Pos,
@@ -315,7 +315,7 @@ pub struct BufAnalyzer<B: Deref<Target = [u8]> + fmt::Debug> {
     repeat: Option<u8>,
 }
 
-impl<B: Deref<Target = [u8]> + fmt::Debug> BufAnalyzer<B> {
+impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// Constructs a new lexer to tokenize the given buffer.
     ///
     /// The buffer can be anything that implements `Deref<Target = [u8]>`, including `&[u8]`,
@@ -326,8 +326,8 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> BufAnalyzer<B> {
     /// # Examples
     ///
     /// ```
-    /// # use bufjson::lexical::buf::BufAnalyzer;
-    /// let mut lexer: BufAnalyzer<Vec<u8>> = BufAnalyzer::new(vec![b'n', b'u', b'l', b'l']);
+    /// # use bufjson::lexical::fixed::FixedAnalyzer;
+    /// let mut lexer: FixedAnalyzer<Vec<u8>> = FixedAnalyzer::new(vec![b'n', b'u', b'l', b'l']);
     /// ```
     pub fn new(buf: B) -> Self {
         let buf = Arc::new(buf);
@@ -353,8 +353,8 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> BufAnalyzer<B> {
     /// # Example
     ///
     /// ```
-    /// # use bufjson::lexical::{Token, buf::BufAnalyzer};
-    /// let mut lexer = BufAnalyzer::new(&b"99.9e-1"[..]);
+    /// # use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    /// let mut lexer = FixedAnalyzer::new(&b"99.9e-1"[..]);
     /// assert_eq!(Token::Num, lexer.next());
     /// assert_eq!(Token::Eof, lexer.next());
     /// assert_eq!(Token::Eof, lexer.next()); // Once EOF is reached, it is returned to infinity.
@@ -454,8 +454,8 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> BufAnalyzer<B> {
     /// # Examples
     ///
     /// ```
-    /// # use bufjson::lexical::{Token, buf::BufAnalyzer};
-    /// let mut lexer = BufAnalyzer::new(&b"  1.0"[..]);
+    /// # use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    /// let mut lexer = FixedAnalyzer::new(&b"  1.0"[..]);
     ///
     /// assert_eq!(Token::White, lexer.next());
     /// assert_eq!("  ", lexer.content().literal());
@@ -484,9 +484,9 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> BufAnalyzer<B> {
     /// # Examples
     ///
     /// ```
-    /// use bufjson::lexical::{ErrorKind, Expect, Token, buf::BufAnalyzer};
+    /// use bufjson::lexical::{ErrorKind, Expect, Token, fixed::FixedAnalyzer};
     ///
-    /// let mut lexer = BufAnalyzer::new(&b"error!"[..]);
+    /// let mut lexer = FixedAnalyzer::new(&b"error!"[..]);
     ///
     /// assert_eq!(Token::Err, lexer.next());
     /// assert!(matches!(
@@ -511,16 +511,16 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> BufAnalyzer<B> {
     /// Before any token is scanned, the position is the default position.
     ///
     /// ```
-    /// # use bufjson::{Pos, lexical::buf::BufAnalyzer};
-    /// assert_eq!(Pos::default(), *BufAnalyzer::new(&b""[..]).pos());
+    /// # use bufjson::{Pos, lexical::fixed::FixedAnalyzer};
+    /// assert_eq!(Pos::default(), *FixedAnalyzer::new(&b""[..]).pos());
     /// ```
     ///
     /// The position of the first token returned is always the start of the buffer.
     ///
     /// ```
-    /// use bufjson::{Pos, lexical::{Token, buf::BufAnalyzer}};
+    /// use bufjson::{Pos, lexical::{Token, fixed::FixedAnalyzer}};
     ///
-    /// let mut lexer = BufAnalyzer::new(&b" \n"[..]);
+    /// let mut lexer = FixedAnalyzer::new(&b" \n"[..]);
     ///
     /// // Read the two-byte whitespace token that starts at offset 0.
     /// assert_eq!(Token::White, lexer.next());
@@ -536,9 +536,9 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> BufAnalyzer<B> {
     /// token where the error occurred, and the error position is the exact position of the error.
     ///
     /// ```
-    /// use bufjson::{Pos, lexical::{Token, buf::BufAnalyzer}};
+    /// use bufjson::{Pos, lexical::{Token, fixed::FixedAnalyzer}};
     ///
-    /// let mut lexer = BufAnalyzer::new(&b"123_"[..]);
+    /// let mut lexer = FixedAnalyzer::new(&b"123_"[..]);
     ///
     /// assert_eq!(Token::Err, lexer.next());
     /// // `pos` is at the start of the number token that has the problem...
@@ -564,8 +564,8 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> BufAnalyzer<B> {
     /// An `Ok` value is returned as long as the lexical analyzer isn't in an error state.
     ///
     /// ```
-    /// # use bufjson::lexical::{Token, buf::BufAnalyzer};
-    /// let mut lexer = BufAnalyzer::new(&b"99.9e-1"[..]);
+    /// # use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    /// let mut lexer = FixedAnalyzer::new(&b"99.9e-1"[..]);
     /// assert_eq!(Token::Num, lexer.next());
     /// assert!(matches!(lexer.try_content(), Ok(c) if c.literal() == "99.9e-1"));
     /// ```
@@ -574,9 +574,9 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> BufAnalyzer<B> {
     /// describing that error.
     ///
     /// ```
-    /// use bufjson::{Pos, lexical::{Token, buf::BufAnalyzer}};
+    /// use bufjson::{Pos, lexical::{Token, fixed::FixedAnalyzer}};
     ///
-    /// let mut lexer = BufAnalyzer::new(&b"[unquoted]"[..]);
+    /// let mut lexer = FixedAnalyzer::new(&b"[unquoted]"[..]);
     /// assert_eq!(Token::ArrBegin, lexer.next());
     /// assert_eq!(Token::Err, lexer.next());
     /// assert_eq!(Pos { offset: 1, line: 1, col: 2}, *lexer.try_content().unwrap_err().pos());
@@ -597,10 +597,10 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> BufAnalyzer<B> {
     /// # Examples
     ///
     /// ```
-    /// use bufjson::lexical::{Token, buf::BufAnalyzer};
+    /// use bufjson::lexical::{Token, fixed::FixedAnalyzer};
     ///
     /// // Create a lexical analyzer and consume the first token.
-    /// let mut lexer = BufAnalyzer::new(&b"true false"[..]);
+    /// let mut lexer = FixedAnalyzer::new(&b"true false"[..]);
     /// assert_eq!(Token::LitTrue, lexer.next());
     ///
     /// // Convert the lexer into a parser. Since `true` is consumed, the next meaningful token is
@@ -608,7 +608,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> BufAnalyzer<B> {
     /// let mut parser = lexer.into_parser();
     /// assert_eq!(Token::LitFalse, parser.next_meaningful());
     /// ``````
-    pub fn into_parser(self) -> syntax::Parser<BufAnalyzer<B>> {
+    pub fn into_parser(self) -> syntax::Parser<FixedAnalyzer<B>> {
         syntax::Parser::new(self)
     }
 
@@ -624,23 +624,23 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> BufAnalyzer<B> {
     }
 }
 
-impl<B: Deref<Target = [u8]> + fmt::Debug> Analyzer for BufAnalyzer<B> {
+impl<B: Deref<Target = [u8]> + fmt::Debug> Analyzer for FixedAnalyzer<B> {
     type Content = Content<B>;
     type Error = Error;
 
     #[inline(always)]
     fn next(&mut self) -> Token {
-        BufAnalyzer::next(self)
+        FixedAnalyzer::next(self)
     }
 
     #[inline(always)]
     fn try_content(&self) -> Result<Self::Content, Error> {
-        BufAnalyzer::try_content(self)
+        FixedAnalyzer::try_content(self)
     }
 
     #[inline(always)]
     fn pos(&self) -> &Pos {
-        BufAnalyzer::pos(self)
+        FixedAnalyzer::pos(self)
     }
 }
 
@@ -728,7 +728,7 @@ mod tests {
     ) {
         // With content fetch.
         {
-            let mut an = BufAnalyzer::new(input.as_bytes());
+            let mut an = FixedAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
 
             assert_eq!(expect, an.next());
@@ -766,7 +766,7 @@ mod tests {
 
         // Without content fetch.
         {
-            let mut an = BufAnalyzer::new(input.as_bytes());
+            let mut an = FixedAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
 
             assert_eq!(expect, an.next());
@@ -808,7 +808,7 @@ mod tests {
     fn test_utf8_seq(#[case] input: &str) {
         // With content fetch.
         {
-            let mut an = BufAnalyzer::new(input.as_bytes());
+            let mut an = FixedAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
 
             assert_eq!(Token::Str, an.next());
@@ -842,7 +842,7 @@ mod tests {
 
         // Without content fetch.
         {
-            let mut an = BufAnalyzer::new(input.as_bytes());
+            let mut an = FixedAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
 
             assert_eq!(Token::Str, an.next());
@@ -891,7 +891,7 @@ mod tests {
     fn test_whitespace_multiline(#[case] input: &str, #[case] line: usize, #[case] col: usize) {
         // With content fetch.
         {
-            let mut an = BufAnalyzer::new(input.as_bytes());
+            let mut an = FixedAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
 
             assert_eq!(Token::White, an.next());
@@ -915,7 +915,7 @@ mod tests {
 
         // Without content fetch.
         {
-            let mut an = BufAnalyzer::new(input.as_bytes());
+            let mut an = FixedAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
 
             assert_eq!(Token::White, an.next());
@@ -1167,7 +1167,7 @@ mod tests {
     ) {
         // With content fetch.
         {
-            let mut an = BufAnalyzer::new(input.as_bytes());
+            let mut an = FixedAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
 
             assert_eq!(t1.token, an.next());
@@ -1199,7 +1199,7 @@ mod tests {
 
         // Without content fetch.
         {
-            let mut an = BufAnalyzer::new(input.as_bytes());
+            let mut an = FixedAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
 
             assert_eq!(t1.token, an.next());
@@ -1287,7 +1287,7 @@ mod tests {
     ) {
         // With content fetch.
         {
-            let mut an = BufAnalyzer::new(input.as_bytes());
+            let mut an = FixedAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
 
             assert_eq!(Token::Err, an.next());
@@ -1317,7 +1317,7 @@ mod tests {
 
         // Without content fetch.
         {
-            let mut an = BufAnalyzer::new(input.as_bytes());
+            let mut an = FixedAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
 
             assert_eq!(Token::Err, an.next());
@@ -1359,7 +1359,7 @@ mod tests {
 
         // With content fetch.
         {
-            let mut an = BufAnalyzer::new(buf.clone());
+            let mut an = FixedAnalyzer::new(buf.clone());
             assert_eq!(Pos::default(), *an.pos());
 
             assert_eq!(Token::Err, an.next());
@@ -1389,7 +1389,7 @@ mod tests {
 
         // Without content fetch.
         {
-            let mut an = BufAnalyzer::new(buf.clone());
+            let mut an = FixedAnalyzer::new(buf.clone());
             assert_eq!(Pos::default(), *an.pos());
 
             assert_eq!(Token::Err, an.next());

@@ -3,7 +3,7 @@
 use crate::Pos;
 use std::{borrow::Cow, fmt};
 
-pub mod buf;
+pub mod fixed;
 pub mod state;
 
 /// Type of lexical token in a JSON text, such as begin object `{`, literal `true`, or string.

@@ -14,10 +14,10 @@
 //! Parse JSON text containing an array of numbers into a vector.
 //!
 //! ```
-//! use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
+//! use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::Parser};
 //!
 //! fn parse_numbers(text: &str) -> Result<Vec<u32>, String> {
-//!     let lexer = BufAnalyzer::new(text.as_bytes());
+//!     let lexer = FixedAnalyzer::new(text.as_bytes());
 //!     let mut parser = Parser::new(lexer);        // You can also do `lexer.into_parser()`
 //!
 //!     let token = parser.next_meaningful();       // Skip whitespace ':' and ','
@@ -365,9 +365,9 @@ impl Context {
     /// tokens.
     ///
     /// ```
-    /// use bufjson::lexical::buf::BufAnalyzer;
+    /// use bufjson::lexical::fixed::FixedAnalyzer;
     ///
-    /// let parser = BufAnalyzer::new(&b"{}"[..]).into_parser();
+    /// let parser = FixedAnalyzer::new(&b"{}"[..]).into_parser();
     /// let ctx = parser.context();
     ///
     /// assert_eq!(0, ctx.level());
@@ -377,9 +377,9 @@ impl Context {
     /// The level is one inside the first structured value.
     ///
     /// ```
-    /// use bufjson::lexical::buf::BufAnalyzer;
+    /// use bufjson::lexical::fixed::FixedAnalyzer;
     ///
-    /// let mut parser = BufAnalyzer::new(&b"[]"[..]).into_parser();
+    /// let mut parser = FixedAnalyzer::new(&b"[]"[..]).into_parser();
     /// let _ = parser.next(); // Consume the `[`.
     /// let ctx = parser.context();
     ///
@@ -390,9 +390,9 @@ impl Context {
     /// The level increases as the parser proceeds deeper into a multi-level nested structure.
     ///
     /// ```
-    /// use bufjson::lexical::buf::BufAnalyzer;
+    /// use bufjson::lexical::fixed::FixedAnalyzer;
     ///
-    /// let mut parser = BufAnalyzer::new(r#"[{"foo":[]}]"#.as_bytes()).into_parser();
+    /// let mut parser = FixedAnalyzer::new(r#"[{"foo":[]}]"#.as_bytes()).into_parser();
     /// let _ = parser.next_meaningful(); // Consume the `[`.
     /// let _ = parser.next_meaningful(); // Consume the `{`.
     /// let _ = parser.next_meaningful(); // Consume the `"foo"`.
@@ -406,9 +406,9 @@ impl Context {
     /// The level returns to zero after a top-level structured value is fully parsed.
     ///
     /// ```
-    /// use bufjson::lexical::buf::BufAnalyzer;
+    /// use bufjson::lexical::fixed::FixedAnalyzer;
     ///
-    /// let mut parser = BufAnalyzer::new(&b"{}"[..]).into_parser();
+    /// let mut parser = FixedAnalyzer::new(&b"{}"[..]).into_parser();
     /// let _ = parser.next(); // Consume the `{`.
     /// let _ = parser.next(); // Consume the `}`.
     /// let ctx = parser.context();
@@ -438,9 +438,9 @@ impl Context {
     /// The iterator is always empty when the level is zero.
     ///
     /// ```
-    /// use bufjson::lexical::buf::BufAnalyzer;
+    /// use bufjson::lexical::fixed::FixedAnalyzer;
     ///
-    /// let parser = BufAnalyzer::new(&b"{}"[..]).into_parser();
+    /// let parser = FixedAnalyzer::new(&b"{}"[..]).into_parser();
     /// let ctx = parser.context();
     ///
     /// assert_eq!(0, ctx.level());
@@ -451,9 +451,9 @@ impl Context {
     /// JSON text to the current parse position.
     ///
     /// ```
-    /// use bufjson::{lexical::buf::BufAnalyzer, syntax::Struct};
+    /// use bufjson::{lexical::fixed::FixedAnalyzer, syntax::Struct};
     ///
-    /// let mut parser = BufAnalyzer::new(r#"[{"foo":{}}]"#.as_bytes()).into_parser();
+    /// let mut parser = FixedAnalyzer::new(r#"[{"foo":{}}]"#.as_bytes()).into_parser();
     /// let _ = parser.next_meaningful(); // Consume the `[`.
     /// let _ = parser.next_meaningful(); // Consume the `{`.
     /// let _ = parser.next_meaningful(); // Consume the `"foo"`.
@@ -688,10 +688,10 @@ impl std::error::Error for Error {
 /// Create a parser with [`new`]:
 ///
 /// ```
-/// # use bufjson::{lexical::buf::BufAnalyzer, syntax::Parser};
+/// # use bufjson::{lexical::fixed::FixedAnalyzer, syntax::Parser};
 /// #
 /// // Create the parser by wrapping a lexical analyzer.
-/// let lexer = BufAnalyzer::new(&b"[1, 2, 3]"[..]);
+/// let lexer = FixedAnalyzer::new(&b"[1, 2, 3]"[..]);
 /// let mut parser = Parser::new(lexer);
 ///
 /// // Use the parser ...
@@ -700,19 +700,19 @@ impl std::error::Error for Error {
 /// Convert back to the underlying lexical analyzer at any time with [`into_inner`]:
 ///
 /// ```
-/// # use bufjson::{lexical::buf::BufAnalyzer, syntax::Parser};
+/// # use bufjson::{lexical::fixed::FixedAnalyzer, syntax::Parser};
 /// #
-/// let parser = Parser::new(BufAnalyzer::new(&b"[1, 2, 3]"[..]));
+/// let parser = Parser::new(FixedAnalyzer::new(&b"[1, 2, 3]"[..]));
 /// let lexer = parser.into_inner();
 /// ```
 ///
 /// Create a parser with a very high maximum nesting level:
 ///
 /// ```
-/// # use bufjson::{lexical::buf::BufAnalyzer, syntax::Parser};
+/// # use bufjson::{lexical::fixed::FixedAnalyzer, syntax::Parser};
 /// #
 /// // Create the parser by wrapping a lexical analyzer.
-/// let lexer = BufAnalyzer::new(&b"[1, 2, 3]"[..]);
+/// let lexer = FixedAnalyzer::new(&b"[1, 2, 3]"[..]);
 /// let mut parser = Parser::with_max_level(lexer, 1_000_000);
 ///
 /// // Use the parser ...
@@ -721,9 +721,9 @@ impl std::error::Error for Error {
 /// Verify the syntax of a JSON text.
 ///
 /// ```
-/// # use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
+/// # use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::Parser};
 /// #
-/// let mut parser = Parser::new(BufAnalyzer::new(r#"{"key": [1, 2,]}"#.as_bytes()));
+/// let mut parser = Parser::new(FixedAnalyzer::new(r#"{"key": [1, 2,]}"#.as_bytes()));
 /// let result = loop {
 ///     match parser.next() {
 ///         Token::Eof => break Ok(()),
@@ -741,9 +741,9 @@ impl std::error::Error for Error {
 /// Skip insignificant whitespace and unnecessary punctuation.
 ///
 /// ```
-/// # use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
+/// # use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::Parser};
 /// #
-/// let mut parser = Parser::new(BufAnalyzer::new(r#"{"key": [1, 2]}"#.as_bytes()));
+/// let mut parser = Parser::new(FixedAnalyzer::new(r#"{"key": [1, 2]}"#.as_bytes()));
 /// let mut significant = Vec::new();
 /// loop {
 ///     match parser.next_meaningful() {
@@ -805,10 +805,10 @@ where
     /// # Example
     ///
     /// ```
-    /// # use bufjson::{lexical::buf::BufAnalyzer, syntax::Parser};
+    /// # use bufjson::{lexical::fixed::FixedAnalyzer, syntax::Parser};
     /// #
     /// // Create the parser by wrapping a lexical analyzer.
-    /// let lexer = BufAnalyzer::new(&b"[1, 2, 3]"[..]);
+    /// let lexer = FixedAnalyzer::new(&b"[1, 2, 3]"[..]);
     /// let mut parser = Parser::new(lexer);
     ///
     /// // Use the parser ...
@@ -831,8 +831,8 @@ where
     /// # Example
     ///
     /// ```
-    /// # use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
-    /// let mut parser = BufAnalyzer::new(&b"{"[..]).into_parser();
+    /// # use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::Parser};
+    /// let mut parser = FixedAnalyzer::new(&b"{"[..]).into_parser();
     /// assert_eq!(Token::ObjBegin, parser.next());
     /// assert_eq!(Token::Err, parser.next());
     /// let err = parser.err();
@@ -979,10 +979,10 @@ where
     /// Pretty-print some JSON text.
     ///
     /// ```
-    /// use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::{Error, Parser}};
+    /// use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::{Error, Parser}};
     ///
     /// fn pretty_print(json_text: &str) -> Result<String, Error>  {
-    ///     let mut parser = Parser::new(BufAnalyzer::new(json_text.as_bytes()));
+    ///     let mut parser = Parser::new(FixedAnalyzer::new(json_text.as_bytes()));
     ///     let mut pretty = String::new();
     ///     let indent = |pretty: &mut String, level: usize| {
     ///         pretty.push_str(&" ".repeat(level * 2));
@@ -1059,8 +1059,8 @@ where
     /// example text, the values are the string tokens "baz" and "qux".
     ///
     /// ```
-    /// # use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
-    /// let mut parser = BufAnalyzer::new(r#"{"foo": "baz", "bar": "qux"}"#.as_bytes()).into_parser();
+    /// # use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::Parser};
+    /// let mut parser = FixedAnalyzer::new(r#"{"foo": "baz", "bar": "qux"}"#.as_bytes()).into_parser();
     /// assert_eq!(Token::ObjBegin, parser.next_meaningful());
     /// assert_eq!(Token::Str, parser.next_meaningful());
     /// assert_eq!(Token::Str, parser.next_meaningful());
@@ -1098,8 +1098,8 @@ where
     /// # Example
     ///
     /// ```
-    /// # use bufjson::lexical::{Token, buf::BufAnalyzer};
-    /// let mut parser = BufAnalyzer::new(&b"[ 1, 2]"[..]).into_parser();
+    /// # use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    /// let mut parser = FixedAnalyzer::new(&b"[ 1, 2]"[..]).into_parser();
     ///
     /// assert_eq!(Token::ArrBegin, parser.next());
     ///
@@ -1131,9 +1131,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::ErrorKind};
+    /// use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::ErrorKind};
     ///
-    /// let mut parser = BufAnalyzer::new(&b"{]}"[..]).into_parser();
+    /// let mut parser = FixedAnalyzer::new(&b"{]}"[..]).into_parser();
     ///
     /// assert_eq!(Token::ObjBegin, parser.next());
     /// assert_eq!(Token::Err, parser.next());
@@ -1180,8 +1180,8 @@ where
     /// An `Ok` value is returned as long as the parser isn't in an error state.
     ///
     /// ```
-    /// # use bufjson::lexical::{Token, buf::BufAnalyzer};
-    /// let mut parser = BufAnalyzer::new(&b"[123"[..]).into_parser();
+    /// # use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    /// let mut parser = FixedAnalyzer::new(&b"[123"[..]).into_parser();
     /// assert_eq!(Token::ArrBegin, parser.next());
     /// assert_eq!(Token::Num, parser.next());
     /// assert!(matches!(parser.try_content(), Ok(c) if c.literal() == "123"));
@@ -1190,9 +1190,9 @@ where
     /// Once the parser detects an error, it will return an `Err` value describing the error.
     ///
     /// ```
-    /// use bufjson::{Pos, lexical::{Token, buf::BufAnalyzer}, syntax::ErrorKind};
+    /// use bufjson::{Pos, lexical::{Token, fixed::FixedAnalyzer}, syntax::ErrorKind};
     ///
-    /// let mut parser = BufAnalyzer::new(&b"[123"[..]).into_parser();
+    /// let mut parser = FixedAnalyzer::new(&b"[123"[..]).into_parser();
     /// assert_eq!(Token::ArrBegin, parser.next());
     /// assert_eq!(Token::Num, parser.next());
     /// assert_eq!(Token::Err, parser.next());
@@ -1222,9 +1222,9 @@ where
     /// value.
     ///
     /// ```
-    /// use bufjson::{lexical::buf::BufAnalyzer, syntax::Expect};
+    /// use bufjson::{lexical::fixed::FixedAnalyzer, syntax::Expect};
     ///
-    /// let mut parser = BufAnalyzer::new(&b"\"hello\""[..]).into_parser();
+    /// let mut parser = FixedAnalyzer::new(&b"\"hello\""[..]).into_parser();
     /// assert_eq!(0, parser.context().level());
     /// assert_eq!(Expect::Value, parser.context().expect());
     /// ```
@@ -1233,9 +1233,9 @@ where
     /// expects either a string (containing the first member name) or an object end token.
     ///
     /// ```
-    /// use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::{Expect, Struct}};
+    /// use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::{Expect, Struct}};
     ///
-    /// let mut parser = BufAnalyzer::new(&b"{"[..]).into_parser();
+    /// let mut parser = FixedAnalyzer::new(&b"{"[..]).into_parser();
     /// assert_eq!(Token::ObjBegin, parser.next());
     /// assert_eq!(1, parser.context().level());
     /// assert_eq!(Struct::Obj, parser.context().iter().next().unwrap());
@@ -1253,9 +1253,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use bufjson::lexical::{Token, buf::BufAnalyzer};
+    /// use bufjson::lexical::{Token, fixed::FixedAnalyzer};
     ///
-    /// let mut parser = BufAnalyzer::new(&b"[{}]"[..]).into_parser();
+    /// let mut parser = FixedAnalyzer::new(&b"[{}]"[..]).into_parser();
     /// assert_eq!(0, parser.level());
     /// assert_eq!(Token::ArrBegin, parser.next());
     /// assert_eq!(1, parser.level());
@@ -1324,16 +1324,16 @@ where
     /// limits.
     ///
     /// ```
-    /// # use bufjson::lexical::buf::BufAnalyzer;
-    /// let mut parser = BufAnalyzer::new(&b"\"hello\""[..]).into_parser();
+    /// # use bufjson::lexical::fixed::FixedAnalyzer;
+    /// let mut parser = FixedAnalyzer::new(&b"\"hello\""[..]).into_parser();
     /// parser.set_max_level(usize::MAX);
     /// ```
     ///
     /// ```
-    /// use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::{Error, ErrorKind}};
+    /// use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::{Error, ErrorKind}};
     ///
     /// fn parse_primitive(json_text: &str) -> Result<(Token, String), Error> {
-    ///     let mut parser = BufAnalyzer::new(json_text.as_bytes()).into_parser();
+    ///     let mut parser = FixedAnalyzer::new(json_text.as_bytes()).into_parser();
     ///     parser.set_max_level(0); // Disable all nesting.
     ///
     ///     let token = parser.next_meaningful();
@@ -1381,8 +1381,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// # use bufjson::lexical::{Token, buf::BufAnalyzer};
-    /// let mut parser = BufAnalyzer::new(&b"{]"[..]).into_parser();
+    /// # use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    /// let mut parser = FixedAnalyzer::new(&b"{]"[..]).into_parser();
     ///
     /// // Read next token from parser.
     /// assert_eq!(Token::ObjBegin, parser.next());
@@ -1417,7 +1417,7 @@ mod tests {
 
     #[test]
     fn temp_test_to_repro_bug_delete_or_replace_me_pls() {
-        let mut parser = lexical::buf::BufAnalyzer::new(&b"[1]"[..]).into_parser();
+        let mut parser = lexical::fixed::FixedAnalyzer::new(&b"[1]"[..]).into_parser();
 
         assert_eq!(Token::ArrBegin, parser.next());
         assert_eq!("[", parser.content().literal());
@@ -1427,7 +1427,7 @@ mod tests {
 
     #[test]
     fn temp_test_to_repro_bug_delete_or_replace_me_pls_2() {
-        let mut parser = lexical::buf::BufAnalyzer::new(&b"[1, 2]"[..]).into_parser();
+        let mut parser = lexical::fixed::FixedAnalyzer::new(&b"[1, 2]"[..]).into_parser();
 
         assert_eq!(Token::ArrBegin, parser.next_meaningful());
         assert_eq!("[", parser.content().literal());
@@ -1439,7 +1439,7 @@ mod tests {
 
     #[test]
     fn temp_test_to_repro_bug_delete_or_replace_me_pls_3() {
-        let mut parser = lexical::buf::BufAnalyzer::new(&b"[}"[..]).into_parser();
+        let mut parser = lexical::fixed::FixedAnalyzer::new(&b"[}"[..]).into_parser();
 
         assert_eq!(Token::ArrBegin, parser.next());
         assert_eq!("[", parser.content().literal());

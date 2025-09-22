@@ -1,11 +1,11 @@
 - Add documentation to the `lexical` module top-level docs that explains that it is an interface
   module.
 - Add overall crate documentation.
-- Consider renaming `BufAnalyzer` as `SliceAnalyzer`.
+- Consider renaming `FixedAnalyzer` as `SliceAnalyzer`.
 - Add `is_exception()` or something in `Token` to capture error and EOF together? This would be
   useful in shortening match statements in some cases. (Maybe also want `is_meaningful()`,
   `is_pseudo`, `is_primitive`)?
-- Re-export the following into the root: `Token`, `BufAnalyzer`, `Parser`.
+- Re-export the following into the root: `Token`, `FixedAnalyzer`, `Parser`.
 - Replace `#[inline(always)]` with `#[inline]` except for methods that are just a reference return
   or single method call.
 - Put `#[must_use]` directives in appropriate places.
@@ -40,7 +40,7 @@ Some aspects of the `Content` type:
 **NOTE**: the `as_ptr` function which `Bytes` get from implementing `Deref<Target = [u8]> allows
           two different `Bytes` values to be tested to see if they refer to the same memory.
 
-This is what we have for `buf::InnerContent` for reference:
+This is what we have for `fixed::InnerContent` for reference:
 
 ```
 enum InnerContent<B: Deref<Target = [u8]>> {

@@ -12,10 +12,10 @@ Here's a simple example that parses a JSON text for syntax validity and prints i
 insignificant whitespace stripped out.
 
 ```rust
-use bufjson::{lexical::{Token, buf::BufAnalyzer}, syntax::Parser};
+use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::Parser};
 
 fn strip_whitespace(json_text: &str) {
-    let mut parser = Parser::new(BufAnalyzer::new(json_text.as_bytes()));
+    let mut parser = Parser::new(FixedAnalyzer::new(json_text.as_bytes()));
     loop {
         match parser.next_non_white() {
             Token::Eof => break,
@@ -35,9 +35,9 @@ fn main() {
 
 The `bufjson` crate provides a stream-oriented JSON tokenizer through the `lexical::Analyzer` trait, with these implementations:
 
-- `BufAnalyzer` tokenizes fixed-size buffers;
-- `ReadAnalyzer` tokenizes a sync input stream implementing `io::Read` (COMING SOON-ISH); and
-- `AsyncAnalyzer` tokenizes an async stream that yields byte buffers (COMING SOON-ISH);
+- `FixedAnalyzer` tokenizes fixed-size buffers;
+- `ReadAnalyzer` tokenizes sync input streams implementing `io::Read` (COMING SOON-ISH); and
+- `AsyncAnalyzer` tokenizes async streams that yield byte buffers (COMING SOON-ISH);
 
 The remainder of the library builds on the lexical analyzer trait.
 
