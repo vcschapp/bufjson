@@ -647,6 +647,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Analyzer for FixedAnalyzer<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lexical::Expect;
     use rstest::rstest;
 
     #[rstest]
@@ -1332,7 +1333,12 @@ mod tests {
     #[case(&[0xc2, 0xc0], 1)]
     #[case(&[0xdf, 0xd0], 1)]
     #[case(&[0xe0, 0x7f, 0x80], 1)]
+    #[case(&[0xe0, 0x80, 0x80], 1)]
     #[case(&[0xe0, 0xc0, 0x80], 1)]
+    #[case(&[0xed, 0xa0, 0x80], 1)]
+    #[case(&[0xed, 0xa0, 0xbf], 1)]
+    #[case(&[0xed, 0xb0, 0x80], 1)]
+    #[case(&[0xed, 0xb0, 0xbf], 1)]
     #[case(&[0xef, 0x7f, 0x80], 1)]
     #[case(&[0xef, 0xc0, 0x80], 1)]
     #[case(&[0xe0, 0x80, 0x7f], 2)]
@@ -1340,9 +1346,11 @@ mod tests {
     #[case(&[0xe0, 0xbf, 0x7f], 2)]
     #[case(&[0xe0, 0xbf, 0xc0], 2)]
     #[case(&[0xf0, 0x7f, 0x80, 0x80], 1)]
+    #[case(&[0xf0, 0x80, 0x80, 0x80], 1)]
     #[case(&[0xf0, 0xc0, 0x80, 0x80], 1)]
     #[case(&[0xf4, 0x7f, 0x80, 0x80], 1)]
     #[case(&[0xf4, 0xc0, 0x80, 0x80], 1)]
+    #[case(&[0xf4, 0x90, 0x80, 0x80], 1)]
     #[case(&[0xf0, 0x80, 0x7f, 0x80], 2)]
     #[case(&[0xf0, 0x80, 0xc0, 0x80], 2)]
     #[case(&[0xf0, 0xbf, 0x7f, 0x80], 2)]
@@ -1399,4 +1407,151 @@ mod tests {
             assert_eq!(Pos::default(), *an.pos());
         }
     }
+
+    #[rstest]
+    // =============================================================================================
+    // Continuation bytes...
+    // =============================================================================================
+    #[case(0x80)]
+    #[case(0x81)]
+    #[case(0x82)]
+    #[case(0x83)]
+    #[case(0x84)]
+    #[case(0x85)]
+    #[case(0x86)]
+    #[case(0x87)]
+    #[case(0x88)]
+    #[case(0x89)]
+    #[case(0x8a)]
+    #[case(0x8b)]
+    #[case(0x8c)]
+    #[case(0x8d)]
+    #[case(0x8e)]
+    #[case(0x8f)]
+    #[case(0x90)]
+    #[case(0x91)]
+    #[case(0x92)]
+    #[case(0x93)]
+    #[case(0x94)]
+    #[case(0x95)]
+    #[case(0x96)]
+    #[case(0x97)]
+    #[case(0x98)]
+    #[case(0x99)]
+    #[case(0x9a)]
+    #[case(0x9b)]
+    #[case(0x9c)]
+    #[case(0x9d)]
+    #[case(0x9e)]
+    #[case(0x9f)]
+    #[case(0xa0)]
+    #[case(0xa1)]
+    #[case(0xa2)]
+    #[case(0xa3)]
+    #[case(0xa4)]
+    #[case(0xa5)]
+    #[case(0xa6)]
+    #[case(0xa7)]
+    #[case(0xa8)]
+    #[case(0xa9)]
+    #[case(0xaa)]
+    #[case(0xab)]
+    #[case(0xac)]
+    #[case(0xad)]
+    #[case(0xae)]
+    #[case(0xaf)]
+    #[case(0xb0)]
+    #[case(0xb1)]
+    #[case(0xb2)]
+    #[case(0xb3)]
+    #[case(0xb4)]
+    #[case(0xb5)]
+    #[case(0xb6)]
+    #[case(0xb7)]
+    #[case(0xb8)]
+    #[case(0xb9)]
+    #[case(0xba)]
+    #[case(0xbb)]
+    #[case(0xbc)]
+    #[case(0xbd)]
+    #[case(0xbe)]
+    #[case(0xbf)]
+    // =============================================================================================
+    // Always produce overlong encodings...
+    // =============================================================================================
+    #[case(0xc0)]
+    #[case(0xc1)]
+    // =============================================================================================
+    // Always produce code points beyond the Unicode range...
+    // =============================================================================================
+    #[case(0xf5)]
+    #[case(0xf6)]
+    #[case(0xf7)]
+    #[case(0xf8)]
+    #[case(0xf9)]
+    #[case(0xfa)]
+    #[case(0xfb)]
+    #[case(0xfc)]
+    #[case(0xfd)]
+    #[case(0xfe)]
+    #[case(0xff)]
+    fn test_single_error_invalid_utf8_start_byte(#[case] b: u8) {
+        // Construct input buffer.
+        let mut buf = Vec::with_capacity(2);
+        buf.push(b'"');
+        buf.push(b);
+
+        // With content fetch.
+        {
+            let mut an = FixedAnalyzer::new(buf.clone());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            let err = an.err();
+            assert_eq!(
+                ErrorKind::UnexpectedByte {
+                    token: Some(Token::Str),
+                    expect: Expect::StrChar,
+                    actual: b,
+                },
+                err.kind()
+            );
+            assert_eq!(
+                Pos {
+                    offset: 1,
+                    line: 1,
+                    col: 2,
+                },
+                *err.pos()
+            );
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+        }
+
+        // Without content fetch.
+        {
+            let mut an = FixedAnalyzer::new(buf.clone());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+        }
+    }
+
+    // TODO list of tests:
+    //
+    // test_single_error_bad_escape
+    // test_single_error_bad_number
+    //
+    // Other test cases:
+    //  - At/around INLINE_LEN boundary
+    //  - Error state persistence
+    //  - Unexpected EOF in the middle of tokens
+    //  - Expected panic on `.content()` and `.err()`.
 }

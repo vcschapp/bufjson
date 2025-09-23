@@ -1,3 +1,5 @@
+- Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
+  strings without allocating to unescape. This should be a provided method on the trait.
 - Add overall crate documentation (`lib.rs`).
 - Once at least one streaming type is available, update module-level documentation for mod `lexical`
   with an *Examples* heading as the first section and give an example of using each lexer type.
