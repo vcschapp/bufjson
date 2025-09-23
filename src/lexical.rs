@@ -707,7 +707,7 @@ impl ErrorKind {
             } => {
                 write!(f, "expected {expect} but got byte {actual:02x}")?;
                 if let Some(t) = token {
-                    write!(f, "in {t} token")?;
+                    write!(f, " in {t} token")?;
                 }
             }
 
