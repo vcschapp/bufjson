@@ -33,7 +33,8 @@ fn main() {
 
 ## Architecture
 
-The `bufjson` crate provides a stream-oriented JSON tokenizer through the `lexical::Analyzer` trait, with these implementations:
+The `bufjson` crate provides a stream-oriented JSON tokenizer through the `lexical::Analyzer` trait,
+with these implementations:
 
 - `FixedAnalyzer` tokenizes fixed-size buffers;
 - `ReadAnalyzer` tokenizes sync input streams implementing `io::Read` (COMING SOON-ISH); and
@@ -85,5 +86,6 @@ Licensed under either of <a href="LICENSE-APACHE">Apache License, Version 2.0</a
 <br>
 
 <sub>
-Any contribution intentionally submitted for inclusion in this crate by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
+Any contribution intentionally submitted for inclusion in this crate by you, as defined in the
+Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
 </sub>
