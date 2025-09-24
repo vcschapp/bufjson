@@ -1445,4 +1445,25 @@ mod tests {
         assert_eq!("[", parser.content().literal());
         assert_eq!(Token::Err, parser.next());
     }
+
+    #[test]
+    fn temp_test_to_repro_bug_delete_or_replace_me_pls_4() {
+        let mut parser = lexical::fixed::FixedAnalyzer::new(
+            &br#"{"multiValueHeaders":{"foo":["bar"],"foo":["baz"]}}"#[..],
+        )
+        .into_parser();
+
+        loop {
+            match parser.next() {
+                Token::Err => panic!("{:?}", parser.err()),
+                Token::Str => assert!(
+                    parser.content().literal().len() >= 2,
+                    "literal content: {:?}",
+                    parser.content().literal()
+                ),
+                Token::Eof => break,
+                _ => (),
+            };
+        }
+    }
 }

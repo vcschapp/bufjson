@@ -380,6 +380,13 @@ pub enum Expect {
     /// Any decimal digit character, `'0'`..`'9'` (U+0030..U+0039).
     Digit,
 
+    /// Any decimal digit character ([`Digit`]); or one of the two exponent indicator characters 'E'
+    /// (U+0045) or 'e' (U+0065); or any token boundary character ([`Boundary`]).
+    ///
+    /// [`Digit`]: Expect::Digit
+    /// [`Boundary`]: Expect::Boundary
+    DigitExpOrBoundary,
+
     /// Any decimal digit character ([`Digit`]) or one of the two exponent sign characters `'+'`
     /// (U+002B) or `'-'` (U+002D).
     ///
@@ -392,10 +399,11 @@ pub enum Expect {
     /// [`Boundary`]: Expect::Boundary
     DigitOrBoundary,
 
-    /// The dot or period character `'.'` (U+002E) or any token boundary character ([`Boundary`]).
+    /// The dot or period character `'.'` (U+002E); one of the two exponent indicator characters 'E'
+    /// (U+0045) or 'e' (U+0065); or any token boundary character ([`Boundary`]).
     ///
     /// [`Boundary`]: Expect::Boundary
-    DotOrBoundary,
+    DotExpOrBoundary,
 
     /// Any character that completes a short-form escape sequence or starts a Unicode escape
     /// sequence.
@@ -447,27 +455,17 @@ pub enum Expect {
 impl fmt::Display for Expect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Boundary => write!(f, "boundary character or EOF"),
+            Self::Boundary => f.write_str("boundary character or EOF"),
             Self::Char(c) => write!(f, "character '{c}'"),
-            Self::Digit => write!(f, "digit character '0'..'9'"),
-            Self::DigitOrBoundary => {
-                write!(f, "digit character '0'..'9', boundary character, or EOF")
-            }
-            Self::DigitOrExpSign => write!(
-                f,
-                "exponent sign character '+' or '-', or exponent digit character '0'..'9'"
-            ),
-            Self::DotOrBoundary => write!(f, "character '.', boundary character, or EOF"),
-            Self::EscChar => write!(
-                f,
-                "escape sequence character '\\', '\"', '/', 'r', 'n', 't', or 'u'"
-            ),
-            Self::StrChar => write!(f, "string character"),
-            Self::TokenStartChar => write!(f, "token start character"),
-            Self::UnicodeEscHexDigit => write!(
-                f,
-                "Unicode escape sequence hex digit '0'..'9', 'A'..'F', or 'a'..'f'"
-            ),
+            Self::Digit => f.write_str("digit character '0'..'9'"),
+            Self::DigitOrBoundary => f.write_str("digit character '0'..'9', boundary character, or EOF"),
+            Self::DigitExpOrBoundary => f.write_str("digit character '0'..'9', exponent character 'E' or 'e', boundary character, or EOF"),
+            Self::DigitOrExpSign => f.write_str("exponent sign character '+' or '-', or exponent digit character '0'..'9'"),
+            Self::DotExpOrBoundary => f.write_str("character '.', 'exponent character 'E' or 'e', boundary character, or EOF"),
+            Self::EscChar => f.write_str("escape sequence character '\\', '\"', '/', 'r', 'n', 't', or 'u'"),
+            Self::StrChar => f.write_str("string character"),
+            Self::TokenStartChar => f.write_str("token start character"),
+            Self::UnicodeEscHexDigit => f.write_str("Unicode escape sequence hex digit '0'..'9', 'A'..'F', or 'a'..'f'"),
         }
     }
 }
@@ -567,6 +565,16 @@ impl ErrorKind {
         }
     }
 
+    pub(crate) fn expect_digit_exp_or_boundary(actual: u8) -> ErrorKind {
+        let expect = Expect::DigitExpOrBoundary;
+
+        ErrorKind::UnexpectedByte {
+            token: Some(Token::Num),
+            expect,
+            actual,
+        }
+    }
+
     pub(crate) fn expect_digit_or_boundary(actual: u8) -> ErrorKind {
         let expect = Expect::DigitOrBoundary;
 
@@ -577,8 +585,8 @@ impl ErrorKind {
         }
     }
 
-    pub(crate) fn expect_dot_or_boundary(actual: u8) -> ErrorKind {
-        let expect = Expect::DotOrBoundary;
+    pub(crate) fn expect_dot_exp_or_boundary(actual: u8) -> ErrorKind {
+        let expect = Expect::DotExpOrBoundary;
 
         ErrorKind::UnexpectedByte {
             token: Some(Token::Num),

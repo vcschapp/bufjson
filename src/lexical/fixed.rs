@@ -671,23 +671,41 @@ mod tests {
     #[case("-0.0", Token::Num, None)]
     #[case("0.123456789", Token::Num, None)]
     #[case("-123.456789", Token::Num, None)]
+    #[case("0E0", Token::Num, None)]
     #[case("0e0", Token::Num, None)]
+    #[case("0E+0", Token::Num, None)]
     #[case("0e+0", Token::Num, None)]
+    #[case("0E-0", Token::Num, None)]
     #[case("0e-0", Token::Num, None)]
+    #[case("0.0E0", Token::Num, None)]
     #[case("0.0e0", Token::Num, None)]
+    #[case("0.0E+0", Token::Num, None)]
     #[case("0.0e+0", Token::Num, None)]
+    #[case("0.0E0", Token::Num, None)]
     #[case("0.0e0", Token::Num, None)]
+    #[case("0E0", Token::Num, None)]
     #[case("0e0", Token::Num, None)]
+    #[case("-0E+0", Token::Num, None)]
     #[case("-0e+0", Token::Num, None)]
+    #[case("-0E-0", Token::Num, None)]
     #[case("-0e-0", Token::Num, None)]
+    #[case("-0.0E0", Token::Num, None)]
     #[case("-0.0e0", Token::Num, None)]
+    #[case("-0.0E+0", Token::Num, None)]
     #[case("-0.0e+0", Token::Num, None)]
+    #[case("-0.0E0", Token::Num, None)]
     #[case("-0.0e0", Token::Num, None)]
+    #[case("123E456", Token::Num, None)]
     #[case("123e456", Token::Num, None)]
+    #[case("123.456E+7", Token::Num, None)]
     #[case("123.456e+7", Token::Num, None)]
+    #[case("123.456E-89", Token::Num, None)]
     #[case("123.456e-89", Token::Num, None)]
+    #[case("-123E456", Token::Num, None)]
     #[case("-123e456", Token::Num, None)]
+    #[case("-123.456E+7", Token::Num, None)]
     #[case("-123.456e+7", Token::Num, None)]
+    #[case("-123.456E-89", Token::Num, None)]
     #[case("-123.456e-89", Token::Num, None)]
     #[case(r#""""#, Token::Str, None)]
     #[case(r#"" ""#, Token::Str, None)]
@@ -1286,7 +1304,7 @@ mod tests {
         #[case] kind_offset: u8,
         #[case] pos_offset: usize,
     ) {
-        // With content fetch.
+        // With error fetch.
         {
             let mut an = FixedAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
@@ -1316,7 +1334,7 @@ mod tests {
             assert_eq!(Pos::default(), *an.pos());
         }
 
-        // Without content fetch.
+        // Without error fetch.
         {
             let mut an = FixedAnalyzer::new(input.as_bytes());
             assert_eq!(Pos::default(), *an.pos());
@@ -1365,7 +1383,7 @@ mod tests {
         buf.push(b'"');
         buf.extend_from_slice(input);
 
-        // With content fetch.
+        // With error fetch.
         {
             let mut an = FixedAnalyzer::new(buf.clone());
             assert_eq!(Pos::default(), *an.pos());
@@ -1395,7 +1413,7 @@ mod tests {
             assert_eq!(Pos::default(), *an.pos());
         }
 
-        // Without content fetch.
+        // Without error fetch.
         {
             let mut an = FixedAnalyzer::new(buf.clone());
             assert_eq!(Pos::default(), *an.pos());
@@ -1501,7 +1519,7 @@ mod tests {
         buf.push(b'"');
         buf.push(b);
 
-        // With content fetch.
+        // With error fetch.
         {
             let mut an = FixedAnalyzer::new(buf.clone());
             assert_eq!(Pos::default(), *an.pos());
@@ -1531,7 +1549,7 @@ mod tests {
             assert_eq!(Pos::default(), *an.pos());
         }
 
-        // Without content fetch.
+        // Without error fetch.
         {
             let mut an = FixedAnalyzer::new(buf.clone());
             assert_eq!(Pos::default(), *an.pos());
@@ -1544,14 +1562,216 @@ mod tests {
         }
     }
 
+    #[rstest]
+    // =============================================================================================
+    // Leading minus sign followed by bad character
+    // =============================================================================================
+    #[case("-}", Expect::Digit)]
+    #[case("-]", Expect::Digit)]
+    #[case("-a", Expect::Digit)]
+    #[case("- ", Expect::Digit)]
+    // =============================================================================================
+    // Integer part starts with zero then followed by another digit
+    // =============================================================================================
+    #[case("00", Expect::DotExpOrBoundary)]
+    #[case("01", Expect::DotExpOrBoundary)]
+    #[case("02", Expect::DotExpOrBoundary)]
+    #[case("03", Expect::DotExpOrBoundary)]
+    #[case("04", Expect::DotExpOrBoundary)]
+    #[case("05", Expect::DotExpOrBoundary)]
+    #[case("06", Expect::DotExpOrBoundary)]
+    #[case("07", Expect::DotExpOrBoundary)]
+    #[case("08", Expect::DotExpOrBoundary)]
+    #[case("09", Expect::DotExpOrBoundary)]
+    #[case("-00", Expect::DotExpOrBoundary)]
+    #[case("-01", Expect::DotExpOrBoundary)]
+    #[case("-02", Expect::DotExpOrBoundary)]
+    #[case("-03", Expect::DotExpOrBoundary)]
+    #[case("-04", Expect::DotExpOrBoundary)]
+    #[case("-05", Expect::DotExpOrBoundary)]
+    #[case("-06", Expect::DotExpOrBoundary)]
+    #[case("-07", Expect::DotExpOrBoundary)]
+    #[case("-08", Expect::DotExpOrBoundary)]
+    #[case("-09", Expect::DotExpOrBoundary)]
+    // =============================================================================================
+    // Integer part followed by a bad character
+    // =============================================================================================
+    #[case("0x", Expect::DotExpOrBoundary)]
+    #[case("1x", Expect::DotExpOrBoundary)]
+    #[case("9/", Expect::DotExpOrBoundary)]
+    #[case("13456789000a", Expect::DotExpOrBoundary)]
+    // =============================================================================================
+    // Integer part followed by a bad character
+    // =============================================================================================
+    #[case("0E,", Expect::DigitOrExpSign)]
+    #[case("0e:", Expect::DigitOrExpSign)]
+    #[case("1E ", Expect::DigitOrExpSign)]
+    #[case("9ex", Expect::DigitOrExpSign)]
+    // =============================================================================================
+    // Dot followed by a bad character
+    // =============================================================================================
+    #[case("0.a", Expect::Digit)]
+    #[case("0.{", Expect::Digit)]
+    #[case("0.:", Expect::Digit)]
+    #[case("0.-", Expect::Digit)]
+    #[case("-0.a", Expect::Digit)]
+    #[case("-0.{", Expect::Digit)]
+    #[case("-0.:", Expect::Digit)]
+    #[case("-0.-", Expect::Digit)]
+    #[case("1.E", Expect::Digit)]
+    #[case("2.e", Expect::Digit)]
+    #[case("3.a", Expect::Digit)]
+    #[case("4.a", Expect::Digit)]
+    #[case("5.a", Expect::Digit)]
+    #[case("6.a", Expect::Digit)]
+    #[case("7.a", Expect::Digit)]
+    #[case("8.a", Expect::Digit)]
+    #[case("9.a", Expect::Digit)]
+    #[case("-1.E", Expect::Digit)]
+    #[case("-2.e", Expect::Digit)]
+    #[case("-3.a", Expect::Digit)]
+    #[case("-4.a", Expect::Digit)]
+    #[case("-5.a", Expect::Digit)]
+    #[case("-6.a", Expect::Digit)]
+    #[case("-7.a", Expect::Digit)]
+    #[case("-8.a", Expect::Digit)]
+    #[case("-9.a", Expect::Digit)]
+    #[case("10.E", Expect::Digit)]
+    #[case("20.e", Expect::Digit)]
+    #[case("30.a", Expect::Digit)]
+    #[case("40.a", Expect::Digit)]
+    #[case("50.a", Expect::Digit)]
+    #[case("60.a", Expect::Digit)]
+    #[case("70.a", Expect::Digit)]
+    #[case("80.a", Expect::Digit)]
+    #[case("90.a", Expect::Digit)]
+    #[case("-10.E", Expect::Digit)]
+    #[case("-20.e", Expect::Digit)]
+    #[case("-30.a", Expect::Digit)]
+    #[case("-40.a", Expect::Digit)]
+    #[case("-50.a", Expect::Digit)]
+    #[case("-60.a", Expect::Digit)]
+    #[case("-70.a", Expect::Digit)]
+    #[case("-80.a", Expect::Digit)]
+    #[case("-90.a", Expect::Digit)]
+    // =============================================================================================
+    // Fractional part followed by bad character
+    // =============================================================================================
+    #[case("0.0|", Expect::DigitExpOrBoundary)]
+    #[case("-0.0-", Expect::DigitExpOrBoundary)]
+    #[case("1.0D", Expect::DigitExpOrBoundary)]
+    #[case("-1.5d", Expect::DigitExpOrBoundary)]
+    #[case("9.01F", Expect::DigitExpOrBoundary)]
+    #[case("-9.001f", Expect::DigitExpOrBoundary)]
+    #[case("100.001x", Expect::DigitExpOrBoundary)]
+    // =============================================================================================
+    // Exponent indicator 'E' or 'e' followed by a bad character
+    // =============================================================================================
+    #[case("0Ee", Expect::DigitOrExpSign)]
+    #[case("-0e.", Expect::DigitOrExpSign)]
+    #[case("1Ee", Expect::DigitOrExpSign)]
+    #[case("-1e.", Expect::DigitOrExpSign)]
+    #[case("2.0Ef", Expect::DigitOrExpSign)]
+    #[case("-2.0ef", Expect::DigitOrExpSign)]
+    #[case("3.01e.", Expect::DigitOrExpSign)]
+    #[case("-456789.10111213141516171819E\"", Expect::DigitOrExpSign)]
+    // =============================================================================================
+    // Exponent sign '+' or '-' followed by a bad character
+    // =============================================================================================
+    #[case("0E++", Expect::Digit)]
+    #[case("0e--", Expect::Digit)]
+    #[case("1E+x", Expect::Digit)]
+    #[case("2e+\"", Expect::Digit)]
+    #[case("3E+:", Expect::Digit)]
+    #[case("4e+,", Expect::Digit)]
+    #[case("5E+{", Expect::Digit)]
+    #[case("6e-}", Expect::Digit)]
+    #[case("7E-[", Expect::Digit)]
+    #[case("8e-]", Expect::Digit)]
+    #[case("9E- ", Expect::Digit)]
+    #[case("-0E+\t", Expect::Digit)]
+    #[case("-0e-e", Expect::Digit)]
+    #[case("-1E+E", Expect::Digit)]
+    #[case("-2e+.", Expect::Digit)]
+    #[case("-3E+!", Expect::Digit)]
+    #[case("-4e+@", Expect::Digit)]
+    #[case("-5E+#", Expect::Digit)]
+    #[case("-6e-$", Expect::Digit)]
+    #[case("-7E-%", Expect::Digit)]
+    #[case("-8e-^", Expect::Digit)]
+    #[case("-9E-&", Expect::Digit)]
+    #[case("0.1E++", Expect::Digit)]
+    #[case("0.1e--", Expect::Digit)]
+    #[case("1.1E+x", Expect::Digit)]
+    #[case("2.1e+\"", Expect::Digit)]
+    #[case("3.1E+:", Expect::Digit)]
+    #[case("4.1e+,", Expect::Digit)]
+    #[case("5.1E+{", Expect::Digit)]
+    #[case("6.1e-}", Expect::Digit)]
+    #[case("7.1E-[", Expect::Digit)]
+    #[case("8.1e-]", Expect::Digit)]
+    #[case("9.1E- ", Expect::Digit)]
+    #[case("-0.234E+\t", Expect::Digit)]
+    #[case("-0.234e-e", Expect::Digit)]
+    #[case("-1.234E+E", Expect::Digit)]
+    #[case("-2.234e+.", Expect::Digit)]
+    #[case("-3.234E+!", Expect::Digit)]
+    #[case("-4.234e+@", Expect::Digit)]
+    #[case("-5.234E+#", Expect::Digit)]
+    #[case("-6.234e-$", Expect::Digit)]
+    #[case("-7.234E-%", Expect::Digit)]
+    #[case("-8.234e-^", Expect::Digit)]
+    #[case("-9.234E-&", Expect::Digit)]
+    // =============================================================================================
+    // Exponent part followed by a bad character
+    // =============================================================================================
+    #[case("0E0e", Expect::DigitOrBoundary)]
+    #[case("0E+0e", Expect::DigitOrBoundary)]
+    #[case("0E-0e", Expect::DigitOrBoundary)]
+    #[case("0.0e0e", Expect::DigitOrBoundary)]
+    #[case("0.00e00e", Expect::DigitOrBoundary)]
+    #[case("1.1E+1e", Expect::DigitOrBoundary)]
+    #[case("11.11E+11e", Expect::DigitOrBoundary)]
+    #[case("99.999E-999e", Expect::DigitOrBoundary)]
+    fn test_single_error_bad_number(#[case] input: &str, #[case] expect: Expect) {
+        let mut an = FixedAnalyzer::new(input.as_bytes());
+
+        assert_eq!(Token::Err, an.next());
+        assert_eq!(Pos::default(), *an.pos());
+
+        let err = an.err();
+        assert_eq!(
+            ErrorKind::UnexpectedByte {
+                token: Some(Token::Num),
+                expect,
+                actual: *input.as_bytes().last().unwrap(),
+            },
+            err.kind(),
+            "input={input:?}"
+        );
+        assert_eq!(
+            Pos {
+                offset: input.len() - 1,
+                line: 1,
+                col: input.len(),
+            },
+            *err.pos(),
+            "input={input:?}"
+        );
+
+        assert_eq!(Token::Err, an.next(), "input={input:?}");
+        assert_eq!(Pos::default(), *an.pos(), "input={input:?}");
+    }
+
     // TODO list of tests:
     //
     // test_single_error_bad_escape
-    // test_single_error_bad_number
     //
     // Other test cases:
     //  - At/around INLINE_LEN boundary
     //  - Error state persistence
     //  - Unexpected EOF in the middle of tokens
     //  - Expected panic on `.content()` and `.err()`.
+    //  - A generalized larger "smoke" test of a big document with many tokens exercising different
+    //    things.
 }
