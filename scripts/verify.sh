@@ -11,7 +11,7 @@ readonly -A tool_commands=(
 )
 
 readonly -A profile_args=(
-  [default]=
+  [default]=""
   [release]="--release"
 )
 
@@ -24,7 +24,7 @@ readonly -A tool_profiles=(
 )
 
 readonly -A feature_mix_args=(
-  [default]=
+  [default]=""
   [all]="--all-features"
 )
 
@@ -53,7 +53,7 @@ function run_tool_quiet() {
     args+=("${feature_mix_args[$feature_mix]}")
   fi
 
-  printf "  profile: $profile, feature mix: $feature_mix ... "
+  printf "  profile: %s, feature mix: %s ... " "$profile" "$feature_mix"
 
   local exit_code=0
   if [[ "$tool" != test ]]; then
@@ -66,7 +66,6 @@ function run_tool_quiet() {
     echo -e "\e[1m\e[32mok\e[0m"
     return 0
   else
-    local -r exit_code=$?
     echo -e "\e[1m\e[31merror\e[0m: exited with code $exit_code"
     return 1
   fi
@@ -74,7 +73,7 @@ function run_tool_quiet() {
 
 num_failures=0
 
-for tool in ${tools[@]}; do
+for tool in "${tools[@]}"; do
   echo -e "\e[1m$tool\e[0m:"
   for profile in ${tool_profiles[$tool]}; do
     for feature_mix in ${tool_feature_mixes[$tool]}; do
