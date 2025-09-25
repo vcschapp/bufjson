@@ -135,33 +135,75 @@ pub enum Token {
 }
 
 impl Token {
-    /// Returns `true` for lexical tokens that are JSON values and `false` otherwise.
+    /// Returns `true` for lexical tokens that are literal JSON values and `false` otherwise.
     ///
-    /// The following tokens are considered values:
-    /// - [`LitFalse`]
-    /// - [`LitNull`]
-    /// - [`LitTrue`]
-    /// - [`Num`]
-    /// - [`Str`]
-    ///
-    /// [`LitFalse`]: Token::LitFalse
-    /// [`LitNull`]: Token::LitNull
-    /// [`LitTrue`]: Token::LitTrue
-    /// [`Num`]: Token::Num
-    /// [`Str`]: Token::Str
+    /// The following tokens are considered literal values:
+    /// - [`LitFalse`][Token::LitFalse]
+    /// - [`LitNull`][Token::LitNull]
+    /// - [`LitTrue`][Token::LitTrue]
     ///
     /// # Examples
     ///
     /// ```
     /// # use bufjson::lexical::Token;
-    /// assert!(Token::LitNull.is_value());
-    /// assert!(Token::Num.is_value());
-    /// assert!(Token::Str.is_value());
+    /// assert!(Token::LitFalse.is_literal());
+    /// assert!(Token::LitNull.is_literal());
+    /// assert!(Token::LitTrue.is_literal());
     ///
-    /// assert!(!Token::ObjEnd.is_value());
-    /// assert!(!Token::White.is_value());
+    /// assert!(!Token::Str.is_literal());
+    /// assert!(!Token::Eof.is_literal());
     /// ```
-    pub const fn is_value(&self) -> bool {
+    #[inline]
+    pub const fn is_literal(&self) -> bool {
+        matches!(self, Self::LitFalse | Self::LitNull | Self::LitTrue)
+    }
+
+    /// Returns `true` for pseudo-tokens and `false` otherwise.
+    ///
+    /// The following are considered pseudo-tokens:
+    /// - [`Eof`][Token::Eof]
+    /// - [`Err`][Token::Err]
+    /// - [`White`][Token::White]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bufjson::lexical::Token;
+    /// assert!(Token::Eof.is_pseudo());
+    /// assert!(Token::Err.is_pseudo());
+    /// assert!(Token::White.is_pseudo());
+    ///
+    /// assert!(!Token::ArrEnd.is_pseudo());
+    /// assert!(!Token::LitNull.is_pseudo());
+    /// assert!(!Token::Num.is_pseudo());
+    /// ```
+    #[inline]
+    pub const fn is_pseudo(&self) -> bool {
+        matches!(self, Self::Eof | Self::Err | Self::White)
+    }
+
+    /// Returns `true` for lexical tokens that are primitive JSON values and `false` otherwise.
+    ///
+    /// The following tokens are considered primitive values:
+    /// - [`LitFalse`][Token::LitFalse]
+    /// - [`LitNull`][Token::LitNull]
+    /// - [`LitTrue`][Token::LitTrue]
+    /// - [`Num`][Token::Num]
+    /// - [`Str`][Token::Str]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bufjson::lexical::Token;
+    /// assert!(Token::LitNull.is_primitive());
+    /// assert!(Token::Num.is_primitive());
+    /// assert!(Token::Str.is_primitive());
+    ///
+    /// assert!(!Token::ObjEnd.is_primitive());
+    /// assert!(!Token::White.is_primitive());
+    /// ```
+    #[inline]
+    pub const fn is_primitive(&self) -> bool {
         matches!(
             self,
             Self::LitFalse | Self::LitNull | Self::LitTrue | Self::Num | Self::Str
@@ -172,19 +214,12 @@ impl Token {
     ///
     /// The following tokens are considered punctuation:
     ///
-    /// - [`ArrBegin`]
-    /// - [`ArrEnd`]
-    /// - [`NameSep`]
-    /// - [`ObjBegin`]
-    /// - [`ObjEnd`]
-    /// - [`ValueSep`]
-    ///
-    /// [`ArrBegin`]: Token::ArrBegin
-    /// [`ArrEnd`]: Token::ArrEnd
-    /// [`NameSep`]: Token::NameSep
-    /// [`ObjBegin`]: Token::ObjBegin
-    /// [`ObjEnd`]: Token::ObjEnd
-    /// [`ValueSep`]: Token::ValueSep
+    /// - [`ArrBegin`][Token::ArrBegin]
+    /// - [`ArrEnd`][Token::ArrEnd]
+    /// - [`NameSep`][Token::NameSep]
+    /// - [`ObjBegin`][Token::ObjBegin]
+    /// - [`ObjEnd`][Token::ObjEnd]
+    /// - [`ValueSep`][Token::ValueSep]
     ///
     /// # Examples
     ///
@@ -197,6 +232,7 @@ impl Token {
     /// assert!(!Token::White.is_punct());
     /// assert!(!Token::Err.is_punct());
     /// ```
+    #[inline]
     pub const fn is_punct(&self) -> bool {
         matches!(
             self,
@@ -207,6 +243,29 @@ impl Token {
                 | Self::ObjEnd
                 | Self::ValueSep
         )
+    }
+
+    /// Returns `true` for pseudo-tokens that terminate a stream of lexical tokens and `false`
+    /// otherwise.
+    ///
+    /// The following tokens are considered terminal:
+    /// - [`Eof`][Token::Eof]
+    /// - [`Err`][Token::Err]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bufjson::lexical::Token;
+    /// assert!(Token::Eof.is_terminal());
+    /// assert!(Token::Err.is_terminal());
+    ///
+    /// assert!(!Token::Num.is_terminal());
+    /// assert!(!Token::ObjBegin.is_terminal());
+    /// assert!(!Token::White.is_terminal());
+    /// ```
+    #[inline]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::Eof | Self::Err)
     }
 
     /// Returns the static content for lexical tokens that always have the same static text content.
@@ -221,6 +280,7 @@ impl Token {
     /// assert_eq!(None, Token::Str.static_content());
     /// assert_eq!(None, Token::White.static_content());
     /// ```
+    #[inline]
     pub const fn static_content(&self) -> Option<&'static str> {
         match self {
             Self::ArrBegin => Some("["),
@@ -993,14 +1053,52 @@ mod tests {
     #[case(Token::LitNull, true)]
     #[case(Token::LitTrue, true)]
     #[case(Token::NameSep, false)]
+    #[case(Token::Num, false)]
+    #[case(Token::ObjBegin, false)]
+    #[case(Token::ObjEnd, false)]
+    #[case(Token::Str, false)]
+    #[case(Token::ValueSep, false)]
+    #[case(Token::White, false)]
+    fn test_token_is_literal(#[case] token: Token, #[case] is_literal: bool) {
+        assert_eq!(is_literal, token.is_literal());
+    }
+
+    #[rstest]
+    #[case(Token::ArrBegin, false)]
+    #[case(Token::ArrEnd, false)]
+    #[case(Token::Eof, true)]
+    #[case(Token::Err, true)]
+    #[case(Token::LitFalse, false)]
+    #[case(Token::LitNull, false)]
+    #[case(Token::LitTrue, false)]
+    #[case(Token::NameSep, false)]
+    #[case(Token::Num, false)]
+    #[case(Token::ObjBegin, false)]
+    #[case(Token::ObjEnd, false)]
+    #[case(Token::Str, false)]
+    #[case(Token::ValueSep, false)]
+    #[case(Token::White, true)]
+    fn test_token_is_pseudo(#[case] token: Token, #[case] is_pseudo: bool) {
+        assert_eq!(is_pseudo, token.is_pseudo());
+    }
+
+    #[rstest]
+    #[case(Token::ArrBegin, false)]
+    #[case(Token::ArrEnd, false)]
+    #[case(Token::Eof, false)]
+    #[case(Token::Err, false)]
+    #[case(Token::LitFalse, true)]
+    #[case(Token::LitNull, true)]
+    #[case(Token::LitTrue, true)]
+    #[case(Token::NameSep, false)]
     #[case(Token::Num, true)]
     #[case(Token::ObjBegin, false)]
     #[case(Token::ObjEnd, false)]
     #[case(Token::Str, true)]
     #[case(Token::ValueSep, false)]
     #[case(Token::White, false)]
-    fn test_token_is_value(#[case] token: Token, #[case] is_value: bool) {
-        assert_eq!(is_value, token.is_value());
+    fn test_token_is_primitive(#[case] token: Token, #[case] is_primitive: bool) {
+        assert_eq!(is_primitive, token.is_primitive());
     }
 
     #[rstest]
@@ -1020,6 +1118,25 @@ mod tests {
     #[case(Token::White, false)]
     fn test_token_is_punct(#[case] token: Token, #[case] is_punct: bool) {
         assert_eq!(is_punct, token.is_punct());
+    }
+
+    #[rstest]
+    #[case(Token::ArrBegin, false)]
+    #[case(Token::ArrEnd, false)]
+    #[case(Token::Eof, true)]
+    #[case(Token::Err, true)]
+    #[case(Token::LitFalse, false)]
+    #[case(Token::LitNull, false)]
+    #[case(Token::LitTrue, false)]
+    #[case(Token::NameSep, false)]
+    #[case(Token::Num, false)]
+    #[case(Token::ObjBegin, false)]
+    #[case(Token::ObjEnd, false)]
+    #[case(Token::Str, false)]
+    #[case(Token::ValueSep, false)]
+    #[case(Token::White, false)]
+    fn test_token_is_terminal(#[case] token: Token, #[case] is_terminal: bool) {
+        assert_eq!(is_terminal, token.is_terminal());
     }
 
     #[rstest]

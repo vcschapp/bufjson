@@ -4,9 +4,6 @@
 - Once at least one streaming type is available, update module-level documentation for mod `lexical`
   with an *Examples* heading as the first section and give an example of using each lexer type.
   Right now with only `FixedAnalyzer` that exercise seems a bit pointless.
-- Add `is_exception()` or something in `Token` to capture error and EOF together? This would be
-  useful in shortening match statements in some cases. (Maybe also want `is_meaningful()`,
-  `is_pseudo`, `is_primitive`)?
 - Re-export the following into the root: `Token`, `FixedAnalyzer`, `Parser`.
 - Replace `#[inline(always)]` with `#[inline]` except for methods that are just a reference return
   or single method call.
