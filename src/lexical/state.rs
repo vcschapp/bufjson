@@ -1900,4 +1900,90 @@ mod tests {
             "input={input:?}"
         );
     }
+
+    #[rstest]
+    #[case(r#"\0"#, Expect::EscChar)]
+    #[case(r#"\a"#, Expect::EscChar)]
+    #[case(r#"\v"#, Expect::EscChar)]
+    #[case(r#"\x"#, Expect::EscChar)]
+    #[case(r#"\uG"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u:"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u0G"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u1:"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u2,"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u3["#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u4]"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u5{"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u6}"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u7."#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u8""#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u9g"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uAG"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ua_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uB_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ub_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uC_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uc_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uD_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ud_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uE_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ue_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uF_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uf_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u1a_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ub2C_"#, Expect::UnicodeEscHexDigit)]
+    fn test_single_error_bad_escape(#[case] input: &str, #[case] expect: Expect) {
+        let mut mach = Machine::default();
+        assert_eq!(Pos::default(), *mach.pos());
+
+        // Start the string literal.
+        let s = mach.next(Some(b'"'));
+        assert_eq!(State::Mid, s);
+        assert_eq!(
+            Pos {
+                offset: 1,
+                line: 1,
+                col: 2
+            },
+            *mach.pos()
+        );
+
+        // Put in the first N-1 bytes.
+        for (i, b) in input.bytes().take(input.len() - 1).enumerate() {
+            let s = mach.next(Some(b));
+            assert_eq!(State::Mid, s, "input={input:?}, i={i}, b={b}");
+            assert_eq!(
+                Pos {
+                    offset: i + 2,
+                    line: 1,
+                    col: i + 3,
+                },
+                *mach.pos(),
+                "input={input:?}, i={i}, b={b}"
+            );
+        }
+
+        // The last byte triggers the error.
+        let last = *input.as_bytes().last().unwrap();
+        let s = mach.next(Some(last));
+        assert_eq!(
+            State::Err(ErrorKind::UnexpectedByte {
+                token: Some(Token::Str),
+                expect,
+                actual: last,
+            }),
+            s,
+            "input={input:?}"
+        );
+        assert_eq!(
+            Pos {
+                offset: input.len(),
+                line: 1,
+                col: input.len() + 1,
+            },
+            *mach.pos(),
+            "input={input:?}"
+        );
+    }
 }

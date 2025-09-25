@@ -1763,14 +1763,78 @@ mod tests {
         assert_eq!(Pos::default(), *an.pos(), "input={input:?}");
     }
 
+    #[rstest]
+    #[case(r#"\0"#, Expect::EscChar)]
+    #[case(r#"\a"#, Expect::EscChar)]
+    #[case(r#"\v"#, Expect::EscChar)]
+    #[case(r#"\x"#, Expect::EscChar)]
+    #[case(r#"\uG"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u:"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u0G"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u1:"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u2,"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u3["#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u4]"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u5{"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u6}"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u7."#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u8""#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u9g"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uAG"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ua_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uB_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ub_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uC_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uc_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uD_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ud_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uE_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ue_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uF_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\uf_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\u1a_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ub2C_"#, Expect::UnicodeEscHexDigit)]
+    fn test_single_error_bad_escape(#[case] input: &str, #[case] expect: Expect) {
+        let mut s = String::with_capacity(1 + input.len());
+        s.push('"');
+        s.push_str(input);
+
+        let mut an = FixedAnalyzer::new(s.as_bytes());
+
+        assert_eq!(Token::Err, an.next());
+        assert_eq!(Pos::default(), *an.pos());
+
+        let err = an.err();
+        assert_eq!(
+            ErrorKind::UnexpectedByte {
+                token: Some(Token::Str),
+                expect,
+                actual: *input.as_bytes().last().unwrap(),
+            },
+            err.kind(),
+            "input={input:?}"
+        );
+        assert_eq!(
+            Pos {
+                offset: s.len() - 1,
+                line: 1,
+                col: s.len(),
+            },
+            *err.pos(),
+            "input={input:?}"
+        );
+
+        assert_eq!(Token::Err, an.next(), "input={input:?}");
+        assert_eq!(Pos::default(), *an.pos(), "input={input:?}");
+    }
+
     // TODO list of tests:
     //
-    // test_single_error_bad_escape
-    //
     // Other test cases:
+    //  - Unexpected EOF / boundary in the middle of tokens
     //  - At/around INLINE_LEN boundary
     //  - Error state persistence
-    //  - Unexpected EOF in the middle of tokens
     //  - Expected panic on `.content()` and `.err()`.
     //  - A generalized larger "smoke" test of a big document with many tokens exercising different
     //    things.
