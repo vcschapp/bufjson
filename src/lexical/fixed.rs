@@ -467,7 +467,11 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// [`next`]: method@Self::next
     #[inline]
     pub fn content(&self) -> Content<B> {
-        self.try_content().unwrap()
+        if let Ok(content) = self.try_content() {
+            content
+        } else {
+            panic!("no content: last `next()` returned Token::Err (use `err()` instead)");
+        }
     }
 
     /// Fetches the error value associated with the most recent error token.
@@ -498,7 +502,11 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// [`next`]: method@Self::next
     #[inline]
     pub fn err(&self) -> Error {
-        self.try_content().unwrap_err()
+        if let Err(err) = self.try_content() {
+            err
+        } else {
+            panic!("no error: last `next()` did not return Token::Err (use `content()` instead)");
+        }
     }
 
     /// Returns the position of the start of the token most recently scanned by [`next`].
@@ -649,6 +657,29 @@ mod tests {
     use super::*;
     use crate::lexical::Expect;
     use rstest::rstest;
+
+    #[test]
+    fn test_initial_state_content() {
+        let an = FixedAnalyzer::new(vec![]);
+
+        for _ in 0..5 {
+            let mut content = an.content();
+            assert_eq!("", content.literal());
+            assert!(!content.is_escaped());
+            assert_eq!("", content.unescaped());
+
+            let mut content = an.try_content().unwrap();
+            assert_eq!("", content.literal());
+            assert!(!content.is_escaped());
+            assert_eq!("", content.unescaped());
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "no error: last `next()` did not return Token::Err (use `content()` instead)")]
+    fn test_initial_state_err() {
+        let _ = FixedAnalyzer::new(vec![]).err();
+    }
 
     #[rstest]
     #[case("", Token::Eof, None)]
@@ -811,6 +842,82 @@ mod tests {
                 *an.pos()
             );
         }
+    }
+
+    #[rstest]
+    #[case("1".repeat(INLINE_LEN-1), Token::Num, None)]
+    #[case("2".repeat(INLINE_LEN), Token::Num, None)]
+    #[case("3".repeat(INLINE_LEN+1), Token::Num, None)]
+    #[case(format!(r#""{}""#, "a".repeat(INLINE_LEN-3)), Token::Str, None)]
+    #[case(format!(r#""{}""#, "b".repeat(INLINE_LEN-2)), Token::Str, None)]
+    #[case(format!(r#""{}""#, "c".repeat(INLINE_LEN-1)), Token::Str, None)]
+    #[case(format!(r#""{}""#, r#"\/"#.repeat(INLINE_LEN/2)), Token::Str, Some(format!(r#""{}""#, "/".repeat(INLINE_LEN/2))))]
+    #[case(" ".repeat(INLINE_LEN-1), Token::White, None)]
+    #[case("\t".repeat(INLINE_LEN), Token::White, None)]
+    #[case(" ".repeat(INLINE_LEN+1), Token::White, None)]
+    #[case(" \t".repeat(INLINE_LEN/2+1), Token::White, None)]
+    fn test_single_token_inline_len_boundary(
+        #[case] input: String,
+        #[case] expect: Token,
+        #[case] unescaped: Option<String>,
+    ) {
+            let mut an = FixedAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(expect, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            let mut content = an.content();
+            assert_eq!(input, content.literal());
+            assert_eq!(unescaped.is_some(), content.is_escaped());
+            if let Some(u) = unescaped {
+                assert_eq!(u, content.unescaped());
+            } else {
+                assert_eq!(input, content.unescaped());
+            }
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: input.len() + 1
+                },
+                *an.pos()
+            );
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: input.len() + 1
+                },
+                *an.pos()
+            );
+    }
+
+    #[rstest]
+    #[case(r#"["#)]
+    #[case(r#"]"#)]
+    #[case(r#"false"#)]
+    #[case(r#":"#)]
+    #[case(r#"null"#)]
+    #[case(r#"3.14159e+0"#)]
+    #[case(r#"{"#)]
+    #[case(r#"}"#)]
+    #[case(r#""foo\/\u1234\/bar""#)]
+    #[case(r#"true"#)]
+    #[case(r#","#)]
+    #[case("\n\n\n   ")]
+    #[should_panic(expected = "no error: last `next()` did not return Token::Err (use `content()` instead)")]
+    fn test_single_token_panic_no_err(#[case] input: &str) {
+        let mut an = FixedAnalyzer::new(input.as_bytes());
+
+        let token = an.next();
+        assert!(!token.is_terminal(), "input = {input:?}, token = {token:?}");
+
+        let _ = an.err();
     }
 
     #[rstest]
@@ -1829,13 +1936,443 @@ mod tests {
         assert_eq!(Pos::default(), *an.pos(), "input={input:?}");
     }
 
-    // TODO list of tests:
-    //
-    // Other test cases:
-    //  - Unexpected EOF / boundary in the middle of tokens
-    //  - At/around INLINE_LEN boundary
-    //  - Error state persistence
-    //  - Expected panic on `.content()` and `.err()`.
-    //  - A generalized larger "smoke" test of a big document with many tokens exercising different
-    //    things.
+    #[rstest]
+    #[case("f", 'a', Token::LitFalse)]
+    #[case("fa", 'l', Token::LitFalse)]
+    #[case("fal", 's', Token::LitFalse)]
+    #[case("fals", 'e', Token::LitFalse)]
+    #[case("n", 'u', Token::LitNull)]
+    #[case("nu", 'l', Token::LitNull)]
+    #[case("nul", 'l', Token::LitNull)]
+    #[case("t", 'r', Token::LitTrue)]
+    #[case("tr", 'u', Token::LitTrue)]
+    #[case("tru", 'e', Token::LitTrue)]
+    fn test_single_error_expect_char(
+        #[case] input: &str,
+        #[case] expect: char,
+        #[case] expect_token: Token,
+    ) {
+        let bad_chars = &[
+            b'[', b']', b':', b'{', b'}', b',', b'"', b'\\', b'$', b' ', b'\0', b'\t', b'A', b'x',
+            b'X', b'0', b'9',
+        ];
+        let mut buf = Vec::with_capacity(input.len() + 1);
+        buf.extend_from_slice(input.as_bytes());
+        buf.push(b'_');
+
+        for (i, actual) in bad_chars.into_iter().enumerate() {
+            buf[input.len()] = *actual;
+
+            let mut an = FixedAnalyzer::new(buf.clone());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            let err = an.err();
+            assert_eq!(
+                ErrorKind::UnexpectedByte {
+                    token: Some(expect_token),
+                    expect: Expect::Char(expect),
+                    actual: *actual,
+                },
+                err.kind(),
+                "input={input:?}, i={i}, actual={actual:02x}"
+            );
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: buf.len(),
+                },
+                *err.pos(),
+                "input={input:?}, i={i}, actual={actual:02x}"
+            );
+
+            assert_eq!(
+                Token::Err,
+                an.next(),
+                "input={input:?}, i={i}, actual={actual:02x}"
+            );
+            assert_eq!(
+                Pos::default(),
+                *an.pos(),
+                "input={input:?}, i={i}, actual={actual:02x}"
+            );
+        }
+    }
+
+    #[rstest]
+    #[case(r#"f"#, Token::LitFalse)]
+    #[case(r#"fa"#, Token::LitFalse)]
+    #[case(r#"fal"#, Token::LitFalse)]
+    #[case(r#"n"#, Token::LitNull)]
+    #[case(r#"nu"#, Token::LitNull)]
+    #[case(r#"nul"#, Token::LitNull)]
+    #[case(r#"-"#, Token::Num)]
+    #[case(r#"0."#, Token::Num)]
+    #[case(r#"1."#, Token::Num)]
+    #[case(r#"2."#, Token::Num)]
+    #[case(r#"3."#, Token::Num)]
+    #[case(r#"4."#, Token::Num)]
+    #[case(r#"5."#, Token::Num)]
+    #[case(r#"6."#, Token::Num)]
+    #[case(r#"7."#, Token::Num)]
+    #[case(r#"8."#, Token::Num)]
+    #[case(r#"9."#, Token::Num)]
+    #[case(r#"10."#, Token::Num)]
+    #[case(r#"0E"#, Token::Num)]
+    #[case(r#"0E+"#, Token::Num)]
+    #[case(r#"0E-"#, Token::Num)]
+    #[case(r#"0e"#, Token::Num)]
+    #[case(r#"0e+"#, Token::Num)]
+    #[case(r#"0e-"#, Token::Num)]
+    #[case(r#"1.0E"#, Token::Num)]
+    #[case(r#"1.0E+"#, Token::Num)]
+    #[case(r#"1.0E-"#, Token::Num)]
+    #[case(r#"1.0e"#, Token::Num)]
+    #[case(r#"1.0e+"#, Token::Num)]
+    #[case(r#"1.0e-"#, Token::Num)]
+    #[case(r#"""#, Token::Str)]
+    #[case(r#""a"#, Token::Str)]
+    #[case(r#""\"#, Token::Str)]
+    #[case(r#""\u"#, Token::Str)]
+    #[case(r#""\u1"#, Token::Str)]
+    #[case(r#""\u12"#, Token::Str)]
+    #[case(r#""\u123"#, Token::Str)]
+    #[case(r#""\u1234"#, Token::Str)]
+    #[case(r#""\u1234 foo bar"#, Token::Str)]
+    #[case(r#"t"#, Token::LitTrue)]
+    #[case(r#"tr"#, Token::LitTrue)]
+    #[case(r#"tru"#, Token::LitTrue)]
+    fn test_single_error_unexpected_eof(#[case] input: &str, #[case] expect: Token) {
+        // With error fetch.
+        {
+            let mut an = FixedAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            let err = an.err();
+            assert_eq!(
+                ErrorKind::UnexpectedEof(expect),
+                err.kind(),
+                "input = {input:?}, expect = {expect:?}"
+            );
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: 1 + input.len(),
+                },
+                *err.pos(),
+                "input = {input:?}, expect = {expect:?}"
+            );
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+        }
+
+        // Without error fetch.
+        {
+            let mut an = FixedAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+        }
+    }
+
+    #[rstest]
+    #[case(0x00)]
+    #[case(0x01)]
+    #[case(0x02)]
+    #[case(0x03)]
+    #[case(0x04)]
+    #[case(0x05)]
+    #[case(0x06)]
+    #[case(0x07)]
+    #[case(0x08)]
+    #[case(0x0b)]
+    #[case(0x0c)]
+    #[case(0x0e)]
+    #[case(0x0f)]
+    #[case(0x10)]
+    #[case(0x11)]
+    #[case(0x12)]
+    #[case(0x13)]
+    #[case(0x14)]
+    #[case(0x15)]
+    #[case(0x16)]
+    #[case(0x17)]
+    #[case(0x18)]
+    #[case(0x19)]
+    #[case(0x1a)]
+    #[case(0x1b)]
+    #[case(0x1c)]
+    #[case(0x1d)]
+    #[case(0x1e)]
+    #[case(0x1f)]
+    #[case(b'\'')]
+    #[case(b'+')]
+    #[case(b'.')]
+    #[case(b'E')]
+    #[case(b'\\')]
+    #[case(b'e')]
+    #[case(0x7f)]
+    #[case(0x80)]
+    #[case(0xbf)]
+    #[case(0xc0)]
+    #[case(0xc7)]
+    #[case(0xcf)]
+    #[case(0xd0)]
+    #[case(0xd7)]
+    #[case(0xdf)]
+    #[case(0xe0)]
+    #[case(0xe7)]
+    #[case(0xef)]
+    #[case(0xf0)]
+    #[case(0xf7)]
+    #[case(0xff)]
+    fn test_error_non_token_start(#[case] bad: u8) {
+        // Bad character occurs at the very start of the text.
+        {
+            let mut an = FixedAnalyzer::new(vec![bad]);
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            let err = an.err();
+            assert_eq!(
+                ErrorKind::UnexpectedByte {
+                    token: None,
+                    expect: Expect::TokenStartChar,
+                    actual: bad
+                },
+                err.kind(),
+                "bad = {bad:02x}"
+            );
+            assert_eq!(Pos::default(), *err.pos(), "bad = {bad:02x}");
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+        }
+
+        // Bad character occurs after a valid token.
+        {
+            let valid_list = [
+                "[",
+                "]",
+                "false ",
+                "null ",
+                "1 ",
+                "{",
+                "}",
+                r#""a""#,
+                r#""\u0000 foo \\//""#,
+                "true\t",
+            ];
+
+            for (i, valid) in valid_list.into_iter().enumerate() {
+                let mut buf: Vec<u8> = Vec::with_capacity(valid.len() + 1);
+                buf.extend_from_slice(valid.as_bytes());
+                buf.push(bad);
+
+                let mut an = FixedAnalyzer::new(buf);
+
+                let token = an.next();
+                assert!(
+                    !token.is_terminal(),
+                    "valid = {valid:?}, i = {i}, bad = {bad:02x}"
+                );
+                if token.is_literal() || token == Token::Num {
+                    assert_eq!(
+                        Token::White,
+                        an.next(),
+                        "valid = {valid:?}, i = {i}, bad = {bad:02x}"
+                    );
+                }
+
+                assert_eq!(Token::Err, an.next());
+                let err = an.err();
+                assert_eq!(
+                    ErrorKind::UnexpectedByte {
+                        token: None,
+                        expect: Expect::TokenStartChar,
+                        actual: bad
+                    },
+                    err.kind(),
+                    "valid = {valid:?}, i = {i}, bad = {bad:02x}"
+                );
+                assert_eq!(
+                    Pos {
+                        offset: valid.len(),
+                        line: 1,
+                        col: 1 + valid.len(),
+                    },
+                    *err.pos(),
+                    "valid = {valid:?}, i = {i}, bad = {bad:02x}"
+                );
+            }
+        }
+    }
+
+    #[rstest]
+    #[case(br#"123.456789:a"#)]
+    #[case(br#"<"#)]
+    #[case(br#""foo" "bar" "baz"#)]
+    #[should_panic(expected = "no content: last `next()` returned Token::Err (use `err()` instead)")]
+    fn test_panic_no_content(#[case] input: &[u8]) {
+        let mut an = FixedAnalyzer::new(input);
+
+        loop {
+            if an.next() == Token::Err {
+                break
+            }
+        }
+
+        let _ = an.content();
+    }
+
+    #[test]
+    fn test_smoke() {
+        const JSON_TEXT: &str =
+r#"{
+  "foo":["bar",1,5e-7, false, null  ,true, {"baz":"\\\"aââbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb©¢çc\"\\","qux":[{},{},null]}],
+  "Lorem ipsum dolor sit amet, consectetur adipiscing elit." : "Cras sed ipsum at arcu porta blandit. Nunc eu mauris lacus. Vivamus dignissim tincidunt gravida. Fusce quis neque enim. Sed ac leo neque. Praesent feugiat efficitur eros, quis venenatis urna porttitor condimentum. Mauris finibus dui non vulputate mattis. Nullam scelerisque nibh vel dui egestas luctus. Vestibulum commodo mi ex. In laoreet hendrerit fringilla.\n\nPraesent vel ex sed dolor fermentum lobortis.",
+  "👋":   ["🌎","🌏", "🌏", "こんにちは、世界"],
+  "abc\u0020123": {{{"inner":[[[-1,-2.0,-3.00e+0,-4E-0]]]}}}
+}"#;
+        const EXPECT: &[(Token, Pos, &str, Option<&str>)] = &[
+            // Line 1
+            (Token::ObjBegin, Pos { offset: 0, line: 1, col: 1 }, "{", None),
+            (Token::White, Pos { offset: 1, line: 1, col: 2}, "\n  ", None),
+
+            // Line 2
+            (Token::Str, Pos { offset: 4, line: 2, col: 3 }, r#""foo""#, None),
+            (Token::NameSep, Pos { offset: 9, line: 2, col: 8 }, ":", None),
+            (Token::ArrBegin, Pos { offset: 10, line: 2, col: 9 }, "[", None),
+            (Token::Str, Pos { offset: 11, line: 2, col: 10 }, r#""bar""#, None),
+            (Token::ValueSep, Pos { offset: 16, line: 2, col: 15 }, ",", None),
+            (Token::Num, Pos { offset: 17, line: 2, col: 16 }, "1", None),
+            (Token::ValueSep, Pos { offset: 18, line: 2, col: 17 }, ",", None),
+            (Token::Num, Pos { offset: 19, line: 2, col: 18 }, "5e-7", None),
+            (Token::ValueSep, Pos { offset: 23, line: 2, col: 22 }, ",", None),
+            (Token::White, Pos { offset: 24, line: 2, col: 23 }, " ", None),
+            (Token::LitFalse, Pos { offset: 25, line: 2, col: 24 }, "false", None),
+            (Token::ValueSep, Pos { offset: 30, line: 2, col: 29 }, ",", None),
+            (Token::White, Pos { offset: 31, line: 2, col: 30 }, " ", None),
+            (Token::LitNull, Pos { offset: 32, line: 2, col: 31 }, "null", None),
+            (Token::White, Pos { offset: 36, line: 2, col: 35 }, "  ", None),
+            (Token::ValueSep, Pos { offset: 38, line: 2, col: 37 }, ",", None),
+            (Token::LitTrue, Pos { offset: 39, line: 2, col: 38 }, "true", None),
+            (Token::ValueSep, Pos { offset: 43, line: 2, col: 42 }, ",", None),
+            (Token::White, Pos { offset: 44, line: 2, col: 43 }, " ", None),
+            (Token::ObjBegin, Pos { offset: 45, line: 2, col: 44 }, "{", None),
+            (Token::Str, Pos { offset: 46, line: 2, col: 45 }, r#""baz""#, None),
+            (Token::NameSep, Pos { offset: 51, line: 2, col: 50 }, ":", None),
+            (Token::Str, Pos { offset: 52, line: 2, col: 51 }, r#""\\\"aââbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb©¢çc\"\\""#, Some(r#""\"aââbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb©¢çc"\""#)),
+            (Token::ValueSep, Pos { offset: 149, line: 2, col: 143 }, ",", None),
+            (Token::Str, Pos { offset: 150, line: 2, col: 144 }, r#""qux""#, None),
+            (Token::NameSep, Pos { offset: 155, line: 2, col: 149 }, ":", None),
+            (Token::ArrBegin, Pos { offset: 156, line: 2, col: 150 }, "[", None),
+            (Token::ObjBegin, Pos { offset: 157, line: 2, col: 151 }, "{", None),
+            (Token::ObjEnd, Pos { offset: 158, line: 2, col: 152 }, "}", None),
+            (Token::ValueSep, Pos { offset: 159, line: 2, col: 153 }, ",", None),
+            (Token::ObjBegin, Pos { offset: 160, line: 2, col: 154 }, "{", None),
+            (Token::ObjEnd, Pos { offset: 161, line: 2, col: 155 }, "}", None),
+            (Token::ValueSep, Pos { offset: 162, line: 2, col: 156 }, ",", None),
+            (Token::LitNull, Pos { offset: 163, line: 2, col: 157 }, "null", None),
+            (Token::ArrEnd, Pos { offset: 167, line: 2, col: 161 }, "]", None),
+            (Token::ObjEnd, Pos { offset: 168, line: 2, col: 162 }, "}", None),
+            (Token::ArrEnd, Pos { offset: 169, line: 2, col: 163 }, "]", None),
+            (Token::ValueSep, Pos { offset: 170, line: 2, col: 164 }, ",", None),
+            (Token::White, Pos { offset: 171, line: 2, col: 165 }, "\n  ", None),
+
+            // Line 3
+            (Token::Str, Pos { offset: 174, line: 3, col: 3 }, r#""Lorem ipsum dolor sit amet, consectetur adipiscing elit.""#, None),
+            (Token::White, Pos { offset: 232, line: 3, col: 61 }, " ", None),
+            (Token::NameSep, Pos { offset: 233, line: 3, col: 62 }, ":", None),
+            (Token::White, Pos { offset: 234, line: 3, col: 63 }, " ", None),
+            (Token::Str, Pos { offset: 235, line: 3, col: 64 }, r#""Cras sed ipsum at arcu porta blandit. Nunc eu mauris lacus. Vivamus dignissim tincidunt gravida. Fusce quis neque enim. Sed ac leo neque. Praesent feugiat efficitur eros, quis venenatis urna porttitor condimentum. Mauris finibus dui non vulputate mattis. Nullam scelerisque nibh vel dui egestas luctus. Vestibulum commodo mi ex. In laoreet hendrerit fringilla.\n\nPraesent vel ex sed dolor fermentum lobortis.""#, Some(r#""Cras sed ipsum at arcu porta blandit. Nunc eu mauris lacus. Vivamus dignissim tincidunt gravida. Fusce quis neque enim. Sed ac leo neque. Praesent feugiat efficitur eros, quis venenatis urna porttitor condimentum. Mauris finibus dui non vulputate mattis. Nullam scelerisque nibh vel dui egestas luctus. Vestibulum commodo mi ex. In laoreet hendrerit fringilla.
+
+Praesent vel ex sed dolor fermentum lobortis.""#)),
+            (Token::ValueSep, Pos { offset: 646, line: 3, col: 475 }, ",", None),
+            (Token::White, Pos { offset: 647, line: 3, col: 476 }, "\n  ", None),
+
+            // Line 4
+            (Token::Str, Pos { offset: 650, line: 4, col: 3 }, r#""👋""#, None),
+            (Token::NameSep, Pos { offset: 656, line: 4, col: 6 }, ":", None),
+            (Token::White, Pos { offset: 657, line: 4, col: 7 }, "   ", None),
+            (Token::ArrBegin, Pos { offset: 660, line: 4, col: 10 }, "[", None),
+            (Token::Str, Pos { offset: 661, line: 4, col: 11 }, r#""🌎""#, None),
+            (Token::ValueSep, Pos { offset: 667, line: 4, col: 14 }, ",", None),
+            (Token::Str, Pos { offset: 668, line: 4, col: 15 }, r#""🌏""#, None),
+            (Token::ValueSep, Pos { offset: 674, line: 4, col: 18 }, ",", None),
+            (Token::White, Pos { offset: 675, line: 4, col: 19 }, " ", None),
+            (Token::Str, Pos { offset: 676, line: 4, col: 20 }, r#""🌏""#, None),
+            (Token::ValueSep, Pos { offset: 682, line: 4, col: 23 }, ",", None),
+            (Token::White, Pos { offset: 683, line: 4, col: 24 }, " ", None),
+            (Token::Str, Pos { offset: 684, line: 4, col: 25 }, r#""こんにちは、世界""#, None),
+            (Token::ArrEnd, Pos { offset: 710, line: 4, col: 35 }, "]", None),
+            (Token::ValueSep, Pos { offset: 711, line: 4, col: 36 }, ",", None),
+            (Token::White, Pos { offset: 712, line: 4, col: 37 }, "\n  ", None),
+
+            // Line 5
+            (Token::Str, Pos { offset: 715, line: 5, col: 3 }, r#""abc\u0020123""#, Some(r#""abc 123""#)),
+            (Token::NameSep, Pos { offset: 729, line: 5, col: 17 }, ":", None),
+            (Token::White, Pos { offset: 730, line: 5, col: 18 }, " ", None),
+            (Token::ObjBegin, Pos { offset: 731, line: 5, col: 19 }, "{", None),
+            (Token::ObjBegin, Pos { offset: 732, line: 5, col: 20 }, "{", None),
+            (Token::ObjBegin, Pos { offset: 733, line: 5, col: 21 }, "{", None),
+            (Token::Str, Pos { offset: 734, line: 5, col: 22 }, r#""inner""#, None),
+            (Token::NameSep, Pos { offset: 741, line: 5, col: 29 }, ":", None),
+            (Token::ArrBegin, Pos { offset: 742, line: 5, col: 30 }, "[", None),
+            (Token::ArrBegin, Pos { offset: 743, line: 5, col: 31 }, "[", None),
+            (Token::ArrBegin, Pos { offset: 744, line: 5, col: 32 }, "[", None),
+            (Token::Num, Pos { offset: 745, line: 5, col: 33 }, "-1", None),
+            (Token::ValueSep, Pos { offset: 747, line: 5, col: 35 }, ",", None),
+            (Token::Num, Pos { offset: 748, line: 5, col: 36 }, "-2.0", None),
+            (Token::ValueSep, Pos { offset: 752, line: 5, col: 40 }, ",", None),
+            (Token::Num, Pos { offset: 753, line: 5, col: 41 }, "-3.00e+0", None),
+            (Token::ValueSep, Pos { offset: 761, line: 5, col: 49 }, ",", None),
+            (Token::Num, Pos { offset: 762, line: 5, col: 50 }, "-4E-0", None),
+            (Token::ArrEnd, Pos { offset: 767, line: 5, col: 55 }, "]", None),
+            (Token::ArrEnd, Pos { offset: 768, line: 5, col: 56 }, "]", None),
+            (Token::ArrEnd, Pos { offset: 769, line: 5, col: 57 }, "]", None),
+            (Token::ObjEnd, Pos { offset: 770, line: 5, col: 58 }, "}", None),
+            (Token::ObjEnd, Pos { offset: 771, line: 5, col: 59 }, "}", None),
+            (Token::ObjEnd, Pos { offset: 772, line: 5, col: 60 }, "}", None),
+            (Token::White, Pos { offset: 773, line: 5, col: 61}, "\n", None),
+
+            // Line 6
+            (Token::ObjEnd, Pos { offset: 774, line: 6, col: 1 }, "}", None),
+            (Token::Eof, Pos { offset: 775, line: 6, col: 2 }, "", None),
+            (Token::Eof, Pos { offset: 775, line: 6, col: 2 }, "", None),
+            (Token::Eof, Pos { offset: 775, line: 6, col: 2 }, "", None),
+        ];
+
+        let mut an = FixedAnalyzer::new(JSON_TEXT.as_bytes());
+
+        for (i, (expect_token, expect_pos, expect_literal, expect_unescaped)) in EXPECT.iter().enumerate() {
+            let actual_token = an.next();
+            let actual_pos = *an.pos();
+            let mut content = an.content();
+
+            assert_eq!(*expect_token, actual_token, "i = {i}, actual_pos = {actual_pos}, expect_pos = {expect_pos}");
+            assert_eq!(*expect_pos, actual_pos, "i = {i}, token = {actual_token}, content = {content}");
+            assert_eq!(*expect_literal, content.literal(), "i = {i}, token = {actual_token}");
+            if let Some(u) = expect_unescaped {
+                assert!(content.is_escaped(), "i = {i}, token = {actual_token}, literal = {expect_literal:?}");
+                assert_eq!(*u, content.unescaped());
+            } else {
+                assert!(!content.is_escaped(), "i = {i}, token = {actual_token}, literal = {expect_literal:?}");
+                assert_eq!(*expect_literal, content.unescaped());
+            }
+        }
+    }
 }

@@ -1986,4 +1986,294 @@ mod tests {
             "input={input:?}"
         );
     }
+
+    #[rstest]
+    #[case("f", 'a', Token::LitFalse)]
+    #[case("fa", 'l', Token::LitFalse)]
+    #[case("fal", 's', Token::LitFalse)]
+    #[case("fals", 'e', Token::LitFalse)]
+    #[case("n", 'u', Token::LitNull)]
+    #[case("nu", 'l', Token::LitNull)]
+    #[case("nul", 'l', Token::LitNull)]
+    #[case("t", 'r', Token::LitTrue)]
+    #[case("tr", 'u', Token::LitTrue)]
+    #[case("tru", 'e', Token::LitTrue)]
+    fn test_single_error_expect_char(
+        #[case] input: &str,
+        #[case] expect: char,
+        #[case] expect_token: Token,
+    ) {
+        let bad_chars = &[
+            b'[', b']', b':', b'{', b'}', b',', b'"', b'\\', b'$', b' ', b'\0', b'\t', b'A', b'x',
+            b'X', b'0', b'9',
+        ];
+
+        // Outer loop to iterate over sub-cases, one for each item in `bad_chars`.
+        for (i, actual) in bad_chars.into_iter().enumerate() {
+            let mut mach = Machine::default();
+            assert_eq!(Pos::default(), *mach.pos());
+
+            // Put in the first N-1 bytes.
+            for (j, b) in input.bytes().enumerate() {
+                let s = mach.next(Some(b));
+                assert_eq!(
+                    State::Mid,
+                    s,
+                    "input={input:?}, i={i}, actual={actual:02x}, j={j}, b={b:02x}"
+                );
+                assert_eq!(
+                    Pos {
+                        offset: j + 1,
+                        line: 1,
+                        col: j + 2,
+                    },
+                    *mach.pos(),
+                    "input={input:?}, i={i}, actual={actual:02x}, j={j}, b={b:02x}",
+                );
+            }
+
+            // The last byte triggers the error.
+            let s = mach.next(Some(*actual));
+            assert_eq!(
+                State::Err(ErrorKind::UnexpectedByte {
+                    token: Some(expect_token),
+                    expect: Expect::Char(expect),
+                    actual: *actual,
+                }),
+                s,
+                "input={input:?}, i={i}, actual={actual:02x}"
+            );
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: input.len() + 1,
+                },
+                *mach.pos(),
+                "input={input:?}, i={i}, actual={actual:02x}"
+            );
+        }
+    }
+
+    #[rstest]
+    #[case(r#"f"#, Token::LitFalse)]
+    #[case(r#"fa"#, Token::LitFalse)]
+    #[case(r#"fal"#, Token::LitFalse)]
+    #[case(r#"n"#, Token::LitNull)]
+    #[case(r#"nu"#, Token::LitNull)]
+    #[case(r#"nul"#, Token::LitNull)]
+    #[case(r#"-"#, Token::Num)]
+    #[case(r#"0."#, Token::Num)]
+    #[case(r#"1."#, Token::Num)]
+    #[case(r#"2."#, Token::Num)]
+    #[case(r#"3."#, Token::Num)]
+    #[case(r#"4."#, Token::Num)]
+    #[case(r#"5."#, Token::Num)]
+    #[case(r#"6."#, Token::Num)]
+    #[case(r#"7."#, Token::Num)]
+    #[case(r#"8."#, Token::Num)]
+    #[case(r#"9."#, Token::Num)]
+    #[case(r#"10."#, Token::Num)]
+    #[case(r#"0E"#, Token::Num)]
+    #[case(r#"0E+"#, Token::Num)]
+    #[case(r#"0E-"#, Token::Num)]
+    #[case(r#"0e"#, Token::Num)]
+    #[case(r#"0e+"#, Token::Num)]
+    #[case(r#"0e-"#, Token::Num)]
+    #[case(r#"1.0E"#, Token::Num)]
+    #[case(r#"1.0E+"#, Token::Num)]
+    #[case(r#"1.0E-"#, Token::Num)]
+    #[case(r#"1.0e"#, Token::Num)]
+    #[case(r#"1.0e+"#, Token::Num)]
+    #[case(r#"1.0e-"#, Token::Num)]
+    #[case(r#"""#, Token::Str)]
+    #[case(r#""a"#, Token::Str)]
+    #[case(r#""\"#, Token::Str)]
+    #[case(r#""\u"#, Token::Str)]
+    #[case(r#""\u1"#, Token::Str)]
+    #[case(r#""\u12"#, Token::Str)]
+    #[case(r#""\u123"#, Token::Str)]
+    #[case(r#""\u1234"#, Token::Str)]
+    #[case(r#""\u1234 foo bar"#, Token::Str)]
+    #[case(r#"t"#, Token::LitTrue)]
+    #[case(r#"tr"#, Token::LitTrue)]
+    #[case(r#"tru"#, Token::LitTrue)]
+    fn test_single_error_unexpected_eof(#[case] input: &str, #[case] expect: Token) {
+        let mut mach = Machine::default();
+        assert_eq!(Pos::default(), *mach.pos());
+
+        // Put in the first N bytes.
+        for (i, b) in input.bytes().enumerate() {
+            let s = mach.next(Some(b));
+            assert_eq!(State::Mid, s, "input={input:?}, i={i}, b={b}");
+            assert_eq!(
+                Pos {
+                    offset: i + 1,
+                    line: 1,
+                    col: i + 2,
+                },
+                *mach.pos(),
+                "input={input:?}, i={i}"
+            );
+        }
+
+        // Put in the EOF to triggers the error.
+        let s = mach.next(None);
+        assert_eq!(
+            State::Err(ErrorKind::UnexpectedEof(expect)),
+            s,
+            "input={input:?}"
+        );
+        assert_eq!(
+            Pos {
+                offset: input.len(),
+                line: 1,
+                col: 1 + input.len(),
+            },
+            *mach.pos(),
+            "input={input:?}"
+        );
+    }
+
+    #[rstest]
+    #[case(0x00)]
+    #[case(0x01)]
+    #[case(0x02)]
+    #[case(0x03)]
+    #[case(0x04)]
+    #[case(0x05)]
+    #[case(0x06)]
+    #[case(0x07)]
+    #[case(0x08)]
+    #[case(0x0b)]
+    #[case(0x0c)]
+    #[case(0x0e)]
+    #[case(0x0f)]
+    #[case(0x10)]
+    #[case(0x11)]
+    #[case(0x12)]
+    #[case(0x13)]
+    #[case(0x14)]
+    #[case(0x15)]
+    #[case(0x16)]
+    #[case(0x17)]
+    #[case(0x18)]
+    #[case(0x19)]
+    #[case(0x1a)]
+    #[case(0x1b)]
+    #[case(0x1c)]
+    #[case(0x1d)]
+    #[case(0x1e)]
+    #[case(0x1f)]
+    #[case(b'\'')]
+    #[case(b'+')]
+    #[case(b'.')]
+    #[case(b'E')]
+    #[case(b'\\')]
+    #[case(b'e')]
+    #[case(0x7f)]
+    #[case(0x80)]
+    #[case(0xbf)]
+    #[case(0xc0)]
+    #[case(0xc7)]
+    #[case(0xcf)]
+    #[case(0xd0)]
+    #[case(0xd7)]
+    #[case(0xdf)]
+    #[case(0xe0)]
+    #[case(0xe7)]
+    #[case(0xef)]
+    #[case(0xf0)]
+    #[case(0xf7)]
+    #[case(0xff)]
+    fn test_error_non_token_start(#[case] bad: u8) {
+        // Bad character occurs at the very start of the text.
+        {
+            let mut mach = Machine::default();
+
+            assert_eq!(
+                State::Err(ErrorKind::UnexpectedByte {
+                    token: None,
+                    expect: Expect::TokenStartChar,
+                    actual: bad,
+                }),
+                mach.next(Some(bad)),
+                "bad = {bad:02x}"
+            );
+            assert_eq!(
+                Pos {
+                    offset: 0,
+                    line: 1,
+                    col: 1
+                },
+                *mach.pos()
+            );
+        }
+
+        // Bad character occurs after a valid token.
+        {
+            let valid_list = [
+                "[",
+                "]",
+                "false ",
+                "null ",
+                "1 ",
+                "{",
+                "}",
+                r#""a""#,
+                r#""\u0000 foo \\//""#,
+                "true\t",
+            ];
+
+            for (i, valid) in valid_list.into_iter().enumerate() {
+                let mut mach = Machine::default();
+
+                for (j, b) in valid.bytes().enumerate() {
+                    let mut s = mach.next(Some(b));
+                    loop {
+                        match s {
+                            State::End {
+                                token: _,
+                                escaped: _,
+                                repeat: true,
+                            } => s = mach.next(Some(b)),
+                            State::Err(_) => panic!(
+                                "unexpected error state {s:?}: i = {i}, valid = {valid:?}, j = {j}, bad = {bad:02x}"
+                            ),
+                            _ => break,
+                        }
+                    }
+                }
+
+                let mut s = mach.next(Some(bad));
+                if let State::End {
+                    token: _,
+                    escaped: _,
+                    repeat: true,
+                } = s
+                {
+                    s = mach.next(Some(bad))
+                }
+
+                assert_eq!(
+                    State::Err(ErrorKind::UnexpectedByte {
+                        token: None,
+                        expect: Expect::TokenStartChar,
+                        actual: bad,
+                    }),
+                    s,
+                    "i = {i}, valid = {valid:?}, bad = {bad:02x}"
+                );
+                assert_eq!(
+                    Pos {
+                        offset: valid.len(),
+                        line: 1,
+                        col: 1 + valid.len()
+                    },
+                    *mach.pos(),
+                    "i = {i}, valid = {valid:?}, bad = {bad:02x}"
+                );
+            }
+        }
+    }
 }

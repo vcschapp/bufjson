@@ -1,3 +1,4 @@
+- Remove `mut` from content.unescaped.
 - Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
   strings without allocating to unescape. This should be a provided method on the trait.
 - Add overall crate documentation (`lib.rs`).
