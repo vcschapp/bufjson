@@ -6,7 +6,7 @@ readonly -A tool_commands=(
   [build]='env,RUSTFLAGS=-D warnings,cargo,build'
   [test]='env,RUSTFLAGS=-D warnings,cargo,test'
   [doc]='env,RUSTDOCFLAGS=-D warnings,cargo,doc'
-  [fmt]='cargo,fmt,--,--check'
+  [fmt]='cargo,fmt,--check'
   [clippy]='env,RUSTFLAGS=-D warnings,cargo,clippy'
 )
 
