@@ -411,7 +411,7 @@ pub trait Content: fmt::Debug {
     /// [`literal`]: method@Self::literal
     /// [`is_escaped`]: method@Self::is_escaped
     /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
-    fn unescaped(&mut self) -> Cow<'_, str>;
+    fn unescaped(&self) -> Cow<'_, str>;
 }
 
 /// Character or class of characters expected at the next input position of a JSON text.

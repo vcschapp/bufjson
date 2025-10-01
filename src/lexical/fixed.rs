@@ -103,7 +103,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
     ///   [`Cow::Owned`] wraping this string.
     ///
     /// [`literal`]: method@Self::literal
-    pub fn unescaped(&mut self) -> Cow<'_, str> {
+    pub fn unescaped(&self) -> Cow<'_, str> {
         match &self.0 {
             InnerContent::Static(s) => Cow::Borrowed(s),
             InnerContent::Inline(len, buf) => Cow::Borrowed(Self::inline_str(*len, buf)),
@@ -172,7 +172,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> super::Content for Content<B> {
     }
 
     #[inline(always)]
-    fn unescaped(&mut self) -> Cow<'_, str> {
+    fn unescaped(&self) -> Cow<'_, str> {
         Content::unescaped(self)
     }
 }
@@ -663,12 +663,12 @@ mod tests {
         let an = FixedAnalyzer::new(vec![]);
 
         for _ in 0..5 {
-            let mut content = an.content();
+            let content = an.content();
             assert_eq!("", content.literal());
             assert!(!content.is_escaped());
             assert_eq!("", content.unescaped());
 
-            let mut content = an.try_content().unwrap();
+            let content = an.try_content().unwrap();
             assert_eq!("", content.literal());
             assert!(!content.is_escaped());
             assert_eq!("", content.unescaped());
@@ -676,7 +676,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "no error: last `next()` did not return Token::Err (use `content()` instead)")]
+    #[should_panic(
+        expected = "no error: last `next()` did not return Token::Err (use `content()` instead)"
+    )]
     fn test_initial_state_err() {
         let _ = FixedAnalyzer::new(vec![]).err();
     }
@@ -784,7 +786,7 @@ mod tests {
             assert_eq!(expect, an.next());
             assert_eq!(Pos::default(), *an.pos());
 
-            let mut content = an.content();
+            let content = an.content();
             assert_eq!(input, content.literal());
             assert_eq!(unescaped.is_some(), content.is_escaped());
             if let Some(u) = unescaped {
@@ -861,40 +863,40 @@ mod tests {
         #[case] expect: Token,
         #[case] unescaped: Option<String>,
     ) {
-            let mut an = FixedAnalyzer::new(input.as_bytes());
-            assert_eq!(Pos::default(), *an.pos());
+        let mut an = FixedAnalyzer::new(input.as_bytes());
+        assert_eq!(Pos::default(), *an.pos());
 
-            assert_eq!(expect, an.next());
-            assert_eq!(Pos::default(), *an.pos());
+        assert_eq!(expect, an.next());
+        assert_eq!(Pos::default(), *an.pos());
 
-            let mut content = an.content();
-            assert_eq!(input, content.literal());
-            assert_eq!(unescaped.is_some(), content.is_escaped());
-            if let Some(u) = unescaped {
-                assert_eq!(u, content.unescaped());
-            } else {
-                assert_eq!(input, content.unescaped());
-            }
+        let content = an.content();
+        assert_eq!(input, content.literal());
+        assert_eq!(unescaped.is_some(), content.is_escaped());
+        if let Some(u) = unescaped {
+            assert_eq!(u, content.unescaped());
+        } else {
+            assert_eq!(input, content.unescaped());
+        }
 
-            assert_eq!(Token::Eof, an.next());
-            assert_eq!(
-                Pos {
-                    offset: input.len(),
-                    line: 1,
-                    col: input.len() + 1
-                },
-                *an.pos()
-            );
+        assert_eq!(Token::Eof, an.next());
+        assert_eq!(
+            Pos {
+                offset: input.len(),
+                line: 1,
+                col: input.len() + 1
+            },
+            *an.pos()
+        );
 
-            assert_eq!(Token::Eof, an.next());
-            assert_eq!(
-                Pos {
-                    offset: input.len(),
-                    line: 1,
-                    col: input.len() + 1
-                },
-                *an.pos()
-            );
+        assert_eq!(Token::Eof, an.next());
+        assert_eq!(
+            Pos {
+                offset: input.len(),
+                line: 1,
+                col: input.len() + 1
+            },
+            *an.pos()
+        );
     }
 
     #[rstest]
@@ -910,7 +912,9 @@ mod tests {
     #[case(r#"true"#)]
     #[case(r#","#)]
     #[case("\n\n\n   ")]
-    #[should_panic(expected = "no error: last `next()` did not return Token::Err (use `content()` instead)")]
+    #[should_panic(
+        expected = "no error: last `next()` did not return Token::Err (use `content()` instead)"
+    )]
     fn test_single_token_panic_no_err(#[case] input: &str) {
         let mut an = FixedAnalyzer::new(input.as_bytes());
 
@@ -940,7 +944,7 @@ mod tests {
             assert_eq!(Token::Str, an.next());
             assert_eq!(Pos::default(), *an.pos());
 
-            let mut content = an.content();
+            let content = an.content();
             assert_eq!(input, content.literal());
             assert!(!content.is_escaped());
             assert_eq!(input, content.unescaped());
@@ -1023,7 +1027,7 @@ mod tests {
             assert_eq!(Token::White, an.next());
             assert_eq!(Pos::default(), *an.pos());
 
-            let mut content = an.content();
+            let content = an.content();
             assert_eq!(input, content.literal());
             assert!(!content.is_escaped());
             assert_eq!(input, content.unescaped());
@@ -1299,7 +1303,7 @@ mod tests {
             assert_eq!(t1.token, an.next());
             assert_eq!(t1.pos, *an.pos());
 
-            let mut content1 = an.content();
+            let content1 = an.content();
             assert_eq!(t1.literal, content1.literal());
             assert_eq!(t1.is_escaped(), content1.is_escaped());
             assert_eq!(t1.unescaped, content1.unescaped());
@@ -1307,7 +1311,7 @@ mod tests {
             assert_eq!(t2.token, an.next());
             assert_eq!(t2.pos, *an.pos());
 
-            let mut content2 = an.content();
+            let content2 = an.content();
             assert_eq!(t2.literal, content2.literal());
             assert_eq!(t2.is_escaped(), content2.is_escaped());
             assert_eq!(t2.unescaped, content2.unescaped());
@@ -2225,13 +2229,15 @@ mod tests {
     #[case(br#"123.456789:a"#)]
     #[case(br#"<"#)]
     #[case(br#""foo" "bar" "baz"#)]
-    #[should_panic(expected = "no content: last `next()` returned Token::Err (use `err()` instead)")]
+    #[should_panic(
+        expected = "no content: last `next()` returned Token::Err (use `err()` instead)"
+    )]
     fn test_panic_no_content(#[case] input: &[u8]) {
         let mut an = FixedAnalyzer::new(input);
 
         loop {
             if an.next() == Token::Err {
-                break
+                break;
             }
         }
 
@@ -2240,8 +2246,7 @@ mod tests {
 
     #[test]
     fn test_smoke() {
-        const JSON_TEXT: &str =
-r#"{
+        const JSON_TEXT: &str = r#"{
   "foo":["bar",1,5e-7, false, null  ,true, {"baz":"\\\"aââbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb©¢çc\"\\","qux":[{},{},null]}],
   "Lorem ipsum dolor sit amet, consectetur adipiscing elit." : "Cras sed ipsum at arcu porta blandit. Nunc eu mauris lacus. Vivamus dignissim tincidunt gravida. Fusce quis neque enim. Sed ac leo neque. Praesent feugiat efficitur eros, quis venenatis urna porttitor condimentum. Mauris finibus dui non vulputate mattis. Nullam scelerisque nibh vel dui egestas luctus. Vestibulum commodo mi ex. In laoreet hendrerit fringilla.\n\nPraesent vel ex sed dolor fermentum lobortis.",
   "👋":   ["🌎","🌏", "🌏", "こんにちは、世界"],
@@ -2249,128 +2254,982 @@ r#"{
 }"#;
         const EXPECT: &[(Token, Pos, &str, Option<&str>)] = &[
             // Line 1
-            (Token::ObjBegin, Pos { offset: 0, line: 1, col: 1 }, "{", None),
-            (Token::White, Pos { offset: 1, line: 1, col: 2}, "\n  ", None),
-
+            (
+                Token::ObjBegin,
+                Pos {
+                    offset: 0,
+                    line: 1,
+                    col: 1,
+                },
+                "{",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 1,
+                    line: 1,
+                    col: 2,
+                },
+                "\n  ",
+                None,
+            ),
             // Line 2
-            (Token::Str, Pos { offset: 4, line: 2, col: 3 }, r#""foo""#, None),
-            (Token::NameSep, Pos { offset: 9, line: 2, col: 8 }, ":", None),
-            (Token::ArrBegin, Pos { offset: 10, line: 2, col: 9 }, "[", None),
-            (Token::Str, Pos { offset: 11, line: 2, col: 10 }, r#""bar""#, None),
-            (Token::ValueSep, Pos { offset: 16, line: 2, col: 15 }, ",", None),
-            (Token::Num, Pos { offset: 17, line: 2, col: 16 }, "1", None),
-            (Token::ValueSep, Pos { offset: 18, line: 2, col: 17 }, ",", None),
-            (Token::Num, Pos { offset: 19, line: 2, col: 18 }, "5e-7", None),
-            (Token::ValueSep, Pos { offset: 23, line: 2, col: 22 }, ",", None),
-            (Token::White, Pos { offset: 24, line: 2, col: 23 }, " ", None),
-            (Token::LitFalse, Pos { offset: 25, line: 2, col: 24 }, "false", None),
-            (Token::ValueSep, Pos { offset: 30, line: 2, col: 29 }, ",", None),
-            (Token::White, Pos { offset: 31, line: 2, col: 30 }, " ", None),
-            (Token::LitNull, Pos { offset: 32, line: 2, col: 31 }, "null", None),
-            (Token::White, Pos { offset: 36, line: 2, col: 35 }, "  ", None),
-            (Token::ValueSep, Pos { offset: 38, line: 2, col: 37 }, ",", None),
-            (Token::LitTrue, Pos { offset: 39, line: 2, col: 38 }, "true", None),
-            (Token::ValueSep, Pos { offset: 43, line: 2, col: 42 }, ",", None),
-            (Token::White, Pos { offset: 44, line: 2, col: 43 }, " ", None),
-            (Token::ObjBegin, Pos { offset: 45, line: 2, col: 44 }, "{", None),
-            (Token::Str, Pos { offset: 46, line: 2, col: 45 }, r#""baz""#, None),
-            (Token::NameSep, Pos { offset: 51, line: 2, col: 50 }, ":", None),
-            (Token::Str, Pos { offset: 52, line: 2, col: 51 }, r#""\\\"aââbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb©¢çc\"\\""#, Some(r#""\"aââbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb©¢çc"\""#)),
-            (Token::ValueSep, Pos { offset: 149, line: 2, col: 143 }, ",", None),
-            (Token::Str, Pos { offset: 150, line: 2, col: 144 }, r#""qux""#, None),
-            (Token::NameSep, Pos { offset: 155, line: 2, col: 149 }, ":", None),
-            (Token::ArrBegin, Pos { offset: 156, line: 2, col: 150 }, "[", None),
-            (Token::ObjBegin, Pos { offset: 157, line: 2, col: 151 }, "{", None),
-            (Token::ObjEnd, Pos { offset: 158, line: 2, col: 152 }, "}", None),
-            (Token::ValueSep, Pos { offset: 159, line: 2, col: 153 }, ",", None),
-            (Token::ObjBegin, Pos { offset: 160, line: 2, col: 154 }, "{", None),
-            (Token::ObjEnd, Pos { offset: 161, line: 2, col: 155 }, "}", None),
-            (Token::ValueSep, Pos { offset: 162, line: 2, col: 156 }, ",", None),
-            (Token::LitNull, Pos { offset: 163, line: 2, col: 157 }, "null", None),
-            (Token::ArrEnd, Pos { offset: 167, line: 2, col: 161 }, "]", None),
-            (Token::ObjEnd, Pos { offset: 168, line: 2, col: 162 }, "}", None),
-            (Token::ArrEnd, Pos { offset: 169, line: 2, col: 163 }, "]", None),
-            (Token::ValueSep, Pos { offset: 170, line: 2, col: 164 }, ",", None),
-            (Token::White, Pos { offset: 171, line: 2, col: 165 }, "\n  ", None),
-
+            (
+                Token::Str,
+                Pos {
+                    offset: 4,
+                    line: 2,
+                    col: 3,
+                },
+                r#""foo""#,
+                None,
+            ),
+            (
+                Token::NameSep,
+                Pos {
+                    offset: 9,
+                    line: 2,
+                    col: 8,
+                },
+                ":",
+                None,
+            ),
+            (
+                Token::ArrBegin,
+                Pos {
+                    offset: 10,
+                    line: 2,
+                    col: 9,
+                },
+                "[",
+                None,
+            ),
+            (
+                Token::Str,
+                Pos {
+                    offset: 11,
+                    line: 2,
+                    col: 10,
+                },
+                r#""bar""#,
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 16,
+                    line: 2,
+                    col: 15,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::Num,
+                Pos {
+                    offset: 17,
+                    line: 2,
+                    col: 16,
+                },
+                "1",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 18,
+                    line: 2,
+                    col: 17,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::Num,
+                Pos {
+                    offset: 19,
+                    line: 2,
+                    col: 18,
+                },
+                "5e-7",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 23,
+                    line: 2,
+                    col: 22,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 24,
+                    line: 2,
+                    col: 23,
+                },
+                " ",
+                None,
+            ),
+            (
+                Token::LitFalse,
+                Pos {
+                    offset: 25,
+                    line: 2,
+                    col: 24,
+                },
+                "false",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 30,
+                    line: 2,
+                    col: 29,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 31,
+                    line: 2,
+                    col: 30,
+                },
+                " ",
+                None,
+            ),
+            (
+                Token::LitNull,
+                Pos {
+                    offset: 32,
+                    line: 2,
+                    col: 31,
+                },
+                "null",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 36,
+                    line: 2,
+                    col: 35,
+                },
+                "  ",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 38,
+                    line: 2,
+                    col: 37,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::LitTrue,
+                Pos {
+                    offset: 39,
+                    line: 2,
+                    col: 38,
+                },
+                "true",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 43,
+                    line: 2,
+                    col: 42,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 44,
+                    line: 2,
+                    col: 43,
+                },
+                " ",
+                None,
+            ),
+            (
+                Token::ObjBegin,
+                Pos {
+                    offset: 45,
+                    line: 2,
+                    col: 44,
+                },
+                "{",
+                None,
+            ),
+            (
+                Token::Str,
+                Pos {
+                    offset: 46,
+                    line: 2,
+                    col: 45,
+                },
+                r#""baz""#,
+                None,
+            ),
+            (
+                Token::NameSep,
+                Pos {
+                    offset: 51,
+                    line: 2,
+                    col: 50,
+                },
+                ":",
+                None,
+            ),
+            (
+                Token::Str,
+                Pos {
+                    offset: 52,
+                    line: 2,
+                    col: 51,
+                },
+                r#""\\\"aââbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb©¢çc\"\\""#,
+                Some(
+                    r#""\"aââbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb©¢çc"\""#,
+                ),
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 149,
+                    line: 2,
+                    col: 143,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::Str,
+                Pos {
+                    offset: 150,
+                    line: 2,
+                    col: 144,
+                },
+                r#""qux""#,
+                None,
+            ),
+            (
+                Token::NameSep,
+                Pos {
+                    offset: 155,
+                    line: 2,
+                    col: 149,
+                },
+                ":",
+                None,
+            ),
+            (
+                Token::ArrBegin,
+                Pos {
+                    offset: 156,
+                    line: 2,
+                    col: 150,
+                },
+                "[",
+                None,
+            ),
+            (
+                Token::ObjBegin,
+                Pos {
+                    offset: 157,
+                    line: 2,
+                    col: 151,
+                },
+                "{",
+                None,
+            ),
+            (
+                Token::ObjEnd,
+                Pos {
+                    offset: 158,
+                    line: 2,
+                    col: 152,
+                },
+                "}",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 159,
+                    line: 2,
+                    col: 153,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::ObjBegin,
+                Pos {
+                    offset: 160,
+                    line: 2,
+                    col: 154,
+                },
+                "{",
+                None,
+            ),
+            (
+                Token::ObjEnd,
+                Pos {
+                    offset: 161,
+                    line: 2,
+                    col: 155,
+                },
+                "}",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 162,
+                    line: 2,
+                    col: 156,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::LitNull,
+                Pos {
+                    offset: 163,
+                    line: 2,
+                    col: 157,
+                },
+                "null",
+                None,
+            ),
+            (
+                Token::ArrEnd,
+                Pos {
+                    offset: 167,
+                    line: 2,
+                    col: 161,
+                },
+                "]",
+                None,
+            ),
+            (
+                Token::ObjEnd,
+                Pos {
+                    offset: 168,
+                    line: 2,
+                    col: 162,
+                },
+                "}",
+                None,
+            ),
+            (
+                Token::ArrEnd,
+                Pos {
+                    offset: 169,
+                    line: 2,
+                    col: 163,
+                },
+                "]",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 170,
+                    line: 2,
+                    col: 164,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 171,
+                    line: 2,
+                    col: 165,
+                },
+                "\n  ",
+                None,
+            ),
             // Line 3
-            (Token::Str, Pos { offset: 174, line: 3, col: 3 }, r#""Lorem ipsum dolor sit amet, consectetur adipiscing elit.""#, None),
-            (Token::White, Pos { offset: 232, line: 3, col: 61 }, " ", None),
-            (Token::NameSep, Pos { offset: 233, line: 3, col: 62 }, ":", None),
-            (Token::White, Pos { offset: 234, line: 3, col: 63 }, " ", None),
-            (Token::Str, Pos { offset: 235, line: 3, col: 64 }, r#""Cras sed ipsum at arcu porta blandit. Nunc eu mauris lacus. Vivamus dignissim tincidunt gravida. Fusce quis neque enim. Sed ac leo neque. Praesent feugiat efficitur eros, quis venenatis urna porttitor condimentum. Mauris finibus dui non vulputate mattis. Nullam scelerisque nibh vel dui egestas luctus. Vestibulum commodo mi ex. In laoreet hendrerit fringilla.\n\nPraesent vel ex sed dolor fermentum lobortis.""#, Some(r#""Cras sed ipsum at arcu porta blandit. Nunc eu mauris lacus. Vivamus dignissim tincidunt gravida. Fusce quis neque enim. Sed ac leo neque. Praesent feugiat efficitur eros, quis venenatis urna porttitor condimentum. Mauris finibus dui non vulputate mattis. Nullam scelerisque nibh vel dui egestas luctus. Vestibulum commodo mi ex. In laoreet hendrerit fringilla.
+            (
+                Token::Str,
+                Pos {
+                    offset: 174,
+                    line: 3,
+                    col: 3,
+                },
+                r#""Lorem ipsum dolor sit amet, consectetur adipiscing elit.""#,
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 232,
+                    line: 3,
+                    col: 61,
+                },
+                " ",
+                None,
+            ),
+            (
+                Token::NameSep,
+                Pos {
+                    offset: 233,
+                    line: 3,
+                    col: 62,
+                },
+                ":",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 234,
+                    line: 3,
+                    col: 63,
+                },
+                " ",
+                None,
+            ),
+            (
+                Token::Str,
+                Pos {
+                    offset: 235,
+                    line: 3,
+                    col: 64,
+                },
+                r#""Cras sed ipsum at arcu porta blandit. Nunc eu mauris lacus. Vivamus dignissim tincidunt gravida. Fusce quis neque enim. Sed ac leo neque. Praesent feugiat efficitur eros, quis venenatis urna porttitor condimentum. Mauris finibus dui non vulputate mattis. Nullam scelerisque nibh vel dui egestas luctus. Vestibulum commodo mi ex. In laoreet hendrerit fringilla.\n\nPraesent vel ex sed dolor fermentum lobortis.""#,
+                Some(
+                    r#""Cras sed ipsum at arcu porta blandit. Nunc eu mauris lacus. Vivamus dignissim tincidunt gravida. Fusce quis neque enim. Sed ac leo neque. Praesent feugiat efficitur eros, quis venenatis urna porttitor condimentum. Mauris finibus dui non vulputate mattis. Nullam scelerisque nibh vel dui egestas luctus. Vestibulum commodo mi ex. In laoreet hendrerit fringilla.
 
-Praesent vel ex sed dolor fermentum lobortis.""#)),
-            (Token::ValueSep, Pos { offset: 646, line: 3, col: 475 }, ",", None),
-            (Token::White, Pos { offset: 647, line: 3, col: 476 }, "\n  ", None),
-
+Praesent vel ex sed dolor fermentum lobortis.""#,
+                ),
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 646,
+                    line: 3,
+                    col: 475,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 647,
+                    line: 3,
+                    col: 476,
+                },
+                "\n  ",
+                None,
+            ),
             // Line 4
-            (Token::Str, Pos { offset: 650, line: 4, col: 3 }, r#""👋""#, None),
-            (Token::NameSep, Pos { offset: 656, line: 4, col: 6 }, ":", None),
-            (Token::White, Pos { offset: 657, line: 4, col: 7 }, "   ", None),
-            (Token::ArrBegin, Pos { offset: 660, line: 4, col: 10 }, "[", None),
-            (Token::Str, Pos { offset: 661, line: 4, col: 11 }, r#""🌎""#, None),
-            (Token::ValueSep, Pos { offset: 667, line: 4, col: 14 }, ",", None),
-            (Token::Str, Pos { offset: 668, line: 4, col: 15 }, r#""🌏""#, None),
-            (Token::ValueSep, Pos { offset: 674, line: 4, col: 18 }, ",", None),
-            (Token::White, Pos { offset: 675, line: 4, col: 19 }, " ", None),
-            (Token::Str, Pos { offset: 676, line: 4, col: 20 }, r#""🌏""#, None),
-            (Token::ValueSep, Pos { offset: 682, line: 4, col: 23 }, ",", None),
-            (Token::White, Pos { offset: 683, line: 4, col: 24 }, " ", None),
-            (Token::Str, Pos { offset: 684, line: 4, col: 25 }, r#""こんにちは、世界""#, None),
-            (Token::ArrEnd, Pos { offset: 710, line: 4, col: 35 }, "]", None),
-            (Token::ValueSep, Pos { offset: 711, line: 4, col: 36 }, ",", None),
-            (Token::White, Pos { offset: 712, line: 4, col: 37 }, "\n  ", None),
-
+            (
+                Token::Str,
+                Pos {
+                    offset: 650,
+                    line: 4,
+                    col: 3,
+                },
+                r#""👋""#,
+                None,
+            ),
+            (
+                Token::NameSep,
+                Pos {
+                    offset: 656,
+                    line: 4,
+                    col: 6,
+                },
+                ":",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 657,
+                    line: 4,
+                    col: 7,
+                },
+                "   ",
+                None,
+            ),
+            (
+                Token::ArrBegin,
+                Pos {
+                    offset: 660,
+                    line: 4,
+                    col: 10,
+                },
+                "[",
+                None,
+            ),
+            (
+                Token::Str,
+                Pos {
+                    offset: 661,
+                    line: 4,
+                    col: 11,
+                },
+                r#""🌎""#,
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 667,
+                    line: 4,
+                    col: 14,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::Str,
+                Pos {
+                    offset: 668,
+                    line: 4,
+                    col: 15,
+                },
+                r#""🌏""#,
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 674,
+                    line: 4,
+                    col: 18,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 675,
+                    line: 4,
+                    col: 19,
+                },
+                " ",
+                None,
+            ),
+            (
+                Token::Str,
+                Pos {
+                    offset: 676,
+                    line: 4,
+                    col: 20,
+                },
+                r#""🌏""#,
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 682,
+                    line: 4,
+                    col: 23,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 683,
+                    line: 4,
+                    col: 24,
+                },
+                " ",
+                None,
+            ),
+            (
+                Token::Str,
+                Pos {
+                    offset: 684,
+                    line: 4,
+                    col: 25,
+                },
+                r#""こんにちは、世界""#,
+                None,
+            ),
+            (
+                Token::ArrEnd,
+                Pos {
+                    offset: 710,
+                    line: 4,
+                    col: 35,
+                },
+                "]",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 711,
+                    line: 4,
+                    col: 36,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 712,
+                    line: 4,
+                    col: 37,
+                },
+                "\n  ",
+                None,
+            ),
             // Line 5
-            (Token::Str, Pos { offset: 715, line: 5, col: 3 }, r#""abc\u0020123""#, Some(r#""abc 123""#)),
-            (Token::NameSep, Pos { offset: 729, line: 5, col: 17 }, ":", None),
-            (Token::White, Pos { offset: 730, line: 5, col: 18 }, " ", None),
-            (Token::ObjBegin, Pos { offset: 731, line: 5, col: 19 }, "{", None),
-            (Token::ObjBegin, Pos { offset: 732, line: 5, col: 20 }, "{", None),
-            (Token::ObjBegin, Pos { offset: 733, line: 5, col: 21 }, "{", None),
-            (Token::Str, Pos { offset: 734, line: 5, col: 22 }, r#""inner""#, None),
-            (Token::NameSep, Pos { offset: 741, line: 5, col: 29 }, ":", None),
-            (Token::ArrBegin, Pos { offset: 742, line: 5, col: 30 }, "[", None),
-            (Token::ArrBegin, Pos { offset: 743, line: 5, col: 31 }, "[", None),
-            (Token::ArrBegin, Pos { offset: 744, line: 5, col: 32 }, "[", None),
-            (Token::Num, Pos { offset: 745, line: 5, col: 33 }, "-1", None),
-            (Token::ValueSep, Pos { offset: 747, line: 5, col: 35 }, ",", None),
-            (Token::Num, Pos { offset: 748, line: 5, col: 36 }, "-2.0", None),
-            (Token::ValueSep, Pos { offset: 752, line: 5, col: 40 }, ",", None),
-            (Token::Num, Pos { offset: 753, line: 5, col: 41 }, "-3.00e+0", None),
-            (Token::ValueSep, Pos { offset: 761, line: 5, col: 49 }, ",", None),
-            (Token::Num, Pos { offset: 762, line: 5, col: 50 }, "-4E-0", None),
-            (Token::ArrEnd, Pos { offset: 767, line: 5, col: 55 }, "]", None),
-            (Token::ArrEnd, Pos { offset: 768, line: 5, col: 56 }, "]", None),
-            (Token::ArrEnd, Pos { offset: 769, line: 5, col: 57 }, "]", None),
-            (Token::ObjEnd, Pos { offset: 770, line: 5, col: 58 }, "}", None),
-            (Token::ObjEnd, Pos { offset: 771, line: 5, col: 59 }, "}", None),
-            (Token::ObjEnd, Pos { offset: 772, line: 5, col: 60 }, "}", None),
-            (Token::White, Pos { offset: 773, line: 5, col: 61}, "\n", None),
-
+            (
+                Token::Str,
+                Pos {
+                    offset: 715,
+                    line: 5,
+                    col: 3,
+                },
+                r#""abc\u0020123""#,
+                Some(r#""abc 123""#),
+            ),
+            (
+                Token::NameSep,
+                Pos {
+                    offset: 729,
+                    line: 5,
+                    col: 17,
+                },
+                ":",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 730,
+                    line: 5,
+                    col: 18,
+                },
+                " ",
+                None,
+            ),
+            (
+                Token::ObjBegin,
+                Pos {
+                    offset: 731,
+                    line: 5,
+                    col: 19,
+                },
+                "{",
+                None,
+            ),
+            (
+                Token::ObjBegin,
+                Pos {
+                    offset: 732,
+                    line: 5,
+                    col: 20,
+                },
+                "{",
+                None,
+            ),
+            (
+                Token::ObjBegin,
+                Pos {
+                    offset: 733,
+                    line: 5,
+                    col: 21,
+                },
+                "{",
+                None,
+            ),
+            (
+                Token::Str,
+                Pos {
+                    offset: 734,
+                    line: 5,
+                    col: 22,
+                },
+                r#""inner""#,
+                None,
+            ),
+            (
+                Token::NameSep,
+                Pos {
+                    offset: 741,
+                    line: 5,
+                    col: 29,
+                },
+                ":",
+                None,
+            ),
+            (
+                Token::ArrBegin,
+                Pos {
+                    offset: 742,
+                    line: 5,
+                    col: 30,
+                },
+                "[",
+                None,
+            ),
+            (
+                Token::ArrBegin,
+                Pos {
+                    offset: 743,
+                    line: 5,
+                    col: 31,
+                },
+                "[",
+                None,
+            ),
+            (
+                Token::ArrBegin,
+                Pos {
+                    offset: 744,
+                    line: 5,
+                    col: 32,
+                },
+                "[",
+                None,
+            ),
+            (
+                Token::Num,
+                Pos {
+                    offset: 745,
+                    line: 5,
+                    col: 33,
+                },
+                "-1",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 747,
+                    line: 5,
+                    col: 35,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::Num,
+                Pos {
+                    offset: 748,
+                    line: 5,
+                    col: 36,
+                },
+                "-2.0",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 752,
+                    line: 5,
+                    col: 40,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::Num,
+                Pos {
+                    offset: 753,
+                    line: 5,
+                    col: 41,
+                },
+                "-3.00e+0",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 761,
+                    line: 5,
+                    col: 49,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::Num,
+                Pos {
+                    offset: 762,
+                    line: 5,
+                    col: 50,
+                },
+                "-4E-0",
+                None,
+            ),
+            (
+                Token::ArrEnd,
+                Pos {
+                    offset: 767,
+                    line: 5,
+                    col: 55,
+                },
+                "]",
+                None,
+            ),
+            (
+                Token::ArrEnd,
+                Pos {
+                    offset: 768,
+                    line: 5,
+                    col: 56,
+                },
+                "]",
+                None,
+            ),
+            (
+                Token::ArrEnd,
+                Pos {
+                    offset: 769,
+                    line: 5,
+                    col: 57,
+                },
+                "]",
+                None,
+            ),
+            (
+                Token::ObjEnd,
+                Pos {
+                    offset: 770,
+                    line: 5,
+                    col: 58,
+                },
+                "}",
+                None,
+            ),
+            (
+                Token::ObjEnd,
+                Pos {
+                    offset: 771,
+                    line: 5,
+                    col: 59,
+                },
+                "}",
+                None,
+            ),
+            (
+                Token::ObjEnd,
+                Pos {
+                    offset: 772,
+                    line: 5,
+                    col: 60,
+                },
+                "}",
+                None,
+            ),
+            (
+                Token::White,
+                Pos {
+                    offset: 773,
+                    line: 5,
+                    col: 61,
+                },
+                "\n",
+                None,
+            ),
             // Line 6
-            (Token::ObjEnd, Pos { offset: 774, line: 6, col: 1 }, "}", None),
-            (Token::Eof, Pos { offset: 775, line: 6, col: 2 }, "", None),
-            (Token::Eof, Pos { offset: 775, line: 6, col: 2 }, "", None),
-            (Token::Eof, Pos { offset: 775, line: 6, col: 2 }, "", None),
+            (
+                Token::ObjEnd,
+                Pos {
+                    offset: 774,
+                    line: 6,
+                    col: 1,
+                },
+                "}",
+                None,
+            ),
+            (
+                Token::Eof,
+                Pos {
+                    offset: 775,
+                    line: 6,
+                    col: 2,
+                },
+                "",
+                None,
+            ),
+            (
+                Token::Eof,
+                Pos {
+                    offset: 775,
+                    line: 6,
+                    col: 2,
+                },
+                "",
+                None,
+            ),
+            (
+                Token::Eof,
+                Pos {
+                    offset: 775,
+                    line: 6,
+                    col: 2,
+                },
+                "",
+                None,
+            ),
         ];
 
         let mut an = FixedAnalyzer::new(JSON_TEXT.as_bytes());
 
-        for (i, (expect_token, expect_pos, expect_literal, expect_unescaped)) in EXPECT.iter().enumerate() {
+        for (i, (expect_token, expect_pos, expect_literal, expect_unescaped)) in
+            EXPECT.iter().enumerate()
+        {
             let actual_token = an.next();
             let actual_pos = *an.pos();
-            let mut content = an.content();
+            let content = an.content();
 
-            assert_eq!(*expect_token, actual_token, "i = {i}, actual_pos = {actual_pos}, expect_pos = {expect_pos}");
-            assert_eq!(*expect_pos, actual_pos, "i = {i}, token = {actual_token}, content = {content}");
-            assert_eq!(*expect_literal, content.literal(), "i = {i}, token = {actual_token}");
+            assert_eq!(
+                *expect_token, actual_token,
+                "i = {i}, actual_pos = {actual_pos}, expect_pos = {expect_pos}"
+            );
+            assert_eq!(
+                *expect_pos, actual_pos,
+                "i = {i}, token = {actual_token}, content = {content}"
+            );
+            assert_eq!(
+                *expect_literal,
+                content.literal(),
+                "i = {i}, token = {actual_token}"
+            );
             if let Some(u) = expect_unescaped {
-                assert!(content.is_escaped(), "i = {i}, token = {actual_token}, literal = {expect_literal:?}");
+                assert!(
+                    content.is_escaped(),
+                    "i = {i}, token = {actual_token}, literal = {expect_literal:?}"
+                );
                 assert_eq!(*u, content.unescaped());
             } else {
-                assert!(!content.is_escaped(), "i = {i}, token = {actual_token}, literal = {expect_literal:?}");
+                assert!(
+                    !content.is_escaped(),
+                    "i = {i}, token = {actual_token}, literal = {expect_literal:?}"
+                );
                 assert_eq!(*expect_literal, content.unescaped());
             }
         }
