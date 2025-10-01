@@ -1,3 +1,40 @@
+- For the `ReadAnanalyzer` release, expected commits:
+   1. Introduce `Buf` and refactor `lexical::Content`.
+        - Full unit tests.
+        - Full Rust docs.
+   2. Refactor `lexical::unescape` to be fully `pub`, with the input
+      literal being a `Buf` and the output being (for now) still a
+      `&mut Vec<u8>`, and returning a Result<(), ...>
+       Add full unit test coverage at the same time.
+   3. Introduce:
+        - Feature "read".
+        - Module `lexical::read` with `ReadAnalyzer`.
+        - Rope type maybe in `bufjson::Rope`, but tied to `read` feature.
+        - Full unit testing from the start.
+    4. Full Rust docs for #3.
+    5. Update README.md.
+    6. Code coverage push: 10% increase.
+    7. Release v0.5.0.
+- For the `AsyncAnalyzer` release, expected commits:
+    1. Introduce:
+         - trait `lexical::AsyncAnalyzer`
+         - A new module and concrete implementation. The naming is a bit of a
+           challenge hear to avoid repeating "Async", but I think it could be
+           `lexical::stream::StreamAnalyzer`.
+        - Feature "async", which should now also enable `Rope`.
+        - Full unit testing from the start.
+    2. Full Rust docs for #1.
+    3. Update README.md.
+    4. Code coverage push: 10% increase.
+    5. Release v0.5.1, which hopefully isn't breaking.
+    6. Introduce `syntax::AsyncParser` with full Rust docs and unit tests.
+    7. Update README.md
+    8. Code coverage push: 10% increase.
+    9. Release v0.5.2.
+    10. Update the main `bufjson` module rust docs with a full write-up.
+    11. Code coverage push: 10% increase.
+    12. Release v0.5.3.
+
 - Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
   strings without allocating to unescape. This should be a provided method on the trait.
 - Add overall crate documentation (`lib.rs`).
