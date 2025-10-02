@@ -1,7 +1,4 @@
 - For the `ReadAnanalyzer` release, expected commits:
-   1. Introduce `Buf` and refactor `lexical::Content`.
-        - Full unit tests.
-        - Full Rust docs.
    2. Refactor `lexical::unescape` to be fully `pub`, with the input
       literal being a `Buf` and the output being (for now) still a
       `&mut Vec<u8>`, and returning a Result<(), ...>
