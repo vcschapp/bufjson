@@ -7,6 +7,7 @@
         - Feature "read".
         - Module `lexical::read` with `ReadAnalyzer`.
         - Rope type maybe in `bufjson::Rope`, but tied to `read` feature.
+            - Repeat lexical::unescape unit tests on the Rope structure.
         - Full unit testing from the start.
     4. Full Rust docs for #3.
     5. Update README.md.

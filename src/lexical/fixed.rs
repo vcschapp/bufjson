@@ -110,7 +110,8 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
             InnerContent::NotEscaped(r) => Cow::Borrowed(r.as_str()),
             InnerContent::Escaped(r) => {
                 let mut buf = Vec::new();
-                lexical::unescape(r.as_str(), &mut buf);
+                let mut literal = r.as_str();
+                lexical::unescape(&mut literal, &mut buf);
 
                 // SAFETY: `r` was valid UTF-8 before it was de-escaped, and the de-escaping process
                 //         maintains UTF-8 safety.

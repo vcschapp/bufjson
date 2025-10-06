@@ -84,7 +84,7 @@
 //!
 //! [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 
-use crate::Pos;
+use crate::{Buf, Pos};
 use std::{borrow::Cow, fmt};
 
 pub mod fixed;
@@ -961,82 +961,163 @@ pub(crate) fn hex2u16(b: u8) -> u16 {
     }
 }
 
-pub(crate) fn unescape(literal: &str, buf: &mut Vec<u8>) {
-    debug_assert!(literal.len() >= 2);
-    debug_assert!(matches!(literal.chars().next(), Some('"')));
-    debug_assert!(matches!(literal.chars().nth_back(0), Some('"')));
+pub(crate) fn unescape(literal: &mut impl Buf, dst: &mut Vec<u8>) {
+    // Reserve bytes in the destination. If the incoming literal has at least one escape sequence,
+    // the length should shrink by one, but if called erroneously, it might not shrink, and might
+    // even be empty.
+    if !literal.has_remaining() {
+        return;
+    }
+    dst.reserve(literal.remaining());
 
-    let bytes = literal.as_bytes();
+    #[derive(Default)]
+    struct Esc {
+        len: u32, // Number of valid bytes, 1-5 (how many characters we have after first '\').
+        hi: u32,  // High surrogate.
+        lo: u32,  // Low surrogate.
+    }
+    let mut esc: Option<Esc> = None;
 
-    // Reserve at least len-1 characters in the buffer. This is a bit tricksy: we know there is at
-    // least one escape sequence, so the real string length is going to shrink by at least one byte.
-    buf.reserve(bytes.len() - 1);
+    loop {
+        let chunk = literal.chunk();
+        let (mut i, mut j) = (0usize, 0usize);
 
-    let (mut i, mut j) = (0usize, 0usize);
-    let mut hi_surrogate: Option<u32> = None;
-    while j < bytes.len() {
-        if bytes[j] != b'\\' {
-            j += 1;
-        } else {
-            buf.extend_from_slice(&bytes[i..j]);
+        loop {
+            let b = chunk[j];
+            match &mut esc {
+                None if b != b'\\' => j += 1,
 
-            let x = bytes[j + 1];
-            let mut len = 2;
+                None => {
+                    dst.extend_from_slice(&chunk[i..j]);
+                    esc = Some(Esc::default());
+                    j += 1;
+                    i = j;
+                }
 
-            match x {
-                b'"' | b'\\' | b'/' => buf.push(x),
-                b'b' => buf.push(b'\x08'),
-                b't' => buf.push(b'\t'),
-                b'f' => buf.push(b'\x0c'),
-                b'n' => buf.push(b'\n'),
-                b'r' => buf.push(b'\r'),
-                b'u' => {
-                    len = 6;
-                    let (b0, b1, b2, b3) = (bytes[j + 2], bytes[j + 3], bytes[j + 4], bytes[j + 5]);
-                    let x: u32 =
-                        (hex2u16(b0) << 12 | hex2u16(b1) << 8 | hex2u16(b2) << 4 | hex2u16(b3))
-                            as u32;
-
-                    let code_point = match (hi_surrogate, x as u32) {
-                        (None, 0xd800..=0xdbff) => {
-                            hi_surrogate = Some(x);
-
-                            None
-                        }
-                        (None, _) => Some(x),
-                        (Some(hi), 0xdc00..=0xdfff) => {
-                            hi_surrogate = None;
-
-                            Some(0x10000 + (((hi - 0xd800) << 10) | (x - 0xdc00)))
-                        }
-                        (Some(hi), _) => panic!(
-                            "high surrogate followed by invalid low surrogate: [0x{hi:04x}], [0x{x:04x}]"
-                        ),
+                Some(e) if e.len == 0 => {
+                    let mut single = |b: u8, esc: &mut Option<Esc>| {
+                        dst.push(b);
+                        *esc = None;
+                        j += 1;
+                        i = j;
                     };
 
-                    if let Some(c) = code_point {
-                        match char::from_u32(c) {
-                            Some(y) => {
-                                let mut seq = [0u8; 4];
-                                let utf8_str = y.encode_utf8(&mut seq);
-                                buf.extend_from_slice(utf8_str.as_bytes());
-                            }
-
-                            None => unreachable!(),
+                    match b {
+                        b'"' | b'\\' | b'/' => single(b, &mut esc),
+                        b'b' => single(b'\x08', &mut esc),
+                        b't' => single(b'\t', &mut esc),
+                        b'f' => single(b'\x0c', &mut esc),
+                        b'n' => single(b'\n', &mut esc),
+                        b'r' => single(b'\r', &mut esc),
+                        b'u' => {
+                            e.len = 1;
+                            j += 1;
+                            i = j;
                         }
+                        _ => panic!(r#"invalid escape sequence byte after '\': 0x{b:02x}"#),
                     }
                 }
-                _ => panic!("invalid escape sequence byte after '\\': 0x{x:02x}"),
+
+                Some(e) if (1..=4).contains(&e.len) => {
+                    let shift = 4 * (4 - e.len);
+                    e.hi |= (hex2u16(b) as u32) << shift;
+                    e.len += 1;
+                    if e.len == 5 {
+                        match e.hi {
+                            0xd800..=0xdbff => (),
+
+                            0xdc00..=0xdfff => panic!(
+                                "Unicode escape low surrogate without preceding high surrogate: 0x{:02x}",
+                                e.hi
+                            ),
+
+                            _ => {
+                                append_code_point(e.hi, dst);
+                                esc = None;
+                            }
+                        }
+                    }
+                    j += 1;
+                    i = j;
+                }
+
+                Some(e) if e.len == 5 && b == b'\\' => {
+                    e.len = 6;
+                    j += 1;
+                    i = j;
+                }
+
+                Some(e) if e.len == 5 => panic!(
+                    r#"expected '\' to start low surrogate Unicode escape after high surrogate 0x{:04x}, found byte 0x{b:02x}"#,
+                    e.hi
+                ),
+
+                Some(e) if e.len == 6 && b == b'u' => {
+                    e.len = 7;
+                    j += 1;
+                    i = j;
+                }
+
+                Some(e) if e.len == 6 => panic!(
+                    r#"expected '\u' to start low surrogate Unicode escape after high surrogate 0x{:04x}, found '\' followed by byte {b:02x}"#,
+                    e.hi
+                ),
+
+                Some(e) if (7..=10).contains(&e.len) => {
+                    let shift = 4 * (10 - e.len);
+                    e.lo |= (hex2u16(b) as u32) << shift;
+                    e.len += 1;
+                    if e.len == 11 {
+                        match e.lo {
+                            0xdc00..=0xdfff => {
+                                let code_point =
+                                    0x10000 + (((e.hi - 0xd800) << 10) | (e.lo - 0xdc00));
+                                append_code_point(code_point, dst);
+                                esc = None;
+                            }
+
+                            _ => {
+                                panic!(
+                                    "Unicode escape high surrogate not followed by low surrogate: 0x{:04x} and then 0x{:04x}",
+                                    e.hi, e.lo
+                                )
+                            }
+                        }
+                    }
+                    j += 1;
+                    i = j;
+                }
+
+                _ => unreachable!(),
             }
 
-            j += len;
-            i = j;
+            if j == chunk.len() {
+                break;
+            }
+        }
+
+        dst.extend_from_slice(&chunk[i..j]);
+        literal.advance(chunk.len());
+        if !literal.has_remaining() {
+            break;
         }
     }
 
-    debug_assert!(hi_surrogate.is_none());
+    if esc.is_some() {
+        panic!("unexpected end of input within Unicode escape sequence");
+    }
+}
 
-    buf.extend_from_slice(&bytes[i..j]);
+fn append_code_point(code_point: u32, dst: &mut Vec<u8>) {
+    match char::from_u32(code_point) {
+        Some(c) => {
+            let mut seq = [0u8; 4];
+            let utf8_str = c.encode_utf8(&mut seq);
+            dst.extend_from_slice(utf8_str.as_bytes());
+        }
+
+        None => unreachable!(),
+    }
 }
 
 #[cfg(test)]
@@ -1197,12 +1278,13 @@ mod tests {
     #[case(r#""\ud83D\uDe00""#, r#""😀""#)] // Grinning face emoji (U+1F600, 4-byte UTF-8)
     #[case(r#""\ud800\uDC00""#, "\"\u{10000}\"")] // First 4-byte UTF-8 code point
     #[case(r#""\uDBFF\udfff""#, "\"\u{10FFFF}\"")] // Highest valid Unicode scalar value
-    fn test_unescape_ok(#[case] literal: &str, #[case] expect: &str) {
+    fn test_unescape_ok(#[case] input: &str, #[case] expect: &str) {
         // Test with an empty buffer.
         {
+            let mut literal = input;
             let mut buf = Vec::new();
 
-            unescape(literal, &mut buf);
+            unescape(&mut literal, &mut buf);
             let actual = String::from_utf8(buf).unwrap();
 
             assert_eq!(actual, expect);
@@ -1210,10 +1292,11 @@ mod tests {
 
         // Test with a non-empty buffer.
         {
+            let mut literal = input;
             let mut buf = Vec::new();
 
             buf.extend_from_slice(b"foo");
-            unescape(literal, &mut buf);
+            unescape(&mut literal, &mut buf);
             let actual = String::from_utf8(buf).unwrap();
 
             assert_eq!(actual, format!("foo{expect}"));
@@ -1221,23 +1304,85 @@ mod tests {
     }
 
     #[rstest]
-    #[case(r#""\ud800\u0000""#)]
-    #[case(r#""\uDBFF\ud800""#)]
-    #[should_panic(expected = "high surrogate followed by invalid low surrogate")]
-    fn test_unescape_panic_invalid_surrogate_pair(#[case] literal: &str) {
-        let mut buf = Vec::new();
-
-        unescape(literal, &mut buf);
-    }
-
-    #[rstest]
     #[case(r#""\a""#)]
     #[case(r#""\U""#)]
     #[case(r#""\:""#)]
     #[should_panic(expected = "invalid escape sequence byte after '\\'")]
-    fn test_unescape_panic_invalid_esc_seq_byte(#[case] literal: &str) {
+    fn test_unescape_panic_invalid_esc_seq_byte(#[case] mut literal: &str) {
         let mut buf = Vec::new();
 
-        unescape(literal, &mut buf);
+        unescape(&mut literal, &mut buf);
+    }
+
+    #[rstest]
+    #[case(r#"\ud800\u0000"#)]
+    #[case(r#"\ud800\ud7ff"#)]
+    #[case(r#"\ud800\ud800"#)]
+    #[case(r#"\ud800\ue000"#)]
+    #[case(r#"\ud800\uffff"#)]
+    #[case(r#"\udbff\u0000"#)]
+    #[case(r#"\udbff\ud7ff"#)]
+    #[case(r#"\udbff\ud800"#)]
+    #[case(r#"\udbff\ue000"#)]
+    #[case(r#"\udbff\uffff"#)]
+    #[should_panic(expected = "Unicode escape high surrogate not followed by low surrogate")]
+    fn test_unescape_panic_low_surrogate_no_high(#[case] mut literal: &str) {
+        let mut buf = Vec::new();
+
+        unescape(&mut literal, &mut buf);
+    }
+
+    #[rstest]
+    #[case(r#""\ud800\u0000""#)]
+    #[case(r#""\uDBFF\ud800""#)]
+    #[should_panic(expected = "Unicode escape high surrogate not followed by low surrogate")]
+    fn test_unescape_panic_high_surrogate_no_low(#[case] mut literal: &str) {
+        let mut buf = Vec::new();
+
+        unescape(&mut literal, &mut buf);
+    }
+
+    #[rstest]
+    #[case(r#"\ud800 "#)]
+    #[case(r#"\udbff "#)]
+    #[should_panic(
+        expected = r#"expected '\' to start low surrogate Unicode escape after high surrogate"#
+    )]
+    fn test_unescape_panic_high_surrogate_no_backslash(#[case] mut literal: &str) {
+        let mut buf = Vec::new();
+
+        unescape(&mut literal, &mut buf);
+    }
+
+    #[rstest]
+    #[case(r#"\ud800\n"#)]
+    #[case(r#"\udbff\a"#)]
+    #[should_panic(
+        expected = r#"expected '\u' to start low surrogate Unicode escape after high surrogate"#
+    )]
+    fn test_unescape_panic_high_surrogate_no_backslash_u(#[case] mut literal: &str) {
+        let mut buf = Vec::new();
+
+        unescape(&mut literal, &mut buf);
+    }
+
+    #[rstest]
+    #[case(r#"\"#)]
+    #[case(r#"\u"#)]
+    #[case(r#"\u0"#)]
+    #[case(r#"\u00"#)]
+    #[case(r#"\u000"#)]
+    #[case(r#"\u0000\"#)]
+    #[case(r#"\u0000\u"#)]
+    #[case(r#"\u0000\u1"#)]
+    #[case(r#"\u0000\u11"#)]
+    #[case(r#"\u0000\u111"#)]
+    #[case(r#"\ud800\u111"#)]
+    #[case(r#"\udbff\u111"#)]
+    #[should_panic(expected = "unexpected end of input within Unicode escape sequence")]
+    fn test_unescape_panic_unexpected_eof(#[case] mut literal: &str) {
+        let mut buf = Vec::new();
+
+        unescape(&mut literal, &mut buf);
     }
 }
