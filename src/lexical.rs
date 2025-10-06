@@ -961,7 +961,46 @@ pub(crate) fn hex2u16(b: u8) -> u16 {
     }
 }
 
-pub(crate) fn unescape(literal: &mut impl Buf, dst: &mut Vec<u8>) {
+/// Expands escape sequences in the content of a valid JSON string.
+///
+/// The [`Buf`] to unescape must contain the literal content of a valid JSON string value, as it
+/// appears in the JSON text (with or without the surrounding double quotation mark characters).
+///
+/// The unescaped text is appended to the given byte vector.
+///
+/// # Panics
+///
+/// Panics if the input `Buf` contains an invalid or unterminated JSON escape sequence.
+///
+/// # Examples
+///
+/// Unescape a string with surrounding double quote characters...
+///
+/// ```
+/// use bufjson::{Buf, lexical::unescape};
+///
+/// let mut s = r#""foo\nbar""#;
+/// let mut dst = Vec::new();
+/// unescape(&mut s, &mut dst);
+/// assert_eq!(
+///    &br#""foo
+/// bar""#[..],
+///     &dst);
+/// ```
+///
+/// ...Or without them...
+///
+/// ```
+/// use bufjson::{Buf, lexical::unescape};
+///
+/// let mut s = r#"hello\u002c\u0020world"#;
+/// let mut dst = Vec::new();
+/// unescape(&mut s, &mut dst);
+/// assert_eq!(&b"hello, world"[..], &dst);
+/// ```
+///
+/// # Notes
+pub fn unescape(literal: &mut impl Buf, dst: &mut Vec<u8>) {
     // Reserve bytes in the destination. If the incoming literal has at least one escape sequence,
     // the length should shrink by one, but if called erroneously, it might not shrink, and might
     // even be empty.

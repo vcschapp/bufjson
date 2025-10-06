@@ -1,8 +1,4 @@
 - For the `ReadAnanalyzer` release, expected commits:
-   2. Refactor `lexical::unescape` to be fully `pub`, with the input
-      literal being a `Buf` and the output being (for now) still a
-      `&mut Vec<u8>`, and returning a Result<(), ...>
-       Add full unit test coverage at the same time.
    3. Introduce:
         - Feature "read".
         - Module `lexical::read` with `ReadAnalyzer`.
