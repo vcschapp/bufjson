@@ -5,7 +5,7 @@
 //!
 //! The fundamental types are the enum [`Token`], which represents the type of a JSON token, and
 //! the traits [`Analyzer`] (does the lexical analysis); [`Content`] (efficiently provides the
-//! actual content of a token from the JSON text; and [`Error`] (describes errors encountered by
+//! actual content of a token from the JSON text); and [`Error`] (describes errors encountered by
 //! the lexical analyzer).
 //!
 //! The sub-modules provide concrete implementations of JSON tokenizers:
@@ -14,6 +14,10 @@
 //!   concrete lexical analyzers in this crate use this state machine for their core logic.
 //! - [`fixed`] contains an implementation of [`Analyzer`] for tokenizing fixed-size in-memory
 //!   buffers.
+#![cfg_attr(feature = "read", doc = "- [`read`][`crate::lexical::read`]")]
+#![cfg_attr(not(feature = "read"), doc = "- `read`")]
+//! contains an implementation of [`Analyzer`] for tokenizing streams that implement `std::io::Read`
+//! stream. Requires the `read` feature to be enabled.
 //!
 //! # Performance
 //!
@@ -41,9 +45,9 @@
 //! precision. This would not be possible if it coerced the text into a numeric type, which all have
 //! their own limits on range and precision.
 //!
-//! \[1\]: The spec *does* urge software developers using JSON to be thoughtful
-//! bout interoperability and, kinda sorta, to just stay within the IEEE double-precision floating
-//! point range, *a.k.a.*, `f64`. But that's not a requirement.
+//! \[1\]: The spec *does* urge software developers using JSON to be thoughtful about
+//! interoperability and, kinda sorta, to just stay within the IEEE double-precision floating point
+//! range, *a.k.a.*, `f64`. But that's not a requirement.
 //!
 //! # Strings
 //!
@@ -82,15 +86,26 @@
 //! it to build your own implementation of [`Analyzer`] or any other application that needs a
 //! low-level ability to identify JSON tokens that is faithful to the [JSON spec][rfc].
 //!
+//! For string tokens, you can use the [`unescape`] function standalone to expand escape sequences.
+//!
 //! [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 
-use crate::{Buf, Pos};
-use std::{borrow::Cow, fmt};
+use crate::{Buf, EqStr, IntoBuf, OrdStr, Pos, StringBuf};
+use std::{
+    borrow::Borrow,
+    cmp::{Ord, Ordering},
+    fmt,
+    hash::{Hash, Hasher},
+    ops::Deref,
+};
 
 pub mod fixed;
 pub mod state;
 
-/// Type of lexical token in a JSON text, such as begin object `{`, literal `true`, or string.
+#[cfg(feature = "read")]
+pub mod read;
+
+/// Kind of lexical token in a JSON text, such as begin object `{`, literal `true`, or string.
 ///
 /// This is a list of the JSON lexical token types as described in the [JSON spec][rfc]. The names
 /// of enumeration members are aligned with the names as they appear in the spec.
@@ -320,6 +335,351 @@ impl fmt::Display for Token {
     }
 }
 
+/// Result of expanding escape sequences in a JSON string token.
+///
+/// An `Unescaped` value is a valid UTF-8 string that is free of JSON escape sequences. It either
+/// contains the literal content of a JSON token exactly as it appears in the JSON text, if the
+/// token did not contain any escape sequences; or it contains the normalized version of the token
+/// content with escape sequences expanded, if the token had at least one escape sequence.
+/// Evidently, the latter case can only occur for string tokens.
+///
+/// # Example
+///
+/// ```
+/// use bufjson::lexical::{Token, Unescaped, fixed::FixedAnalyzer};
+///
+/// let mut lexer = FixedAnalyzer::new(&br#"["foo\u0020bar"]"#[..]);
+///
+/// assert_eq!(Token::ArrBegin, lexer.next());
+/// let content = lexer.content();
+/// let u: Unescaped<_> = content.unescaped();
+/// assert!(u.is_literal());
+/// assert_eq!("[", u);
+///
+/// assert_eq!(Token::Str, lexer.next());
+/// let content = lexer.content();
+/// let u: Unescaped<_> = content.unescaped();
+/// assert!(u.is_expanded());
+/// assert_eq!(r#""foo bar""#, u);
+/// ```
+#[derive(Clone, Debug)]
+pub enum Unescaped<T> {
+    /// Literal content of the JSON token exactly as it appears in the JSON text.
+    Literal(T),
+
+    /// Normalized content of the JSON token with all escape sequences expanded.
+    Expanded(String),
+}
+
+impl<T> Unescaped<T> {
+    /// Returns the literal content if available.
+    ///
+    /// The return value is `Some(...)` if `self` is [`Literal`], and `None` otherwise.
+    ///
+    /// [`Literal`]: Self::Literal
+    pub fn literal(&self) -> Option<&T> {
+        match self {
+            Self::Literal(t) => Some(t),
+            Self::Expanded(_) => None,
+        }
+    }
+
+    /// Returns the expanded content if available.
+    ///
+    /// The return value is `Some(...)` if `self` is [`Expanded`], and `None` otherwise.
+    ///
+    /// [`Expanded`]: Self::Expanded
+    pub fn expanded(&self) -> Option<&str> {
+        match self {
+            Self::Literal(_) => None,
+            Self::Expanded(e) => Some(e.as_str()),
+        }
+    }
+
+    /// Returns `true` if `self` is [`Literal`], and `false` otherwise.
+    ///
+    /// [`Literal`]: Self::Literal
+    pub fn is_literal(&self) -> bool {
+        matches!(self, Self::Literal(_))
+    }
+
+    /// Returns `true` if `self` is [`Expanded`], and `false` otherwise.
+    ///
+    /// [`Expanded`]: Self::Expanded
+    pub fn is_expanded(&self) -> bool {
+        matches!(self, Self::Expanded(_))
+    }
+}
+
+impl<T: IntoBuf> IntoBuf for Unescaped<T> {
+    type Buf = UnescapedBuf<T::Buf>;
+
+    fn into_buf(self) -> Self::Buf {
+        match self {
+            Self::Literal(t) => UnescapedBuf(UnescapedBufInner::Literal(t.into_buf())),
+            Self::Expanded(e) => UnescapedBuf(UnescapedBufInner::Expanded(e.into_buf())),
+        }
+    }
+}
+
+impl AsRef<str> for Unescaped<&str> {
+    fn as_ref(&self) -> &str {
+        match self {
+            Unescaped::Literal(t) => t,
+            Unescaped::Expanded(e) => e.as_str(),
+        }
+    }
+}
+
+impl AsRef<[u8]> for Unescaped<&str> {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Unescaped::Literal(t) => t.as_bytes(),
+            Unescaped::Expanded(e) => e.as_bytes(),
+        }
+    }
+}
+
+impl Deref for Unescaped<&str> {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        match self {
+            Unescaped::Literal(t) => t,
+            Unescaped::Expanded(e) => e.as_str(),
+        }
+    }
+}
+
+impl Borrow<str> for Unescaped<&str> {
+    fn borrow(&self) -> &str {
+        match self {
+            Unescaped::Literal(t) => t,
+            Unescaped::Expanded(e) => e.as_str(),
+        }
+    }
+}
+
+impl<T> fmt::Display for Unescaped<T>
+where
+    T: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Unescaped::Literal(t) => t.fmt(f),
+            Unescaped::Expanded(e) => e.fmt(f),
+        }
+    }
+}
+
+impl<T> Eq for Unescaped<T> where T: Eq + EqStr {}
+
+impl<T> From<Unescaped<T>> for String
+where
+    String: From<T>,
+{
+    fn from(u: Unescaped<T>) -> Self {
+        match u {
+            Unescaped::Literal(t) => t.into(),
+            Unescaped::Expanded(e) => e,
+        }
+    }
+}
+
+impl<T> Hash for Unescaped<T>
+where
+    T: Hash,
+{
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Unescaped::Literal(t) => t.hash(state),
+            Unescaped::Expanded(e) => e.hash(state),
+        }
+    }
+}
+
+impl<T> Ord for Unescaped<T>
+where
+    T: Eq + Ord + EqStr + OrdStr,
+    Self: Eq + PartialOrd,
+{
+    fn cmp(&self, other: &Unescaped<T>) -> Ordering {
+        match (self, other) {
+            (Unescaped::Literal(t1), Unescaped::Literal(t2)) => Ord::cmp(t1, t2),
+            (Unescaped::Expanded(e1), Unescaped::Expanded(e2)) => e1.cmp(e2),
+            (Unescaped::Literal(t), Unescaped::Expanded(e)) => OrdStr::cmp(t, e.as_str()),
+            (Unescaped::Expanded(e), Unescaped::Literal(t)) => OrdStr::cmp(t, e.as_str()).reverse(),
+        }
+    }
+}
+
+impl<T> PartialEq<Unescaped<T>> for Unescaped<T>
+where
+    T: for<'a> PartialEq<&'a str>,
+    T: PartialEq<T>,
+{
+    fn eq(&self, other: &Unescaped<T>) -> bool {
+        match (self, other) {
+            (Unescaped::Literal(t1), Unescaped::Literal(t2)) => t1 == t2,
+            (Unescaped::Expanded(e1), Unescaped::Expanded(e2)) => e1 == e2,
+            (Unescaped::Literal(t1), Unescaped::Expanded(e2)) => *t1 == e2.as_str(),
+            (Unescaped::Expanded(e1), Unescaped::Literal(t2)) => *t2 == e1.as_str(),
+        }
+    }
+}
+
+impl<T> PartialEq<&str> for Unescaped<T>
+where
+    T: for<'a> PartialEq<&'a str>,
+{
+    fn eq(&self, other: &&str) -> bool {
+        match self {
+            Unescaped::Literal(t) => *t == *other,
+            Unescaped::Expanded(e) => e == other,
+        }
+    }
+}
+
+impl<'a, 'b, T> PartialEq<Unescaped<T>> for &'a str
+where
+    T: PartialEq<&'b str>,
+    'a: 'b,
+{
+    fn eq(&self, other: &Unescaped<T>) -> bool {
+        match other {
+            Unescaped::Literal(t) => *t == *self,
+            Unescaped::Expanded(e) => self == e,
+        }
+    }
+}
+
+impl<T> PartialEq<String> for Unescaped<T>
+where
+    T: PartialEq<String>,
+{
+    fn eq(&self, other: &String) -> bool {
+        match self {
+            Unescaped::Literal(t) => t == other,
+            Unescaped::Expanded(e) => e == other,
+        }
+    }
+}
+
+impl<T> PartialEq<Unescaped<T>> for String
+where
+    T: PartialEq<String>,
+{
+    fn eq(&self, other: &Unescaped<T>) -> bool {
+        match other {
+            Unescaped::Literal(t) => t == self,
+            Unescaped::Expanded(e) => self == e,
+        }
+    }
+}
+
+impl<T> PartialOrd<Unescaped<T>> for Unescaped<T>
+where
+    T: for<'a> PartialOrd<&'a str>,
+    for<'a> &'a str: PartialOrd<T>,
+    T: PartialOrd<T>,
+    Self: PartialEq,
+{
+    fn partial_cmp(&self, other: &Unescaped<T>) -> Option<Ordering> {
+        match (self, other) {
+            (Unescaped::Literal(t1), Unescaped::Literal(t2)) => t1.partial_cmp(t2),
+            (Unescaped::Expanded(e1), Unescaped::Expanded(e2)) => e1.partial_cmp(e2),
+            (Unescaped::Literal(t), Unescaped::Expanded(e)) => t.partial_cmp(&e.as_str()),
+            (Unescaped::Expanded(e), Unescaped::Literal(t)) => {
+                PartialOrd::<T>::partial_cmp(&e.as_str(), t)
+            }
+        }
+    }
+}
+
+impl<T> PartialOrd<&str> for Unescaped<T>
+where
+    T: for<'a> PartialOrd<&'a str>,
+    Self: for<'a> PartialEq<&'a str>,
+{
+    fn partial_cmp(&self, other: &&str) -> Option<Ordering> {
+        match self {
+            Unescaped::Literal(t) => t.partial_cmp(other),
+            Unescaped::Expanded(e) => e.as_str().partial_cmp(*other),
+        }
+    }
+}
+
+impl<T> PartialOrd<Unescaped<T>> for &str
+where
+    Self: PartialOrd<T>,
+    Self: for<'c> PartialEq<Unescaped<T>>,
+{
+    fn partial_cmp(&self, other: &Unescaped<T>) -> Option<Ordering> {
+        match other {
+            Unescaped::Literal(t) => self.partial_cmp(t),
+            Unescaped::Expanded(e) => PartialOrd::<&str>::partial_cmp(self, &e.as_str()),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum UnescapedBufInner<B> {
+    Literal(B),
+    Expanded(StringBuf),
+}
+
+/// A [`Buf`] implementation for [`Unescaped`].
+///
+/// # Example
+///
+/// ```
+/// use bufjson::{Buf, IntoBuf, lexical::{Token, UnescapedBuf, fixed::FixedAnalyzer}};
+///
+/// let mut lexer = FixedAnalyzer::new(&b"123.456"[..]);
+///
+/// assert_eq!(Token::Num, lexer.next());
+///
+/// let content = lexer.content();
+/// let unescaped = content.unescaped();
+/// let mut buf: UnescapedBuf<_> = unescaped.into_buf();
+///
+/// buf.advance(4);
+/// assert_eq!(3, buf.remaining());
+/// assert_eq!(b"456", buf.chunk());
+/// ```
+#[derive(Debug)]
+pub struct UnescapedBuf<B>(UnescapedBufInner<B>);
+
+impl<B: Buf> Buf for UnescapedBuf<B> {
+    fn advance(&mut self, n: usize) {
+        match &mut self.0 {
+            UnescapedBufInner::Literal(b) => b.advance(n),
+            UnescapedBufInner::Expanded(e) => e.advance(n),
+        }
+    }
+
+    fn chunk(&self) -> &[u8] {
+        match &self.0 {
+            UnescapedBufInner::Literal(b) => b.chunk(),
+            UnescapedBufInner::Expanded(e) => e.chunk(),
+        }
+    }
+
+    fn remaining(&self) -> usize {
+        match &self.0 {
+            UnescapedBufInner::Literal(b) => b.remaining(),
+            UnescapedBufInner::Expanded(e) => e.remaining(),
+        }
+    }
+
+    fn try_copy_to_slice(&mut self, dst: &mut [u8]) -> Result<(), crate::BufUnderflow> {
+        match &mut self.0 {
+            UnescapedBufInner::Literal(b) => b.try_copy_to_slice(dst),
+            UnescapedBufInner::Expanded(e) => e.try_copy_to_slice(dst),
+        }
+    }
+}
+
 /// Text content of a JSON token.
 ///
 /// Contains the actual textual *content* of the JSON token read from the JSON text. This is in
@@ -333,6 +693,11 @@ impl fmt::Display for Token {
 ///
 /// The above JSON text contains one token whose type is [`Token::Str`] and whose content is `"foo"`.
 pub trait Content: fmt::Debug {
+    /// Type that contains the literal string of the token exactly as it appears in the JSON text.
+    type Literal<'a>: IntoBuf
+    where
+        Self: 'a;
+
     /// Returns the literal content of the token exactly as it appears in the JSON text.
     ///
     /// # Static content tokens
@@ -373,7 +738,7 @@ pub trait Content: fmt::Debug {
     /// # End of file
     ///
     /// For the pseudo-token [`Token::Eof`], the value is the empty string.
-    fn literal(&self) -> &str;
+    fn literal<'a>(&'a self) -> Self::Literal<'a>;
 
     /// Indicates whether the token content contains escape sequences.
     ///
@@ -382,16 +747,17 @@ pub trait Content: fmt::Debug {
     /// least one escape sequence, and `false` otherwise.
     fn is_escaped(&self) -> bool;
 
-    /// Returns a normalized version of [`literal`] with all escape sequences  in the JSON text
-    /// fully expanded.
+    /// Returns a normalized version of [`literal`] with all escape sequences in the JSON text fully
+    /// expanded.
     ///
     /// For non-string tokens, and string tokens for which [`is_escaped`] returns `false`, this
-    /// method returns a [`Cow::Borrowed`] containing the same value returned by [`literal`].
+    /// method returns an [`Unescaped::Literal`] containing the same value returned by [`literal`].
     ///
-    /// For string tokens with one or more escape sequences, this method returns a [`Cow::Owned`]
-    /// containing a normalized version of the string value with the escape sequences expanded. An
-    /// allocation will be triggered, so it may be preferable to cache the value returned rather
-    /// than calling this method repeatedly on the same content.
+    /// For string tokens with one or more escape sequences, this method returns an
+    /// [`Unescaped::Expanded`] containing a normalized version of the string value with the escape
+    /// sequences expanded. An allocation will be triggered by this expansion, so it may be
+    /// preferable to cache the value returned rather than calling this method repeatedly on the
+    /// same content.
     ///
     /// As described in the [JSON spec][rfc], the following escape sequence expansions are done:
     ///
@@ -411,7 +777,7 @@ pub trait Content: fmt::Debug {
     /// [`literal`]: method@Self::literal
     /// [`is_escaped`]: method@Self::is_escaped
     /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
-    fn unescaped(&self) -> Cow<'_, str>;
+    fn unescaped<'a>(&'a self) -> Unescaped<Self::Literal<'a>>;
 }
 
 /// Character or class of characters expected at the next input position of a JSON text.
@@ -760,7 +1126,7 @@ impl ErrorKind {
             } if (b' '..=0x7e).contains(actual) => {
                 write!(
                     f,
-                    "expected {expect} but got character '{}' (ASCII 0x{actual:02x}",
+                    "expected {expect} but got character '{}' (ASCII 0x{actual:02x})",
                     *actual as char
                 )?;
                 if let Some(t) = token {
@@ -785,7 +1151,7 @@ impl ErrorKind {
         };
 
         if let Some(p) = pos {
-            write!(f, "at {}", *p)?;
+            write!(f, " at {}", *p)?;
         }
 
         Ok(())
@@ -801,6 +1167,11 @@ impl fmt::Display for ErrorKind {
 /// An error encountered during lexical analysis of JSON text.
 pub trait Error: std::error::Error + Send + Sync {
     /// Returns the category of error.
+    ///
+    /// If the category is [`ErrorKind::Read`], the underlying I/O error is available from the
+    /// [`source`] method.
+    ///
+    /// [`source`]: method@std::error::Error::source
     fn kind(&self) -> ErrorKind;
 
     /// Returns the position in the JSON text where the error was encountered.
@@ -979,9 +1350,8 @@ pub(crate) fn hex2u16(b: u8) -> u16 {
 /// ```
 /// use bufjson::{Buf, lexical::unescape};
 ///
-/// let mut s = r#""foo\nbar""#;
 /// let mut dst = Vec::new();
-/// unescape(&mut s, &mut dst);
+/// unescape(r#""foo\nbar""#, &mut dst);
 /// assert_eq!(
 ///    &br#""foo
 /// bar""#[..],
@@ -993,14 +1363,15 @@ pub(crate) fn hex2u16(b: u8) -> u16 {
 /// ```
 /// use bufjson::{Buf, lexical::unescape};
 ///
-/// let mut s = r#"hello\u002c\u0020world"#;
 /// let mut dst = Vec::new();
-/// unescape(&mut s, &mut dst);
+/// unescape(r#"hello\u002c\u0020world"#, &mut dst);
 /// assert_eq!(&b"hello, world"[..], &dst);
 /// ```
 ///
 /// # Notes
-pub fn unescape(literal: &mut impl Buf, dst: &mut Vec<u8>) {
+pub fn unescape(literal: impl IntoBuf, dst: &mut Vec<u8>) {
+    let mut literal = literal.into_buf();
+
     // Reserve bytes in the destination. If the incoming literal has at least one escape sequence,
     // the length should shrink by one, but if called erroneously, it might not shrink, and might
     // even be empty.
@@ -1163,6 +1534,7 @@ fn append_code_point(code_point: u32, dst: &mut Vec<u8>) {
 mod tests {
     use super::*;
     use rstest::rstest;
+    use std::collections::{BTreeMap, HashMap};
 
     #[rstest]
     #[case(Token::ArrBegin, false)]
@@ -1279,6 +1651,218 @@ mod tests {
     }
 
     #[rstest]
+    #[case(Token::ArrBegin, "[")]
+    #[case(Token::ArrEnd, "]")]
+    #[case(Token::Eof, "EOF")]
+    #[case(Token::Err, "error")]
+    #[case(Token::LitFalse, "false")]
+    #[case(Token::LitNull, "null")]
+    #[case(Token::LitTrue, "true")]
+    #[case(Token::NameSep, ":")]
+    #[case(Token::Num, "number")]
+    #[case(Token::ObjBegin, "{")]
+    #[case(Token::ObjEnd, "}")]
+    #[case(Token::Str, "string")]
+    #[case(Token::ValueSep, ",")]
+    #[case(Token::White, "whitespace")]
+    fn test_token_display(#[case] token: Token, #[case] expect: &str) {
+        assert_eq!(expect, format!("{token}"));
+    }
+
+    #[rstest]
+    #[case(Unescaped::Literal("foo"), "foo")]
+    #[case(Unescaped::Expanded("bar".to_string()), "bar")]
+    fn test_unescaped_str_into_buf(#[case] u: Unescaped<&str>, #[case] expect: &str) {
+        let mut b = u.into_buf();
+
+        assert_eq!(expect.len(), b.remaining());
+        assert_eq!(expect, str::from_utf8(b.chunk()).unwrap());
+
+        if b.remaining() > 0 {
+            b.advance(1);
+
+            assert_eq!(expect.len() - 1, b.remaining());
+            assert_eq!(&expect[1..], str::from_utf8(b.chunk()).unwrap());
+        }
+
+        let mut v = vec![0; expect.len() - 1];
+        b.copy_to_slice(&mut v);
+
+        assert_eq!(0, b.remaining());
+        assert_eq!(b"", b.chunk())
+    }
+
+    #[test]
+    fn test_unescaped_str() {
+        let a1 = Unescaped::Literal("a");
+        let b1 = Unescaped::Expanded("bb".to_string());
+        let a2 = Unescaped::Expanded("a".to_string());
+        let b2 = Unescaped::Literal("bb");
+
+        assert_eq!("a", Into::<String>::into(a1.clone()));
+        assert_eq!("bb", Into::<String>::into(b1.clone()));
+        assert_eq!("a", Into::<String>::into(a2.clone()));
+        assert_eq!("bb", Into::<String>::into(b2.clone()));
+
+        assert!(matches!(a1.literal(), Some(&"a")));
+        assert!(b1.literal().is_none());
+        assert!(a2.literal().is_none());
+        assert!(matches!(b2.literal(), Some(&"bb")));
+
+        assert!(a1.expanded().is_none());
+        assert!(matches!(b1.expanded(), Some("bb")));
+        assert!(matches!(a2.expanded(), Some("a")));
+        assert!(b2.expanded().is_none());
+
+        assert!(a1.is_literal());
+        assert!(!a1.is_expanded());
+        assert!(!b1.is_literal());
+        assert!(b1.is_expanded());
+
+        assert_eq!(1, a1.len());
+        assert_eq!(2, b1.len());
+        assert_eq!(1, a2.len());
+        assert_eq!(2, b2.len());
+
+        let a3: &str = a1.as_ref();
+        let b3: &str = b1.as_ref();
+        let a4: &str = a2.as_ref();
+        let b4: &str = b2.as_ref();
+
+        assert_eq!("a", format!("{a1}"));
+        assert_eq!("bb", format!("{b1}"));
+        assert_eq!("a", format!("{a2}"));
+        assert_eq!("bb", format!("{b2}"));
+
+        assert_eq!("a", a3);
+        assert_eq!("bb", b3);
+        assert_eq!("a", a4);
+        assert_eq!("bb", b4);
+
+        let x1: &[u8] = a1.as_ref();
+        let y1: &[u8] = b1.as_ref();
+        let x2: &[u8] = a2.as_ref();
+        let y2: &[u8] = b2.as_ref();
+
+        assert_eq!(b"a", x1);
+        assert_eq!(b"bb", y1);
+        assert_eq!(b"a", x2);
+        assert_eq!(b"bb", y2);
+
+        assert_eq!(a1, a2);
+        assert_eq!(a2, a1);
+        assert_eq!(b1, b2);
+        assert_eq!(b2, b1);
+
+        assert_ne!(a1, b1);
+        assert_ne!(b1, a1);
+        assert_ne!(a1, b2);
+        assert_ne!(b1, a2);
+
+        assert!(a1 < b1);
+        assert!(a1 < b2);
+        assert!(a2 < b1);
+        assert!(a2 < b2);
+        assert!(b1 > a1);
+        assert!(b1 > a2);
+        assert!(b2 > a1);
+        assert!(b2 > a2);
+
+        assert_eq!("a", a1);
+        assert_eq!(a1, "a");
+        assert_eq!("bb", b1);
+        assert_eq!(b1, "bb");
+        assert_eq!("a", a2);
+        assert_eq!(a2, "a");
+        assert_eq!("bb", b2);
+        assert_eq!(b2, "bb");
+
+        assert_eq!("a".to_string(), a1);
+        assert_eq!(a1, "a".to_string());
+        assert_eq!("bb".to_string(), b1);
+        assert_eq!(b1, "bb".to_string());
+        assert_eq!("a".to_string(), a2);
+        assert_eq!(a2, "a".to_string());
+        assert_eq!("bb".to_string(), b2);
+        assert_eq!(b2, "bb".to_string());
+
+        assert!(a1 < "bb");
+        assert!("bb" > a1);
+        assert!(b1 > "a");
+        assert!("a" < b1);
+
+        let mut m1 = HashMap::new();
+        m1.insert(a1.clone(), "a1");
+        m1.insert(b1.clone(), "b1");
+
+        assert_eq!(Some(&"a1"), m1.get("a"));
+        assert_eq!(Some(&"a1"), m1.get(&a2));
+        assert_eq!(Some(&"b1"), m1.get("bb"));
+        assert_eq!(Some(&"b1"), m1.get(&b2));
+        assert!(!m1.contains_key("aa"));
+
+        let mut m2 = BTreeMap::new();
+        m2.insert(a1.clone(), "a1");
+        m2.insert(b1.clone(), "b1");
+
+        assert_eq!(Some(&"a1"), m2.get("a"));
+        assert_eq!(Some(&"a1"), m2.get(&a2));
+        assert_eq!(Some(&"b1"), m2.get("bb"));
+        assert_eq!(Some(&"b1"), m2.get(&b2));
+        assert!(!m2.contains_key("aa"));
+        assert_eq!(Some("a1"), m2.remove(&a2));
+        assert_eq!(Some("b1"), m2.remove(&b2));
+
+        m2.insert(b2.clone(), "b2");
+        m2.insert(a2.clone(), "a2");
+
+        assert_eq!(Some(&"a2"), m2.get("a"));
+        assert_eq!(Some(&"a2"), m2.get(&a1));
+        assert_eq!(Some(&"b2"), m2.get("bb"));
+        assert_eq!(Some(&"b2"), m2.get(&b1));
+        assert!(!m2.contains_key("aa"));
+        assert_eq!(Some("a2"), m2.remove("a"));
+        assert_eq!(Some("b2"), m2.remove("bb"));
+    }
+
+    #[rstest]
+    #[case(ErrorKind::BadSurrogate {
+        first: 0xD800,
+        second: None,
+        offset: 5,
+    }, "bad Unicode escape sequence: high surrogate '\\uD800' not followed by low surrogate")]
+    #[case(ErrorKind::BadUtf8ContByte {
+        seq_len: 3,
+        offset: 2,
+        value: 0x20,
+    }, "bad UTF-8 continuation byte 0x20 in 3-byte UTF-8 sequence (byte #2)")]
+    #[case(ErrorKind::Read, "read error")]
+    #[case(ErrorKind::UnexpectedByte {
+        token: Some(Token::Num),
+        expect: Expect::Digit,
+        actual: 0x41,
+    }, "expected digit character '0'..'9' but got character 'A' (ASCII 0x41) in number token")]
+    #[case(ErrorKind::UnexpectedEof(Token::Str), "unexpected EOF in string token")]
+    fn test_error_kind_display(#[case] kind: ErrorKind, #[case] expect: &str) {
+        assert_eq!(expect, format!("{kind}"));
+
+        struct Wrapper(ErrorKind);
+
+        impl fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let pos = Pos::default();
+
+                self.0.fmt_at(f, Some(&pos))
+            }
+        }
+
+        assert_eq!(
+            format!("{expect} at line 1, column 1 (offset: 0)"),
+            format!("{}", Wrapper(kind))
+        );
+    }
+
+    #[rstest]
     #[case(r#""""#, r#""""#)]
     #[case(r#""f""#, r#""f""#)]
     #[case(r#""fo""#, r#""fo""#)]
@@ -1320,10 +1904,9 @@ mod tests {
     fn test_unescape_ok(#[case] input: &str, #[case] expect: &str) {
         // Test with an empty buffer.
         {
-            let mut literal = input;
             let mut buf = Vec::new();
 
-            unescape(&mut literal, &mut buf);
+            unescape(input, &mut buf);
             let actual = String::from_utf8(buf).unwrap();
 
             assert_eq!(actual, expect);
@@ -1331,11 +1914,10 @@ mod tests {
 
         // Test with a non-empty buffer.
         {
-            let mut literal = input;
             let mut buf = Vec::new();
 
             buf.extend_from_slice(b"foo");
-            unescape(&mut literal, &mut buf);
+            unescape(input, &mut buf);
             let actual = String::from_utf8(buf).unwrap();
 
             assert_eq!(actual, format!("foo{expect}"));
@@ -1347,10 +1929,10 @@ mod tests {
     #[case(r#""\U""#)]
     #[case(r#""\:""#)]
     #[should_panic(expected = "invalid escape sequence byte after '\\'")]
-    fn test_unescape_panic_invalid_esc_seq_byte(#[case] mut literal: &str) {
+    fn test_unescape_panic_invalid_esc_seq_byte(#[case] literal: &str) {
         let mut buf = Vec::new();
 
-        unescape(&mut literal, &mut buf);
+        unescape(literal, &mut buf);
     }
 
     #[rstest]
@@ -1365,20 +1947,20 @@ mod tests {
     #[case(r#"\udbff\ue000"#)]
     #[case(r#"\udbff\uffff"#)]
     #[should_panic(expected = "Unicode escape high surrogate not followed by low surrogate")]
-    fn test_unescape_panic_low_surrogate_no_high(#[case] mut literal: &str) {
+    fn test_unescape_panic_low_surrogate_no_high(#[case] literal: &str) {
         let mut buf = Vec::new();
 
-        unescape(&mut literal, &mut buf);
+        unescape(literal, &mut buf);
     }
 
     #[rstest]
     #[case(r#""\ud800\u0000""#)]
     #[case(r#""\uDBFF\ud800""#)]
     #[should_panic(expected = "Unicode escape high surrogate not followed by low surrogate")]
-    fn test_unescape_panic_high_surrogate_no_low(#[case] mut literal: &str) {
+    fn test_unescape_panic_high_surrogate_no_low(#[case] literal: &str) {
         let mut buf = Vec::new();
 
-        unescape(&mut literal, &mut buf);
+        unescape(literal, &mut buf);
     }
 
     #[rstest]
@@ -1387,10 +1969,10 @@ mod tests {
     #[should_panic(
         expected = r#"expected '\' to start low surrogate Unicode escape after high surrogate"#
     )]
-    fn test_unescape_panic_high_surrogate_no_backslash(#[case] mut literal: &str) {
+    fn test_unescape_panic_high_surrogate_no_backslash(#[case] literal: &str) {
         let mut buf = Vec::new();
 
-        unescape(&mut literal, &mut buf);
+        unescape(literal, &mut buf);
     }
 
     #[rstest]
@@ -1399,10 +1981,10 @@ mod tests {
     #[should_panic(
         expected = r#"expected '\u' to start low surrogate Unicode escape after high surrogate"#
     )]
-    fn test_unescape_panic_high_surrogate_no_backslash_u(#[case] mut literal: &str) {
+    fn test_unescape_panic_high_surrogate_no_backslash_u(#[case] literal: &str) {
         let mut buf = Vec::new();
 
-        unescape(&mut literal, &mut buf);
+        unescape(literal, &mut buf);
     }
 
     #[rstest]
@@ -1419,9 +2001,9 @@ mod tests {
     #[case(r#"\ud800\u111"#)]
     #[case(r#"\udbff\u111"#)]
     #[should_panic(expected = "unexpected end of input within Unicode escape sequence")]
-    fn test_unescape_panic_unexpected_eof(#[case] mut literal: &str) {
+    fn test_unescape_panic_unexpected_eof(#[case] literal: &str) {
         let mut buf = Vec::new();
 
-        unescape(&mut literal, &mut buf);
+        unescape(literal, &mut buf);
     }
 }

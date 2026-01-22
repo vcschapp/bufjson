@@ -1,10 +1,4 @@
-- For the `ReadAnanalyzer` release, expected commits:
-   3. Introduce:
-        - Feature "read".
-        - Module `lexical::read` with `ReadAnalyzer`.
-        - Rope type maybe in `bufjson::Rope`, but tied to `read` feature.
-            - Repeat lexical::unescape unit tests on the Rope structure.
-        - Full unit testing from the start.
+- For the `ReadAnalyzer` release, expected commits:
     4. Full Rust docs for #3.
     5. Update README.md.
     6. Code coverage push: 10% increase.
@@ -13,7 +7,7 @@
     1. Introduce:
          - trait `lexical::AsyncAnalyzer`
          - A new module and concrete implementation. The naming is a bit of a
-           challenge hear to avoid repeating "Async", but I think it could be
+           challenge here to avoid repeating "Async", but I think it could be
            `lexical::stream::StreamAnalyzer`.
         - Feature "async", which should now also enable `Rope`.
         - Full unit testing from the start.
@@ -134,3 +128,31 @@ SKETCH DOCUMENTATION FOR THE LEXICAL MODULE
 
 I started trying to lay out the design tenets and challenges, but it feels a bit premature to me
 until a version of the streaming stuff is in, because
+
+
+
+MORE DETAILED MAP OF DATA STRUCTURE NEEDED FOR READ ANALYZER
+============================================================
+
+1. Need a ring buffer of available buffers. The idea is that when you need a new
+   buffer, you run through the ring buffer. On every stop, you `into_inner()` it
+   and if the result is `Some()` you take that as your buffer else keep chewing.
+2. Need a straight `Vec` of in-use buffers for the current token, but it would
+   be useful to keep the "actual current" buffer out of this.
+3. For the in-use buffers, need the start position in bufs[0] and the end
+   position in the last buf.
+4. After recognizing the current token, the in-use buffers get drained into the
+   back of the ring buffer of available buffers. (Except the current one.)
+
+So we need something a bit like:
+
+```rust
+struct BufMgr {
+    maybe_free: VecDeque<Arc<Vec<u8>>>,
+    used: Vec<Vec<u8>>,
+    current: Vec<u8>,
+    i: usize,   // Start index into either used[0] or current
+    j: usize,   // End index into current
+}
+
+```

@@ -9,9 +9,13 @@ description = "No frills, low-alloc, low-copy JSON lexer/parser for fast stream-
 keywords = ["json", "parser", "low-allocation", "zero-copy", "performance"]
 categories = ["parsing", "encoding", "network-programming", "web-programming"]
 
+[features]
+read = []
+
 [dependencies]
 bitvec = { version = "^1.0.1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 doc-comment = "^0.3.3"
 rstest = "^0.26.1"
+tempfile = "^3.25.0"

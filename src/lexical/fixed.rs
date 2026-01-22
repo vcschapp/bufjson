@@ -1,13 +1,13 @@
 //! Convert a fixed-size in-memory buffer into a stream of JSON lexical tokens.
 
 use crate::{
+    Pos,
     lexical::{
-        self, state, {Analyzer, ErrorKind, Pos, Token},
+        self, state, {Analyzer, ErrorKind, Token, Unescaped},
     },
     syntax,
 };
 use std::{
-    borrow::Cow,
     fmt,
     ops::{Deref, Range},
     sync::Arc,
@@ -50,6 +50,7 @@ enum InnerContent<B: Deref<Target = [u8]>> {
     Escaped(Ref<B>),
 }
 
+// FIXME: Is this `Default` implementation used? If not, please delete.
 impl<B: Deref<Target = [u8]>> Default for InnerContent<B> {
     fn default() -> Self {
         Self::Static("")
@@ -96,28 +97,27 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
     /// # Performance considerations
     ///
     /// - If this content belongs to a non-string token, or a string token that contains no escape
-    ///   sequences, does not allocate, and simply returns a [`Cow::Borrowed`] wrapping the borrow
-    ///   returned by [`literal`], which is a reference to the internals of this content.
+    ///   sequences, does not allocate, and simply returns an [`Unescaped::Literal`] wrapping the
+    ///   borrow returned by [`literal`], which is a reference to the internals of this content.
     /// - If this content belongs to a string token containing at least one escape sequence,
-    ///   allocates a new owned string value containing the unescaped string content and returns a
-    ///   [`Cow::Owned`] wraping this string.
+    ///   allocates a new owned string value containing the unescaped string content and returns it
+    ///   wrapped in [`Unescaped::Expanded`].
     ///
     /// [`literal`]: method@Self::literal
-    pub fn unescaped(&self) -> Cow<'_, str> {
+    pub fn unescaped(&self) -> Unescaped<&str> {
         match &self.0 {
-            InnerContent::Static(s) => Cow::Borrowed(s),
-            InnerContent::Inline(len, buf) => Cow::Borrowed(Self::inline_str(*len, buf)),
-            InnerContent::NotEscaped(r) => Cow::Borrowed(r.as_str()),
+            InnerContent::Static(s) => Unescaped::Literal(s),
+            InnerContent::Inline(len, buf) => Unescaped::Literal(Self::inline_str(*len, buf)),
+            InnerContent::NotEscaped(r) => Unescaped::Literal(r.as_str()),
             InnerContent::Escaped(r) => {
                 let mut buf = Vec::new();
-                let mut literal = r.as_str();
-                lexical::unescape(&mut literal, &mut buf);
+                lexical::unescape(r.as_str(), &mut buf);
 
                 // SAFETY: `r` was valid UTF-8 before it was de-escaped, and the de-escaping process
                 //         maintains UTF-8 safety.
                 let s = unsafe { String::from_utf8_unchecked(buf) };
 
-                Cow::Owned(s)
+                Unescaped::Expanded(s)
             }
         }
     }
@@ -162,8 +162,13 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> fmt::Display for Content<B> {
 }
 
 impl<B: Deref<Target = [u8]> + fmt::Debug> super::Content for Content<B> {
+    type Literal<'a>
+        = &'a str
+    where
+        Self: 'a;
+
     #[inline(always)]
-    fn literal(&self) -> &str {
+    fn literal<'a>(&'a self) -> Self::Literal<'a> {
         Content::literal(self)
     }
 
@@ -173,15 +178,15 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> super::Content for Content<B> {
     }
 
     #[inline(always)]
-    fn unescaped(&self) -> Cow<'_, str> {
+    fn unescaped<'a>(&'a self) -> Unescaped<Self::Literal<'a>> {
         Content::unescaped(self)
     }
 }
 
-// Assert that `Value` does not grow beyond 32 bytes (four 64-bit words).
+// Assert that `Content` does not grow beyond 32 bytes (four 64-bit words).
 const _: [(); 32] = [(); std::mem::size_of::<Content<Vec<u8>>>()];
 
-/// Lexical analysis error detected by [`FixedAnalyzer`].
+/// Lexical analysis error detected by a [`FixedAnalyzer`].
 ///
 /// See the [`lexical::Error`] trait, implemented by this struct, for further documentation.
 #[derive(Copy, Clone, Debug)]
@@ -242,7 +247,7 @@ impl Default for StoredContent {
 /// A [`lexical::Analyzer`] to tokenize fixed buffers of JSON text.
 ///
 /// Use `FixedAnalyzer` for zero-allocation, low-copy, stream-oriented lexical analysis of any
-/// pre-allocated fixed-size buffer.
+/// pre-allocated fixed-size buffer of JSON text.
 ///
 /// As with any [`lexical::Analyzer`] implementation, you can construct a [`syntax::Parser`] from a
 /// `FixedAnalyzer` to unlock richer stream-oriented syntactic analysis while retaining low overhead
@@ -258,9 +263,9 @@ impl Default for StoredContent {
 /// number and string tokens, it may copy if the token is very short; otherwise, it just returns a
 /// reference-counted slice of the internal buffer that was passed to [`new`].
 ///
-/// It should be noted that the `Content` structure returned by [`content`] is somewhat "fat", at
-/// 48 bytes; it is preferable not to fetch it for tokens where the content is either statically
-/// knowable (literals and punctuations) or not required (*e.g.* whitespace in some applications).
+/// It should be noted that the `Content` structure returned by [`content`] is somewhat "fat", at 32
+/// bytes; it is preferable not to fetch it for tokens where the content is either statically
+/// knowable (literals and punctuation) or not required (*e.g.*, whitespace in some applications).
 ///
 /// [Unescaping][`lexical::Content::unescaped`] a [`Content`] value that contains an escaped string
 /// token always allocates; but calling `unescape` on a `Content` value that does not contain any
@@ -317,7 +322,7 @@ pub struct FixedAnalyzer<B: Deref<Target = [u8]> + fmt::Debug> {
 }
 
 impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
-    /// Constructs a new lexer to tokenize the given buffer.
+    /// Constructs a new lexer to tokenize a fixed in-memory buffer.
     ///
     /// The buffer can be anything that implements `Deref<Target = [u8]>`, including `&[u8]`,
     /// `Vec<u8>`, `Cow<'_, [u8]>` and data types such as `bytes::Bytes` from the `bytes` crate.
@@ -471,7 +476,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
         if let Ok(content) = self.try_content() {
             content
         } else {
-            panic!("no content: last `next()` returned Token::Err (use `err()` instead)");
+            panic!("no content: last `next()` returned `Token::Err` (use `err()` instead)");
         }
     }
 
@@ -506,7 +511,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
         if let Err(err) = self.try_content() {
             err
         } else {
-            panic!("no error: last `next()` did not return Token::Err (use `content()` instead)");
+            panic!("no error: last `next()` did not return `Token::Err` (use `content()` instead)");
         }
     }
 
@@ -603,6 +608,9 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// Converts a lexical analyzer into a syntax parser, consuming the lexical analyzer in the
     /// process.
     ///
+    /// You can convert the parser back into the underlying lexical analyzer using
+    /// [`Parser::into_inner`].
+    ///
     /// # Examples
     ///
     /// ```
@@ -616,7 +624,9 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// // `false`.
     /// let mut parser = lexer.into_parser();
     /// assert_eq!(Token::LitFalse, parser.next_meaningful());
-    /// ``````
+    /// ```
+    ///
+    /// [`Parser::into_inner`]: syntax::Parser::into_inner
     pub fn into_parser(self) -> syntax::Parser<FixedAnalyzer<B>> {
         syntax::Parser::new(self)
     }
@@ -678,7 +688,7 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "no error: last `next()` did not return Token::Err (use `content()` instead)"
+        expected = "no error: last `next()` did not return `Token::Err` (use `content()` instead)"
     )]
     fn test_initial_state_err() {
         let _ = FixedAnalyzer::new(vec![]).err();
@@ -914,7 +924,7 @@ mod tests {
     #[case(r#","#)]
     #[case("\n\n\n   ")]
     #[should_panic(
-        expected = "no error: last `next()` did not return Token::Err (use `content()` instead)"
+        expected = "no error: last `next()` did not return `Token::Err` (use `content()` instead)"
     )]
     fn test_single_token_panic_no_err(#[case] input: &str) {
         let mut an = FixedAnalyzer::new(input.as_bytes());
@@ -1267,6 +1277,8 @@ mod tests {
     #[case(r#""foo bar"]"#, T::t(Token::Str, r#""foo bar""#), T::t(Token::ArrEnd, "]").pos(9, 1, 10), 1, 11)]
     #[case(r#""🧶":"#, T::t(Token::Str, r#""🧶""#), T::t(Token::NameSep, ":").pos(6, 1, 4), 1, 5)]
     #[case(r#""\"\t\r\n\\\/\u0020\"","#, T::t(Token::Str, r#""\"\t\r\n\\\/\u0020\"""#).unescaped("\"\"\t\r\n\\/ \"\""), T::t(Token::ValueSep, ",").pos(22, 1, 23), 1, 24)]
+    #[case(r#""❤😊"-0"#, T::t(Token::Str, r#""❤😊""#), T::t(Token::Num, "-0").pos(9, 1, 5), 1, 7)]
+    #[case(r#""❤️😊"1"#, T::t(Token::Str, r#""❤️😊""#), T::t(Token::Num, "1").pos(12, 1, 6), 1, 7)]
     // =============================================================================================
     // Whitespace followed by something...
     // =============================================================================================
@@ -2231,7 +2243,7 @@ mod tests {
     #[case(br#"<"#)]
     #[case(br#""foo" "bar" "baz"#)]
     #[should_panic(
-        expected = "no content: last `next()` returned Token::Err (use `err()` instead)"
+        expected = "no content: last `next()` returned `Token::Err` (use `err()` instead)"
     )]
     fn test_panic_no_content(#[case] input: &[u8]) {
         let mut an = FixedAnalyzer::new(input);
@@ -2251,7 +2263,7 @@ mod tests {
   "foo":["bar",1,5e-7, false, null  ,true, {"baz":"\\\"aââbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb©¢çc\"\\","qux":[{},{},null]}],
   "Lorem ipsum dolor sit amet, consectetur adipiscing elit." : "Cras sed ipsum at arcu porta blandit. Nunc eu mauris lacus. Vivamus dignissim tincidunt gravida. Fusce quis neque enim. Sed ac leo neque. Praesent feugiat efficitur eros, quis venenatis urna porttitor condimentum. Mauris finibus dui non vulputate mattis. Nullam scelerisque nibh vel dui egestas luctus. Vestibulum commodo mi ex. In laoreet hendrerit fringilla.\n\nPraesent vel ex sed dolor fermentum lobortis.",
   "👋":   ["🌎","🌏", "🌏", "こんにちは、世界"],
-  "abc\u0020123": {{{"inner":[[[-1,-2.0,-3.00e+0,-4E-0]]]}}}
+  "abc\u0020123": {{{"inner":[[[-1,-2.0,-3.00e+0,-4E-0,3.141592653589793238462643383279,null]]]}}}
 }"#;
         const EXPECT: &[(Token, Pos, &str, Option<&str>)] = &[
             // Line 1
@@ -3086,31 +3098,71 @@ Praesent vel ex sed dolor fermentum lobortis.""#,
                 None,
             ),
             (
-                Token::ArrEnd,
+                Token::ValueSep,
                 Pos {
                     offset: 767,
                     line: 5,
                     col: 55,
                 },
-                "]",
+                ",",
                 None,
             ),
             (
-                Token::ArrEnd,
+                Token::Num,
                 Pos {
                     offset: 768,
                     line: 5,
                     col: 56,
                 },
+                "3.141592653589793238462643383279",
+                None,
+            ),
+            (
+                Token::ValueSep,
+                Pos {
+                    offset: 800,
+                    line: 5,
+                    col: 88,
+                },
+                ",",
+                None,
+            ),
+            (
+                Token::LitNull,
+                Pos {
+                    offset: 801,
+                    line: 5,
+                    col: 89,
+                },
+                "null",
+                None,
+            ),
+            (
+                Token::ArrEnd,
+                Pos {
+                    offset: 805,
+                    line: 5,
+                    col: 93,
+                },
                 "]",
                 None,
             ),
             (
                 Token::ArrEnd,
                 Pos {
-                    offset: 769,
+                    offset: 806,
                     line: 5,
-                    col: 57,
+                    col: 94,
+                },
+                "]",
+                None,
+            ),
+            (
+                Token::ArrEnd,
+                Pos {
+                    offset: 807,
+                    line: 5,
+                    col: 95,
                 },
                 "]",
                 None,
@@ -3118,9 +3170,9 @@ Praesent vel ex sed dolor fermentum lobortis.""#,
             (
                 Token::ObjEnd,
                 Pos {
-                    offset: 770,
+                    offset: 808,
                     line: 5,
-                    col: 58,
+                    col: 96,
                 },
                 "}",
                 None,
@@ -3128,9 +3180,9 @@ Praesent vel ex sed dolor fermentum lobortis.""#,
             (
                 Token::ObjEnd,
                 Pos {
-                    offset: 771,
+                    offset: 809,
                     line: 5,
-                    col: 59,
+                    col: 97,
                 },
                 "}",
                 None,
@@ -3138,9 +3190,9 @@ Praesent vel ex sed dolor fermentum lobortis.""#,
             (
                 Token::ObjEnd,
                 Pos {
-                    offset: 772,
+                    offset: 810,
                     line: 5,
-                    col: 60,
+                    col: 98,
                 },
                 "}",
                 None,
@@ -3148,9 +3200,9 @@ Praesent vel ex sed dolor fermentum lobortis.""#,
             (
                 Token::White,
                 Pos {
-                    offset: 773,
+                    offset: 811,
                     line: 5,
-                    col: 61,
+                    col: 99,
                 },
                 "\n",
                 None,
@@ -3159,7 +3211,7 @@ Praesent vel ex sed dolor fermentum lobortis.""#,
             (
                 Token::ObjEnd,
                 Pos {
-                    offset: 774,
+                    offset: 812,
                     line: 6,
                     col: 1,
                 },
@@ -3169,7 +3221,7 @@ Praesent vel ex sed dolor fermentum lobortis.""#,
             (
                 Token::Eof,
                 Pos {
-                    offset: 775,
+                    offset: 813,
                     line: 6,
                     col: 2,
                 },
@@ -3179,7 +3231,7 @@ Praesent vel ex sed dolor fermentum lobortis.""#,
             (
                 Token::Eof,
                 Pos {
-                    offset: 775,
+                    offset: 813,
                     line: 6,
                     col: 2,
                 },
@@ -3189,7 +3241,7 @@ Praesent vel ex sed dolor fermentum lobortis.""#,
             (
                 Token::Eof,
                 Pos {
-                    offset: 775,
+                    offset: 813,
                     line: 6,
                     col: 2,
                 },

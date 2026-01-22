@@ -20,7 +20,7 @@
 //!     let lexer = FixedAnalyzer::new(text.as_bytes());
 //!     let mut parser = Parser::new(lexer);        // You can also do `lexer.into_parser()`
 //!
-//!     let token = parser.next_meaningful();       // Skip whitespace ':' and ','
+//!     let token = parser.next_meaningful();       // Skip whitespace, colons, and commas
 //!     if token != Token::ArrBegin {
 //!         return Err(format!("expected [ but got {token} at {}", *parser.pos()));
 //!     }
@@ -28,7 +28,7 @@
 //!     let mut numbers = Vec::new();
 //!
 //!     loop {
-//!         let token = parser.next_meaningful();   // Skip whitespace ':' and ','
+//!         let token = parser.next_meaningful();   // Skip whitespace, colons, and commas
 //!         match token {
 //!             Token::Num => {
 //!                 match parser.content().literal().parse::<u32>() {

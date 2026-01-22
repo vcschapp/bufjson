@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{cmp::Ordering, fmt, io::Cursor};
 
 pub mod lexical;
 pub mod syntax;
@@ -24,7 +24,7 @@ pub struct Pos {
     /// primarily for consumption by computers.
     pub line: usize,
 
-    /// One based column offset from the start of the line, where columns are measured in
+    /// One-based column offset from the start of the line, where columns are measured in
     /// characters. One-based indexing is used for `col` because column numbers are primarily for
     /// consumption by humans, as opposed to byte offsets, which are primarily for consumption by
     /// computers.
@@ -44,7 +44,7 @@ pub struct Pos {
 impl Pos {
     /// Creates a new `Pos`.
     #[inline(always)]
-    pub fn new(offset: usize, line: usize, col: usize) -> Self {
+    pub const fn new(offset: usize, line: usize, col: usize) -> Self {
         Self { offset, line, col }
     }
 
@@ -115,23 +115,23 @@ impl fmt::Display for BufUnderflow {
 
 impl std::error::Error for BufUnderflow {}
 
-/// A valid UTF-8 sequence whose bytes may or may not be contiguous in memory.
+/// Valid UTF-8 sequence whose bytes may or may not be contiguous in memory.
 ///
 /// A `Buf` is a cursor into an in-memory buffer whose internal representation may be contiguous or
 /// split across multiple pieces stored at different memory locations. It can be thought of as an
 /// efficient iterator over the bytes of a UTF-8 string. Reading from a `Buf` advances the cursor
 /// position.
 ///
-/// The simplest `Buf` is a `&str`.
+/// The simplest `Buf` is a `&[u8]`.
 ///
 /// # Invariant
 ///
 /// A new `Buf` value must only contain valid UTF-8 byte sequences.
 ///
-/// Since a Buf may not be contiguous in memory, and bytes may be consumed in arbitrary quantities,
-/// individual method calls like [`chunk`] or [`copy_to_slice`] might return byte sequences with
-/// incomplete UTF-8 characters at the boundaries. However, consuming all bytes from a new `Buf`
-/// from start to finish will always yield valid UTF-8.
+/// Since a `Buf` may not be contiguous in memory, and bytes may be consumed in arbitrary
+/// quantities, individual method calls like [`chunk`] or [`copy_to_slice`] might return byte
+/// sequences with incomplete UTF-8 characters at the boundaries. However, consuming all bytes from
+/// a new `Buf` from start to finish will always yield valid UTF-8.
 ///
 /// # Attribution
 ///
@@ -147,7 +147,7 @@ impl std::error::Error for BufUnderflow {}
 /// ```
 /// use bufjson::Buf;
 ///
-/// let mut buf = "hello, world";
+/// let mut buf = "hello, world".as_bytes();
 /// let mut dst = [0; 5];
 ///
 /// buf.copy_to_slice(&mut dst);
@@ -175,13 +175,13 @@ pub trait Buf {
     /// # Example
     ///
     /// ```
-    /// use bufjson::Buf;
+    /// use bufjson::{Buf, IntoBuf};
     ///
-    /// let mut buf = "hello, world";
-    /// assert_eq!("hello, world", buf);
+    /// let mut buf = "hello, world".into_buf();
+    /// assert_eq!(b"hello, world", buf);
     ///
     /// buf.advance(7);
-    /// assert_eq!("world", buf);
+    /// assert_eq!(b"world", buf);
     /// ```
     ///
     /// [`chunk`]: method@Self::chunk
@@ -201,7 +201,7 @@ pub trait Buf {
     /// ```
     /// use bufjson::Buf;
     ///
-    /// let mut buf = "hello, world";
+    /// let mut buf = "hello, world".as_bytes();
     /// assert_eq!(b"hello, world", buf.chunk());
     ///
     /// buf.advance(7);
@@ -210,11 +210,11 @@ pub trait Buf {
     /// ```
     ///
     /// ```
-    /// use bufjson::Buf;
+    /// use bufjson::{Buf, IntoBuf};
     ///
     /// // An empty chunk is returned if, and only if, the `Buf` has no remaining bytes.
-    /// assert_eq!(0, "".remaining());
-    /// assert!("".chunk().is_empty());
+    /// assert_eq!(0, "".into_buf().remaining());
+    /// assert!("".into_buf().chunk().is_empty());
     /// ```
     ///
     /// [`remaining`]: method@Self::remaining
@@ -229,7 +229,7 @@ pub trait Buf {
     /// ```
     /// use bufjson::Buf;
     ///
-    /// let mut buf = "hello, world";
+    /// let mut buf = "hello, world".as_bytes();
     /// assert_eq!(12, buf.remaining());
     ///
     /// buf.advance(7);
@@ -249,9 +249,9 @@ pub trait Buf {
     /// # Examples
     ///
     /// ```
-    /// use bufjson::Buf;
+    /// use bufjson::{Buf, IntoBuf};
     ///
-    /// let mut buf = "hello, world";
+    /// let mut buf = "hello, world".into_buf();
     /// let mut dst = [0; 5];
     ///
     /// assert_eq!(Ok(()), buf.try_copy_to_slice(&mut dst));
@@ -266,7 +266,7 @@ pub trait Buf {
     ///
     /// assert_eq!(
     ///     Err(BufUnderflow { requested: 13, remaining: 12 }),
-    ///     "hello, world".try_copy_to_slice(&mut dst)
+    ///     "hello, world".as_bytes().try_copy_to_slice(&mut dst)
     /// );
     /// ```
     ///
@@ -282,7 +282,7 @@ pub trait Buf {
     /// ```
     /// use bufjson::Buf;
     ///
-    /// let mut buf = "hello, world";
+    /// let mut buf = "hello, world".as_bytes();
     /// assert!(buf.has_remaining());
     ///
     /// buf.advance(12);
@@ -306,7 +306,7 @@ pub trait Buf {
     /// ```
     /// use bufjson::Buf;
     ///
-    /// let mut buf = "hello, world";
+    /// let mut buf = "hello, world".as_bytes();
     /// let mut dst = [0; 5];
     ///
     /// buf.copy_to_slice(&mut dst);
@@ -323,7 +323,67 @@ pub trait Buf {
     }
 }
 
-impl Buf for &str {
+/// Conversion into a [`Buf`].
+///
+/// By implementing `IntoBuf` for a type, you define how it will be converted into a `Buf`. This
+/// conversion is useful for types that represent valid UTF-8 byte sequences, whether or not all the
+/// bytes are contiguous in memory.
+///
+/// All implementations must respect the `Buf` invariant, namely that the new `Buf` produced by a
+/// call to [`into_buf`] must yield a valid UTF-8 byte sequence if read from beginning to end.
+///
+/// # Examples
+///
+/// Basic usage:
+///
+/// ```
+/// use bufjson::{Buf, IntoBuf};
+///
+/// let s = "hello, world";
+/// let mut buf = s.into_buf();
+///
+/// assert_eq!(12, buf.remaining());
+/// assert_eq!(b"hello, world", buf.chunk());
+///
+/// buf.advance(7);
+///
+/// let mut dst = [0; 5];
+/// buf.copy_to_slice(&mut dst);
+/// assert_eq!(b"world", &dst);
+/// ```
+///
+/// You can use `IntoBuf` as a trait bound. This allows the input type to change, so long as it can
+/// still be converted into a `Buf`. Additional bounds can be specified by restricting on `Buf`:
+///
+/// ```
+/// use bufjson::{Buf, IntoBuf};
+///
+/// fn collect_as_string<T>(input: T) -> String
+/// where
+///     T: IntoBuf,
+///     T::Buf: std::fmt::Debug,
+/// {
+///     let buf = input.into_buf();
+///     let mut v = Vec::with_capacity(buf.remaining());
+///     while buf.remaining() > 0 {
+///         v.copy_from_slice(buf.chunk());
+///     }
+///
+///     v.try_into()
+///         .expect("input must satisfy Buf invariant")
+/// }
+/// ```
+///
+/// [`into_buf`]: method@Self::into_buf
+pub trait IntoBuf {
+    // Type of `Buf` produced by this conversion.
+    type Buf: Buf;
+
+    /// Converts `self` into a `Buf`.
+    fn into_buf(self) -> Self::Buf;
+}
+
+impl Buf for &[u8] {
     #[inline]
     fn advance(&mut self, n: usize) {
         if self.len() < n {
@@ -341,7 +401,7 @@ impl Buf for &str {
 
     #[inline(always)]
     fn chunk(&self) -> &[u8] {
-        self.as_bytes()
+        self
     }
 
     #[inline(always)]
@@ -357,11 +417,275 @@ impl Buf for &str {
                 remaining: self.len(),
             })
         } else {
-            dst.copy_from_slice(&self.as_bytes()[..dst.len()]);
+            dst.copy_from_slice(&self[..dst.len()]);
             *self = &self[dst.len()..];
+            Ok(())
+        }
+    }
+}
+
+impl<'a> IntoBuf for &'a str {
+    type Buf = &'a [u8];
+
+    fn into_buf(self) -> Self::Buf {
+        self.as_bytes()
+    }
+}
+
+/// A [`Buf`] implementation for `String`.
+///
+/// # Example
+///
+/// ```
+/// use bufjson::{Buf, IntoBuf};
+///
+/// let mut buf = "hello, world".to_string().into_buf();
+/// let mut dst = [0; 5];
+///
+/// buf.copy_to_slice(&mut dst);
+/// assert_eq!(b"hello", &dst);
+/// assert_eq!(7, buf.remaining());
+/// ```
+#[derive(Debug)]
+pub struct StringBuf(Cursor<String>);
+
+impl Buf for StringBuf {
+    fn advance(&mut self, n: usize) {
+        let pos = self.0.position() as usize;
+        let len = self.0.get_ref().len();
+
+        if len < pos + n {
+            panic!(
+                "{}",
+                &BufUnderflow {
+                    requested: n,
+                    remaining: len - pos,
+                }
+            );
+        } else {
+            self.0.set_position((pos + n) as u64);
+        }
+    }
+
+    #[inline]
+    fn chunk(&self) -> &[u8] {
+        let pos = self.0.position() as usize;
+        let buf = self.0.get_ref().as_bytes();
+
+        &buf[pos..]
+    }
+
+    #[inline]
+    fn remaining(&self) -> usize {
+        let pos = self.0.position() as usize;
+        let len = self.0.get_ref().len();
+
+        len - pos
+    }
+
+    fn try_copy_to_slice(&mut self, dst: &mut [u8]) -> Result<(), BufUnderflow> {
+        let pos = self.0.position() as usize;
+        let len = self.0.get_ref().len();
+
+        if len < pos + dst.len() {
+            Err(BufUnderflow {
+                requested: dst.len(),
+                remaining: len - pos,
+            })
+        } else {
+            dst.copy_from_slice(&self.0.get_ref().as_bytes()[pos..pos + dst.len()]);
+            self.0.set_position((pos + dst.len()) as u64);
 
             Ok(())
         }
+    }
+}
+
+impl IntoBuf for String {
+    type Buf = StringBuf;
+
+    fn into_buf(self) -> Self::Buf {
+        StringBuf(Cursor::new(self))
+    }
+}
+
+/// Trait for types that form an [equivalent relation] together with `str`.
+///
+/// This trait without methods is equivalent in all respects to [`std::cmp::Eq`] excepting that it
+/// indicates that the type implementing it can be compared for equality with `str`.
+///
+/// [equivalence relation]: https://en.wikipedia.org/wiki/Equivalence_relation
+pub trait EqStr: for<'a> PartialEq<&'a str> {}
+
+impl EqStr for &'_ str {}
+
+/// Trait for types that form a [total ordering] together with `str`.
+///
+/// This trait may implemented by a type that is comparable to `str` such that the values of that
+/// type and `str` can be placed in a single total ordering. It is equivalent in all respects to
+/// [`std::cmp::Ord`] excepting that it indicates that the type implementing it joins together in a
+/// total ordering with `str`.
+///
+/// [total ordering]: https://en.wikipedia.org/wiki/Total_order
+pub trait OrdStr: EqStr + for<'a> PartialOrd<&'a str> {
+    /// Returns an [`Ordering`] between `self` and `other`.
+    fn cmp(&self, other: &str) -> Ordering;
+}
+
+impl OrdStr for &'_ str {
+    #[inline(always)]
+    fn cmp(&self, other: &str) -> Ordering {
+        (**self).cmp(other)
+    }
+}
+
+/// Comparison operation on any two [`Buf`] values or values that convert to [`Buf`].
+///
+/// `Buf` values are compared lexicographically by their byte values.
+///
+/// # Example
+///
+/// Rust's standard string comparison approach also does byte-by-byte lexicographical comparison.
+/// Consequently, two `&str` values will always have the same relative ordering as their `Buf`
+/// equivalent.
+///
+/// ```
+/// use bufjson::{IntoBuf, buf_cmp};
+/// use std::cmp::Ordering;
+///
+/// let a = "hello";
+/// let b = "world";
+///
+/// assert!(a < b);
+/// assert!(b > a);
+/// assert!(buf_cmp(a, b) == Ordering::Less);
+/// assert!(buf_cmp(b, a) == Ordering::Greater);
+/// ```
+pub fn buf_cmp<A: IntoBuf, B: IntoBuf>(a: A, b: B) -> Ordering {
+    let mut a = a.into_buf();
+    let (mut a_chunk, mut a_i) = (a.chunk(), 0);
+
+    let mut b = b.into_buf();
+    let (mut b_chunk, mut b_i) = (b.chunk(), 0);
+
+    loop {
+        if a_i == a_chunk.len() || b_i == b_chunk.len() {
+            if a_i == a_chunk.len() {
+                a.advance(a_chunk.len());
+                a_chunk = a.chunk();
+                a_i = 0;
+            }
+
+            if b_i == b_chunk.len() {
+                b.advance(b_chunk.len());
+                b_chunk = b.chunk();
+                b_i = 0;
+            }
+
+            if !a.has_remaining() && !b.has_remaining() {
+                return Ordering::Equal;
+            } else if !a.has_remaining() {
+                debug_assert!(a_chunk.is_empty());
+
+                return Ordering::Less;
+            } else if !b.has_remaining() {
+                debug_assert!(b_chunk.is_empty());
+
+                return Ordering::Greater;
+            }
+        }
+
+        debug_assert!(
+            a_i < a_chunk.len(),
+            "a_i ({a_i} >= a_chunk.len() ({})",
+            a_chunk.len()
+        );
+        debug_assert!(
+            b_i < b_chunk.len(),
+            "b_i ({b_i} >= b_chunk.len() ({})",
+            b_chunk.len()
+        );
+
+        let ord = a_chunk[a_i].cmp(&b_chunk[b_i]);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+
+        a_i += 1;
+        b_i += 1;
+    }
+}
+
+#[allow(unused_macros)]
+#[cfg(debug_assertions)]
+macro_rules! stringify_known_utf8 {
+    ($name:ty, $v:expr) => {
+        <$name>::from_utf8($v).expect(concat!(
+            "SAFETY: input ",
+            stringify!(v),
+            " must only contain valid UTF-8 characters"
+        ))
+    };
+}
+
+#[allow(unused_macros)]
+#[cfg(not(debug_assertions))]
+macro_rules! stringify_known_utf8 {
+    ($name:ty, $v:expr) => {
+        unsafe { <$name>::from_utf8_unchecked($v) }
+    };
+}
+
+// Convert UTF-8 string content of a trusted `Buf` to a `String`.
+//
+// SAFETY: This function is only safe to call if the `Buf` passed in only contains valid UTF-8 byte
+//         sequences.
+//
+// This is crate-internal, because it's not functionality we particularly need to export, as we
+// don't want to acquire responsibility for supporting every aspect of someone else's `Buf`
+// implementation.
+#[cfg(feature = "read")]
+pub(crate) fn buf_to_string<T: IntoBuf>(t: T) -> String {
+    let mut b = t.into_buf();
+    let mut v = Vec::with_capacity(b.remaining());
+
+    while b.has_remaining() {
+        let chunk = b.chunk();
+        v.extend(chunk);
+        b.advance(chunk.len());
+    }
+
+    stringify_known_utf8!(String, v)
+}
+
+// Print UTF-8 string content of a trusted `Buf` to a formatter.
+//
+// SAFETY: This function is only safe to call if the `Buf` passed in only contains valid UTF-8 byte
+//         sequences.
+//
+// This is crate-internal, because it's not functionality we particularly need to export, as we
+// don't want to acquire responsibility for supporting every aspect of someone else's `Buf`
+// implementation.
+#[cfg(feature = "read")]
+pub(crate) fn buf_display<T: IntoBuf>(t: T, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let mut b = t.into_buf();
+
+    let n = b.remaining();
+    let chunk = b.chunk();
+    if chunk.len() >= n {
+        // Fast path: the entire buffer is in one chunk, so we can print it directly.
+        f.write_str(stringify_known_utf8!(str, chunk))
+    } else {
+        // Slow path: the buffer is split across multiple chunks, so we need to copy it into a temporary vector.
+        let mut v = Vec::with_capacity(n);
+
+        while b.has_remaining() {
+            let chunk = b.chunk();
+            v.extend(chunk);
+            b.advance(chunk.len());
+        }
+
+        f.write_str(stringify_known_utf8!(str, &v))
     }
 }
 
@@ -369,6 +693,7 @@ impl Buf for &str {
 mod tests {
     use super::*;
     use rstest::rstest;
+    use std::{fmt::Debug, ops::Deref};
 
     #[test]
     fn test_pos_new() {
@@ -406,12 +731,16 @@ mod tests {
         );
     }
 
-    #[test]
-    #[should_panic(expected = "not enough bytes in buffer (4 requested, but only 3 remain)")]
-    fn test_buf_str_advance_panic() {
-        let mut s = "foo";
+    #[rstest]
+    #[case("", 1)]
+    #[case(String::new(), 1)]
+    #[case("foo", 4)]
+    #[case("bar".to_string(), 10)]
+    #[should_panic(expected = "not enough bytes in buffer")]
+    fn test_buf_advance_panic<T: IntoBuf>(#[case] t: T, #[case] n: usize) {
+        let mut b = t.into_buf();
 
-        s.advance(4);
+        b.advance(n);
     }
 
     #[rstest]
@@ -425,32 +754,53 @@ mod tests {
     #[case("f", 0, "f")]
     #[case("f", 1, "")]
     #[case("", 0, "")]
-    fn test_buf_str_advance_ok(#[case] mut s: &str, #[case] n: usize, #[case] expect: &str) {
-        s.advance(n);
+    fn test_buf_advance_ok(#[case] s: &str, #[case] n: usize, #[case] expect: &str) {
+        fn exec_test<T: IntoBuf>(t: T, n: usize, expect: &str) {
+            let mut b = t.into_buf();
 
-        assert_eq!(expect, s);
-        assert_eq!(expect.len(), s.remaining());
+            b.advance(n);
+
+            assert_eq!(expect, str::from_utf8(b.chunk()).unwrap());
+            assert_eq!(expect.len(), b.remaining());
+        }
+
+        exec_test(s, n, expect);
+        exec_test(s.to_string(), n, expect);
     }
 
     #[rstest]
     #[case("")]
     #[case("a")]
     #[case("foo")]
-    fn test_buf_str_chunk(#[case] s: &str) {
-        assert_eq!(s.as_bytes(), s.chunk());
+    fn test_buf_chunk(#[case] s: &str) {
+        fn exec_test<T: IntoBuf>(t: T, s: &str) {
+            let b = t.into_buf();
+
+            assert_eq!(s, str::from_utf8(b.chunk()).unwrap());
+        }
+
+        exec_test(s, s);
+        exec_test(s.to_string(), s);
     }
 
     #[rstest]
     #[case("", 0, false)]
     #[case("a", 1, true)]
     #[case("foo", 3, true)]
-    fn test_buf_str_remaining(
+    fn test_buf_remaining(
         #[case] s: &str,
         #[case] expect_remaining: usize,
         #[case] expect_has_remaining: bool,
     ) {
-        assert_eq!(expect_remaining, s.remaining());
-        assert_eq!(expect_has_remaining, s.has_remaining());
+        fn exec_test<T: IntoBuf>(t: T, expect_remaining: usize, expect_has_remaining: bool) {
+            let b = t.into_buf();
+
+            assert_eq!(expect_remaining, b.remaining());
+            assert_eq!(expect_has_remaining, b.has_remaining());
+        }
+
+        exec_test(s, expect_remaining, expect_has_remaining);
+        exec_test(s.to_string(), expect_remaining, expect_has_remaining);
     }
 
     #[rstest]
@@ -461,18 +811,25 @@ mod tests {
     #[case("bar", b"b", "ar")]
     #[case("bar", b"ba", "r")]
     #[case("bar", b"bar", "")]
-    fn test_buf_str_try_copy_to_slice_ok<const N: usize>(
-        #[case] mut s: &str,
+    fn test_buf_try_copy_to_slice_ok<const N: usize>(
+        #[case] s: &str,
         #[case] expect: &[u8; N],
         #[case] rem: &str,
     ) {
-        let mut actual = [0; N];
+        fn exec_test<T: IntoBuf, const N: usize>(t: T, expect: &[u8; N], rem: &str) {
+            let mut b = t.into_buf();
+            let mut actual = [0; N];
 
-        let result = s.try_copy_to_slice(&mut actual);
+            let result = b.try_copy_to_slice(&mut actual);
 
-        assert_eq!(Ok(()), result);
-        assert_eq!(expect, &actual);
-        assert_eq!(rem, s);
+            assert_eq!(Ok(()), result);
+            assert_eq!(expect, &actual);
+            assert_eq!(rem.len(), b.remaining());
+            assert_eq!(rem, str::from_utf8(b.chunk()).unwrap());
+        }
+
+        exec_test(s, expect, rem);
+        exec_test(s.to_string(), expect, rem);
     }
 
     #[rstest]
@@ -481,22 +838,28 @@ mod tests {
     #[case("a", [0; 2])]
     #[case("foo", [0; 4])]
     #[case("foo", [0; 99])]
-    fn test_buf_str_try_copy_to_slice_err<const N: usize>(
-        #[case] mut s: &str,
-        #[case] mut dst: [u8; N],
-    ) {
-        let t = s;
+    fn test_buf_try_copy_to_slice_err<const N: usize>(#[case] s: &str, #[case] dst: [u8; N]) {
+        fn exec_test<T: IntoBuf + Clone + Debug + Deref<Target = str>, const N: usize>(
+            t: T,
+            mut dst: [u8; N],
+        ) {
+            let u = t.clone();
+            let mut b = t.into_buf();
 
-        let result = s.try_copy_to_slice(&mut dst);
+            let result = b.try_copy_to_slice(&mut dst);
 
-        assert_eq!(
-            Err(BufUnderflow {
-                remaining: t.len(),
-                requested: N
-            }),
-            result
-        );
-        assert_eq!(t, s);
+            assert_eq!(
+                Err(BufUnderflow {
+                    remaining: u.len(),
+                    requested: N
+                }),
+                result
+            );
+            assert_eq!(&*u, str::from_utf8(b.chunk()).unwrap());
+        }
+
+        exec_test(s, dst);
+        exec_test(s.to_string(), dst);
     }
 
     #[rstest]
@@ -507,24 +870,51 @@ mod tests {
     #[case("bar", b"b", "ar")]
     #[case("bar", b"ba", "r")]
     #[case("bar", b"bar", "")]
-    fn test_buf_str_copy_to_slice_ok<const N: usize>(
-        #[case] mut s: &str,
+    fn test_buf_copy_to_slice_ok<const N: usize>(
+        #[case] s: &str,
         #[case] expect: &[u8; N],
         #[case] rem: &str,
     ) {
-        let mut actual = [0; N];
+        fn exec_test<T: IntoBuf, const N: usize>(t: T, expect: &[u8; N], rem: &str) {
+            let mut b = t.into_buf();
+            let mut actual = [0; N];
 
-        s.copy_to_slice(&mut actual);
+            b.copy_to_slice(&mut actual);
 
-        assert_eq!(expect, &actual);
-        assert_eq!(rem, s);
+            assert_eq!(expect, &actual);
+            assert_eq!(rem, str::from_utf8(b.chunk()).unwrap());
+        }
+
+        exec_test(s, expect, rem);
+        exec_test(s.to_string(), expect, rem);
     }
 
     #[test]
-    #[should_panic(expected = "not enough bytes in buffer (1 requested, but only 0 remain)")]
-    fn test_buf_str_copy_to_slice_panic() {
-        let mut dst = [0; 1];
+    fn test_ord_str() {
+        assert_eq!(Ordering::Less, OrdStr::cmp(&"abc", "abd"));
+        assert_eq!(Ordering::Equal, OrdStr::cmp(&"abc", "abc"));
+        assert_eq!(Ordering::Greater, OrdStr::cmp(&"abd", "abc"));
+    }
 
-        "".copy_to_slice(&mut dst);
+    #[test]
+    #[cfg(feature = "read")]
+    fn test_buf_to_string() {
+        assert_eq!("foo", buf_to_string("foo"));
+    }
+
+    #[test]
+    #[cfg(feature = "read")]
+    fn test_buf_display() {
+        struct Wrapper(&'static str);
+
+        impl fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                buf_display(self.0.to_string(), f)
+            }
+        }
+
+        let wrapper = Wrapper("foo");
+
+        assert_eq!("foo", format!("{wrapper}"));
     }
 }
