@@ -1176,7 +1176,7 @@ impl Bufs {
         let mut buf = Arc::new(self.alloc_or_reuse());
         let inner =
             Arc::get_mut(&mut buf).expect("buffer must be exclusively owned to use for read");
-        debug_assert!(inner.len() == self.buf_size);
+        debug_assert!(inner.len() == self.buf_size, "allocated buffer must have len buf_size = {}, but its len is {}", self.buf_size, inner.len());
 
         match r.read(inner.as_mut_slice()) {
             Ok(0) => {
@@ -1206,10 +1206,16 @@ impl Bufs {
                     debug_assert!(!self.current.is_empty());
 
                     self.used.push(Arc::clone(&self.current));
-                } else {
+                } else if !self.current.is_empty() {
                     // Beginning of the new buffer starts a new token.
+                    debug_assert!(self.k > 0);
+
                     self.i = 0;
                     self.k = 0;
+                    self.maybe_free.push_back(Arc::clone(&self.current));
+                } else {
+                    // Initial state only.
+                    debug_assert!(self.i == 0 && self.j == 0 && self.k == 0);
                 }
 
                 self.current = buf;
