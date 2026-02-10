@@ -1,5 +1,3 @@
-- For the `ReadAnalyzer` release, expected commits:
-    7. Release v0.5.0.
 - For the `AsyncAnalyzer` release, expected commits:
     1. Introduce:
          - trait `lexical::AsyncAnalyzer`
