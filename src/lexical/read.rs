@@ -229,8 +229,8 @@ impl Buf for MultiRef {
             let step = self.usable_len(buf) - self.off;
             if n < step {
                 dst[..n].copy_from_slice(&buf[self.off..self.off + n]);
-                self.off += dst.len();
-                self.rng.start += dst.len();
+                self.off += n;
+                self.rng.start += n;
                 break;
             }
             dst[..step].copy_from_slice(&buf[self.off..self.off + step]);
@@ -1987,12 +1987,36 @@ mod tests {
 
     #[test]
     fn test_multiref_copy_to_slice_partial_buf() {
-        let mut b = MultiRef::test_new([" f", "oolishness"], 1..5);
+        let mut b = MultiRef::test_new([" f", "oolishness"], 1..8);
         let mut dst = [0u8; 3];
 
         b.copy_to_slice(&mut dst);
 
         assert_eq!(b"foo", &dst);
+        assert_eq!(4, b.remaining());
+        assert_eq!(b"lish", b.chunk());
+    }
+
+    #[test]
+    fn test_multiref_copy_to_slice_full_buf() {
+        let mut b = MultiRef::test_new([" f", "oolishness"], 1..5);
+        let mut dst = [0u8; 4];
+
+        b.copy_to_slice(&mut dst);
+
+        assert_eq!(b"fool", &dst);
+    }
+
+    #[test]
+    fn test_multiref_copy_to_slice_blarg() {
+        let mut b = MultiRef::test_new(["foo", "li", "shness"], 0..7);
+        let mut dst = [0u8; 4];
+
+        b.copy_to_slice(&mut dst);
+
+        assert_eq!(b"fool", &dst);
+        assert_eq!(3, b.remaining());
+        assert_eq!(b"i", b.chunk());
     }
 
     #[rstest]
