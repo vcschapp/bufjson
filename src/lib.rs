@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 use std::{cmp::Ordering, fmt, io::Cursor};
 
 pub mod lexical;

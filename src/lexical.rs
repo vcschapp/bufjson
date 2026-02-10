@@ -103,6 +103,7 @@ pub mod fixed;
 pub mod state;
 
 #[cfg(feature = "read")]
+#[cfg_attr(docsrs, doc(cfg(feature = "read")))]
 pub mod read;
 
 /// Kind of lexical token in a JSON text, such as begin object `{`, literal `true`, or string.

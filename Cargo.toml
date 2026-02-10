@@ -1,6 +1,6 @@
 [package]
 name = "bufjson"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Victor Schappert <victor.schappert@protonmail.com>"]
@@ -8,6 +8,10 @@ repository = "https://github.com/vcschapp/bufjson"
 description = "No frills, low-alloc, low-copy JSON lexer/parser for fast stream-oriented parsing"
 keywords = ["json", "parser", "low-allocation", "zero-copy", "performance"]
 categories = ["parsing", "encoding", "network-programming", "web-programming"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 read = []
