@@ -1334,11 +1334,13 @@ impl Default for StoredContent {
 ///
 /// ```
 /// use bufjson::lexical::{Token, read::ReadAnalyzer};
+/// # let example_dir = tempfile::tempdir_in(".").unwrap();
+/// # let example_file = example_dir.path().join("example.json");
 /// use std::fs::{self, File};
 ///
-/// fs::write("example.json", r#"{"user":"alice","score":95,"tags":["admin"]}"#).unwrap();
+/// fs::write(&example_file, r#"{"user":"alice","score":95,"tags":["admin"]}"#).unwrap();
 ///
-/// let mut lexer = ReadAnalyzer::new(File::open("example.json").unwrap());
+/// let mut lexer = ReadAnalyzer::new(File::open(&example_file).unwrap());
 ///
 /// assert_eq!(Token::ObjBegin, lexer.next());
 /// assert_eq!(Token::Str, lexer.next());
