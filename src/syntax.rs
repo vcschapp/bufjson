@@ -1414,6 +1414,44 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case(false, Struct::Arr)]
+    #[case(true, Struct::Obj)]
+    fn test_struct_from_bool(#[case] t: bool, #[case] expect: Struct) {
+        assert_eq!(expect, t.into());
+        assert_eq!(t, Into::<bool>::into(expect));
+    }
+
+    #[test]
+    fn test_struct_from_bitref() {
+        let bits: BitArray<[u8; 1]> = bitarr![u8, Lsb0; 0, 1];
+
+        assert_eq!(Struct::Arr, bits[0].into());
+        assert_eq!(Struct::Obj, bits[1].into());
+    }
+
+    #[rstest]
+    #[case(Expect::ArrElementOrEnd, [Token::ArrBegin, Token::ArrEnd, Token::LitFalse, Token::LitNull, Token::LitTrue, Token::Num, Token::ObjBegin, Token::Str])]
+    #[case(Expect::ArrElementSepOrEnd, [Token::ArrEnd, Token::ValueSep])]
+    #[case(Expect::Eof, [])]
+    #[case(Expect::ObjName, [Token::Str])]
+    #[case(Expect::ObjNameOrEnd, [Token::Str, Token::ObjEnd])]
+    #[case(Expect::ObjNameSep, [Token::NameSep])]
+    #[case(Expect::ObjValueSepOrEnd, [Token::ObjEnd, Token::ValueSep])]
+    #[case(Expect::Value, [Token::ArrBegin, Token::LitFalse, Token::LitNull, Token::LitTrue, Token::Num, Token::ObjBegin, Token::Str])]
+    fn test_expect_allowed_tokens<const N: usize>(
+        #[case] input: Expect,
+        #[case] expect: [Token; N],
+    ) {
+        let actual = input.allowed_tokens();
+
+        assert_eq!(expect, actual);
+    }
+
+    // TODO: next new test is Display for Expect
+    // TODO: replace temp tests below with more comprehensive tests
 
     #[test]
     fn temp_test_to_repro_bug_delete_or_replace_me_pls() {

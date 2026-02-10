@@ -652,9 +652,44 @@ mod tests {
     use super::*;
     use crate::lexical::Expect;
     use rstest::rstest;
+    use std::error::Error as _;
+
+    #[rstest]
+    #[case(
+        ErrorKind::BadSurrogate { first: 0xd800, second: Some(0xd800), offset: 3 },
+        "bad Unicode escape sequence surrogate pair: high surrogate '\\uD800' followed by invalid low surrogate '\\uD800' at line",
+    )]
+    #[case(
+        ErrorKind::BadUtf8ContByte { seq_len: 3, offset: 2, value: 0x80 },
+        "bad UTF-8 continuation byte 0x80 in 3-byte UTF-8 sequence (byte #2) at line",
+    )]
+    #[case(
+        ErrorKind::UnexpectedByte { token: None, expect: Expect::TokenStartChar, actual: b'e' },
+        "expected token start character but got character 'e' (ASCII 0x65) at line",
+    )]
+    #[case(
+        ErrorKind::UnexpectedEof(Token::LitNull),
+        "unexpected EOF in null token at line"
+    )]
+    fn test_error(#[case] kind: ErrorKind, #[case] expect: &str) {
+        let pos = Pos::new(10, 2, 5);
+        let err = Error { kind, pos };
+
+        assert_eq!(kind, err.kind());
+        assert_eq!(kind, lexical::Error::kind(&err));
+        assert_eq!(pos, *err.pos());
+        assert_eq!(pos, *lexical::Error::pos(&err));
+        assert!(err.source().is_none());
+
+        let actual = format!("{err}");
+        assert!(
+            actual.starts_with(expect),
+            "expected {actual:?} to start with {expect:?}"
+        );
+    }
 
     #[test]
-    fn test_initial_state_content() {
+    fn test_analyzer_initial_state_content() {
         let an = FixedAnalyzer::new(vec![]);
 
         for _ in 0..5 {
@@ -674,7 +709,7 @@ mod tests {
     #[should_panic(
         expected = "no error: last `next()` did not return `Token::Err` (use `content()` instead)"
     )]
-    fn test_initial_state_err() {
+    fn test_analyzer_initial_state_err() {
         let _ = FixedAnalyzer::new(vec![]).err();
     }
 
@@ -768,7 +803,7 @@ mod tests {
     #[case("  ", Token::White, None)]
     #[case("\t\t", Token::White, None)]
     #[case(" \t \t    \t          \t\t", Token::White, None)]
-    fn test_single_token(
+    fn test_analyzer_single_token(
         #[case] input: &str,
         #[case] expect: Token,
         #[case] unescaped: Option<&str>,
@@ -853,7 +888,7 @@ mod tests {
     #[case("\t".repeat(INLINE_LEN), Token::White, None)]
     #[case(" ".repeat(INLINE_LEN+1), Token::White, None)]
     #[case(" \t".repeat(INLINE_LEN/2+1), Token::White, None)]
-    fn test_single_token_inline_len_boundary(
+    fn test_analyzer_single_token_inline_len_boundary(
         #[case] input: String,
         #[case] expect: Token,
         #[case] unescaped: Option<String>,
@@ -910,7 +945,7 @@ mod tests {
     #[should_panic(
         expected = "no error: last `next()` did not return `Token::Err` (use `content()` instead)"
     )]
-    fn test_single_token_panic_no_err(#[case] input: &str) {
+    fn test_analyzer_single_token_panic_no_err(#[case] input: &str) {
         let mut an = FixedAnalyzer::new(input.as_bytes());
 
         let token = an.next();
@@ -930,7 +965,7 @@ mod tests {
     #[case("\"\u{ffff}\"")] // Highest BMP code point: non-character but still valid JSON
     #[case("\"\u{10000}\"")] // Lowest four-byte UTF-8 character
     #[case("\"\u{10ffff}\"")] // Highest valid Unicode scalar value
-    fn test_utf8_seq(#[case] input: &str) {
+    fn test_analyzer_utf8_seq(#[case] input: &str) {
         // With content fetch.
         {
             let mut an = FixedAnalyzer::new(input.as_bytes());
@@ -1013,7 +1048,11 @@ mod tests {
     #[case("\n ", 2, 2)]
     #[case("\t\r", 2, 1)]
     #[case("\r\t", 2, 2)]
-    fn test_whitespace_multiline(#[case] input: &str, #[case] line: usize, #[case] col: usize) {
+    fn test_analyzer_whitespace_multiline(
+        #[case] input: &str,
+        #[case] line: usize,
+        #[case] col: usize,
+    ) {
         // With content fetch.
         {
             let mut an = FixedAnalyzer::new(input.as_bytes());
@@ -1285,7 +1324,7 @@ mod tests {
     #[case("\n\r{", T::t(Token::White, "\n\r"), T::t(Token::ObjBegin, "{").pos(2, 3, 1), 3, 2)]
     #[case("\n\n{", T::t(Token::White, "\n\n"), T::t(Token::ObjBegin, "{").pos(2, 3, 1), 3, 2)]
     #[case("\r\r{", T::t(Token::White, "\r\r"), T::t(Token::ObjBegin, "{").pos(2, 3, 1), 3, 2)]
-    fn test_two_tokens(
+    fn test_analyzer_two_tokens(
         #[case] input: &str,
         #[case] t1: T,
         #[case] t2: T,
@@ -1405,7 +1444,7 @@ mod tests {
     #[case(r#""\uD800\uDBFF""#, 0xd800, Some(0xdbff), 5, 7)]
     #[case(r#""\udbff\ue000""#, 0xdbff, Some(0xe000), 5, 7)]
     #[case(r#""\udbff\u0000""#, 0xdbff, Some(0x0000), 5, 7)]
-    fn test_single_error_bad_surrogate(
+    fn test_analyzer_single_error_bad_surrogate(
         #[case] input: &str,
         #[case] first: u16,
         #[case] second: Option<u16>,
@@ -1485,7 +1524,7 @@ mod tests {
     #[case(&[0xf0, 0x80, 0x80, 0xc0], 3)]
     #[case(&[0xf0, 0xbf, 0xbf, 0x7f], 3)]
     #[case(&[0xf0, 0xbf, 0xbf, 0xc0], 3)]
-    fn test_single_error_bad_utf8_cont_byte(#[case] input: &[u8], #[case] offset: u8) {
+    fn test_analyzer_single_error_bad_utf8_cont_byte(#[case] input: &[u8], #[case] offset: u8) {
         // Construct input buffer.
         let mut buf = Vec::with_capacity(input.len() + 1);
         buf.push(b'"');
@@ -1621,7 +1660,7 @@ mod tests {
     #[case(0xfd)]
     #[case(0xfe)]
     #[case(0xff)]
-    fn test_single_error_invalid_utf8_start_byte(#[case] b: u8) {
+    fn test_analyzer_single_error_invalid_utf8_start_byte(#[case] b: u8) {
         // Construct input buffer.
         let mut buf = Vec::with_capacity(2);
         buf.push(b'"');
@@ -1841,7 +1880,7 @@ mod tests {
     #[case("1.1E+1e", Expect::DigitOrBoundary)]
     #[case("11.11E+11e", Expect::DigitOrBoundary)]
     #[case("99.999E-999e", Expect::DigitOrBoundary)]
-    fn test_single_error_bad_number(#[case] input: &str, #[case] expect: Expect) {
+    fn test_analyzer_single_error_bad_number(#[case] input: &str, #[case] expect: Expect) {
         let mut an = FixedAnalyzer::new(input.as_bytes());
 
         assert_eq!(Token::Err, an.next());
@@ -1903,7 +1942,7 @@ mod tests {
     #[case(r#"\uf_"#, Expect::UnicodeEscHexDigit)]
     #[case(r#"\u1a_"#, Expect::UnicodeEscHexDigit)]
     #[case(r#"\ub2C_"#, Expect::UnicodeEscHexDigit)]
-    fn test_single_error_bad_escape(#[case] input: &str, #[case] expect: Expect) {
+    fn test_analyzer_single_error_bad_escape(#[case] input: &str, #[case] expect: Expect) {
         let mut s = String::with_capacity(1 + input.len());
         s.push('"');
         s.push_str(input);
@@ -1948,7 +1987,7 @@ mod tests {
     #[case("t", 'r', Token::LitTrue)]
     #[case("tr", 'u', Token::LitTrue)]
     #[case("tru", 'e', Token::LitTrue)]
-    fn test_single_error_expect_char(
+    fn test_analyzer_single_error_expect_char(
         #[case] input: &str,
         #[case] expect: char,
         #[case] expect_token: Token,
@@ -2045,7 +2084,7 @@ mod tests {
     #[case(r#"t"#, Token::LitTrue)]
     #[case(r#"tr"#, Token::LitTrue)]
     #[case(r#"tru"#, Token::LitTrue)]
-    fn test_single_error_unexpected_eof(#[case] input: &str, #[case] expect: Token) {
+    fn test_analyzer_single_error_unexpected_eof(#[case] input: &str, #[case] expect: Token) {
         // With error fetch.
         {
             let mut an = FixedAnalyzer::new(input.as_bytes());
@@ -2138,7 +2177,7 @@ mod tests {
     #[case(0xf0)]
     #[case(0xf7)]
     #[case(0xff)]
-    fn test_error_non_token_start(#[case] bad: u8) {
+    fn test_analyzer_error_non_token_start(#[case] bad: u8) {
         // Bad character occurs at the very start of the text.
         {
             let mut an = FixedAnalyzer::new(vec![bad]);
@@ -2229,7 +2268,7 @@ mod tests {
     #[should_panic(
         expected = "no content: last `next()` returned `Token::Err` (use `err()` instead)"
     )]
-    fn test_panic_no_content(#[case] input: &[u8]) {
+    fn test_analyzer_panic_no_content(#[case] input: &[u8]) {
         let mut an = FixedAnalyzer::new(input);
 
         loop {
@@ -2242,7 +2281,7 @@ mod tests {
     }
 
     #[test]
-    fn test_smoke() {
+    fn test_analyzer_smoke() {
         const JSON_TEXT: &str = r#"{
   "foo":["bar",1,5e-7, false, null  ,true, {"baz":"\\\"aââbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb©¢çc\"\\","qux":[{},{},null]}],
   "Lorem ipsum dolor sit amet, consectetur adipiscing elit." : "Cras sed ipsum at arcu porta blandit. Nunc eu mauris lacus. Vivamus dignissim tincidunt gravida. Fusce quis neque enim. Sed ac leo neque. Praesent feugiat efficitur eros, quis venenatis urna porttitor condimentum. Mauris finibus dui non vulputate mattis. Nullam scelerisque nibh vel dui egestas luctus. Vestibulum commodo mi ex. In laoreet hendrerit fringilla.\n\nPraesent vel ex sed dolor fermentum lobortis.",

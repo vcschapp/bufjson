@@ -1,12 +1,4 @@
 - For the `ReadAnalyzer` release, expected commits:
-    6. Code coverage push: 10% increase.
-        - We already went up from 67.51% to 88.21% (~20%) between v0.4.0 and commit `d58b0a81`
-        - In `fixed.rs`:
-           - Cover `fmt::Display` for `Error`
-        - In `syntax.rs`:
-          - Cover or delete `impl From<BitRef<'_>> for Struct`
-          - Cover `Expect::allowed_tokens`
-          - Make sure "EOF" text is consistent with `lexical::ErrorKind` in `Display for Expect`
     7. Release v0.5.0.
 - For the `AsyncAnalyzer` release, expected commits:
     1. Introduce:
