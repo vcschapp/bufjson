@@ -13,19 +13,10 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Ref<B> {
     buf: Arc<B>,
     rng: Range<usize>,
-}
-
-impl<B> Clone for Ref<B> {
-    fn clone(&self) -> Self {
-        Self {
-            buf: Arc::clone(&self.buf),
-            rng: self.rng.clone(),
-        }
-    }
 }
 
 impl<B: Deref<Target = [u8]>> Ref<B> {
