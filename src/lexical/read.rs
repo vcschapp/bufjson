@@ -1176,7 +1176,12 @@ impl Bufs {
         let mut buf = Arc::new(self.alloc_or_reuse());
         let inner =
             Arc::get_mut(&mut buf).expect("buffer must be exclusively owned to use for read");
-        debug_assert!(inner.len() == self.buf_size, "allocated buffer must have len buf_size = {}, but its len is {}", self.buf_size, inner.len());
+        debug_assert!(
+            inner.len() == self.buf_size,
+            "allocated buffer must have len buf_size = {}, but its len is {}",
+            self.buf_size,
+            inner.len()
+        );
 
         match r.read(inner.as_mut_slice()) {
             Ok(0) => {
@@ -3122,6 +3127,63 @@ mod tests {
                 assert_eq!(*expect_literal, content.unescaped());
             }
         }
+    }
+
+    #[rstest]
+    #[case(29)]
+    #[case(30)]
+    #[case(31)]
+    fn test_analyzer_replace_buf(#[case] buf_size: usize) {
+        // The purpose of this test is to cover the code branch in which there is a single "maybe
+        // free" buffer, but when it gets taken off the "maybe free" list, it turns out to still
+        // have active references, so it gets put back.
+        //
+        // The structure of the test is as follows:
+        //     - The buffer size is ~30.
+        //     - A string token that fits within the first buffer is read and its content is held,
+        //       keeping a reference to the first buffer alive.
+        //     - Once all tokens from the first buffer have been read, it goes on the "maybe free"
+        //       list.
+        //     - Tokens are read until the second buffer is filled and a new one is allocated, which
+        //       causes the first buffer to come off the "maybe free" list, checked, and replaced
+        //       because it still has active references. A third buffer is then allocated.
+        //     - The string token is now dropped, freeing excess references to the first buffer.
+        //     - Tokens are read until the third buffer is filled. A fourth buffer is needed, and
+        //       at this point the first buffer can be reused.
+        //
+        // In the input string below, the commas and trailing `]` occur on the 30, 60, and 90 byte
+        // boundaries.
+
+        const INPUT: &str = r#"["_________xxxxxxxxxx_______",             true            ,1.000000001111111111000000000] null"#;
+        let mut an = ReadAnalyzer::with_buf_size(INPUT.as_bytes(), buf_size);
+
+        // Read tokens from the first buffer.
+        assert_eq!(Token::ArrBegin, an.next());
+        assert_eq!(Token::Str, an.next());
+        let str_content = an.content();
+        assert_eq!(r#""_________xxxxxxxxxx_______""#, str_content.literal());
+        assert_eq!(Token::ValueSep, an.next());
+
+        // Read tokens from the second buffer.
+        assert_eq!(Token::White, an.next());
+        assert_eq!(Token::LitTrue, an.next());
+        assert_eq!(Token::White, an.next());
+        assert_eq!(Token::ValueSep, an.next());
+
+        // Start reading tokens from the third buffer.
+        assert_eq!(Token::Num, an.next());
+
+        // Drop the string content, which held a reference to the first buffer, allowing the first
+        // buffer to be reused.
+        drop(str_content);
+
+        // Finish reading tokens from the third buffer.
+        assert_eq!(Token::ArrEnd, an.next());
+
+        // Read tokens from the fourth buffer.
+        assert_eq!(Token::White, an.next());
+        assert_eq!(Token::LitNull, an.next());
+        assert_eq!(Token::Eof, an.next());
     }
 
     trait IntoString {

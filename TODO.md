@@ -1,7 +1,6 @@
 - For the `ReadAnalyzer` release, expected commits:
     6. Code coverage push: 10% increase.
         - We already went up from 67.51% to 88.21% (~20%) between v0.4.0 and commit `d58b0a81`
-        - I do want to make sure that `read.rs` line 1245 is covered.
         - In `fixed.rs`:
            - Cover `fmt::Display` for `Error`
         - In `syntax.rs`:
