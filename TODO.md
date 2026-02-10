@@ -8,7 +8,7 @@
         - Full unit testing from the start.
     2. Full Rust docs for #1.
     3. Update README.md.
-    4. Code coverage push: 10% increase.
+    4. Code coverage push: 10% increase, and adding some more meaningful tests into syntax::Parser.
     5. Release v0.5.1, which hopefully isn't breaking.
     6. Introduce `syntax::AsyncParser` with full Rust docs and unit tests.
     7. Update README.md
