@@ -1,6 +1,4 @@
 - For the `ReadAnalyzer` release, expected commits:
-    4. Full Rust docs for #3.
-    5. Update README.md.
     6. Code coverage push: 10% increase.
     7. Release v0.5.0.
 - For the `AsyncAnalyzer` release, expected commits:

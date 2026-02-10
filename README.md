@@ -37,14 +37,14 @@ The `bufjson` crate provides a stream-oriented JSON tokenizer through the `lexic
 with these implementations:
 
 - `FixedAnalyzer` tokenizes fixed-size buffers;
-- `ReadAnalyzer` tokenizes sync input streams implementing `io::Read` (COMING SOON-ISH); and
+- `ReadAnalyzer` tokenizes sync input streams implementing `io::Read`; and
 - `AsyncAnalyzer` tokenizes async streams that yield byte buffers (COMING SOON-ISH);
 
 The remainder of the library builds on the lexical analyzer trait.
 
 - The `syntax` module provides concrete stream-oriented parser types that can wrap any lexical
   analyzer.
-- The `path` module, which will support stream-oriented evaluation of a limited subset of JSONPath,
+- The `pointer` module, which will support stream-oriented evaluation of JSON Pointer expressions,
   is planned. (COMING SOON-ISH)
 
 Refer to the [API reference docs](https://docs.rs/bufjson/latest/bufjson/) for more detail.
