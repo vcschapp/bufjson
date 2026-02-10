@@ -50,13 +50,6 @@ enum InnerContent<B: Deref<Target = [u8]>> {
     Escaped(Ref<B>),
 }
 
-// FIXME: Is this `Default` implementation used? If not, please delete.
-impl<B: Deref<Target = [u8]>> Default for InnerContent<B> {
-    fn default() -> Self {
-        Self::Static("")
-    }
-}
-
 /// Text content of a JSON token identified by a [`FixedAnalyzer`].
 ///
 /// See the [`lexical::Content`] trait, implemented by this struct, for detailed conceptual
