@@ -22,7 +22,10 @@ bitvec = { version = "^1.0.1", default-features = false, features = ["alloc"] }
 [dev-dependencies]
 criterion = "0.5"
 doc-comment = "^0.3.3"
+rand = "^0.10.0"
+rand_distr = "^0.6.0"
 rstest = "^0.26.1"
+smallvec = "^1.15.1"
 tempfile = "^3.25.0"
 
 [[bench]]
