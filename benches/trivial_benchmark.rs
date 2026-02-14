@@ -1,4 +1,4 @@
-mod common;
+mod generator;
 
 use bufjson::lexical::fixed::FixedAnalyzer;
 use bufjson::syntax::Parser;

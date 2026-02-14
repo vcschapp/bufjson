@@ -1,7 +1,16 @@
 use rand::{RngExt, rngs::ThreadRng};
 use rand_distr::{Distribution, Normal, weighted::WeightedIndex};
 use smallvec::SmallVec;
-use std::{cmp::max, io::Write, ops::RangeInclusive};
+use std::{
+    cmp::{max, min},
+    io::Write,
+    ops::RangeInclusive,
+};
+
+#[path = "generator/keys.rs"]
+mod keys;
+#[path = "generator/lorem.rs"]
+mod lorem;
 
 macro_rules! pct_value_check {
     ($val:ident) => {
@@ -759,10 +768,17 @@ impl<
 
         let len = len_sample.clamp(*rng.start() as f64, *rng.end() as f64) as usize;
 
-        if self.rng.random_bool(self.str_rules.pct_multiline) {
+        if is_key && len - 2 < keys::KEYS.len() {
+            let key_options = keys::KEYS[len - 2];
+            let key = key_options[self.rng.random_range(0..key_options.len())];
+            assert_eq!(len - 2, key.len());
+            w.write_all(key.as_bytes())?;
+        } else if self.rng.random_bool(self.str_rules.pct_multiline) {
             self.generate_str_multiline(len - 2, w)?;
         } else {
-            self.generate_str_line(len - 2, is_key, w)?;
+            let mut lorem_cursor = self.lorem_cursor();
+
+            self.generate_str_line(len - 2, &mut lorem_cursor, w)?;
         }
 
         w.write_all(&[b'"'])?;
@@ -779,6 +795,7 @@ impl<
             &b"\\r"[..]
         };
 
+        let mut lorem_cursor = self.lorem_cursor();
         let mut rem = len;
 
         while rem >= term.len() {
@@ -787,14 +804,14 @@ impl<
                 .val_len_distr
                 .sample(&mut self.rng)
                 .clamp(0.0, (rem - term.len()) as f64) as usize;
-            self.generate_str_line(line_len, false, w)?;
+            self.generate_str_line(line_len, &mut lorem_cursor, w)?;
             w.write_all(term)?;
             rem -= line_len;
             rem -= term.len();
         }
 
         if rem > 0 {
-            self.generate_str_line(rem, false, w)?;
+            self.generate_str_line(rem, &mut lorem_cursor, w)?;
         }
 
         Ok(len)
@@ -803,12 +820,10 @@ impl<
     fn generate_str_line(
         &mut self,
         len: usize,
-        is_key: bool,
+        lorem_cursor: &mut Option<usize>,
         w: &mut impl Write,
     ) -> std::io::Result<usize> {
         let mut rem = len;
-
-        // TODO: Generate some more human, less garbagey, strings using `is_key` as a guide.
 
         while rem > 0 {
             // Multibyte character.
@@ -845,13 +860,9 @@ impl<
                 let units = c.encode_utf16(&mut unit_buf);
                 assert!(6 * units.len() <= rem);
 
-                let u = if self.rng.random_bool(0.5) {
-                    b'u'
-                } else {
-                    b'U'
-                };
-
-                let mut byte_buf = [b'\\', u, 0u8, 0u8, 0u8, 0u8, b'\\', u, 0u8, 0u8, 0u8, 0u8];
+                let mut byte_buf = [
+                    b'\\', b'u', 0u8, 0u8, 0u8, 0u8, b'\\', b'u', 0u8, 0u8, 0u8, 0u8,
+                ];
 
                 fn encode_unit(b: &mut [u8], c: u16, lc: bool) {
                     let hex = if lc {
@@ -880,6 +891,21 @@ impl<
                 continue;
             }
 
+            // Trusted lorem ipsum text.
+            if let Some(mut i) = *lorem_cursor {
+                let j = min(i + rem, lorem::LOREM.len());
+                w.write_all(&lorem::LOREM[i..j])?;
+                rem -= j - i;
+                i = j;
+                if i < lorem::LOREM.len() {
+                    *lorem_cursor = Some(i);
+                } else {
+                    *lorem_cursor = Some(0);
+                }
+
+                continue;
+            }
+
             // Ordinary single-byte character (some must be escaped using '\').
             let b = match self.rng.random_range(b' '..=0x7f) {
                 b'\x08' | b'\t' | b'\n' | b'\x0c' | b'\r' if len == 1 => &b" "[..],
@@ -897,6 +923,19 @@ impl<
         }
 
         Ok(len)
+    }
+
+    fn lorem_cursor(&mut self) -> Option<usize> {
+        if self.rng.random_bool(0.90) {
+            let start = lorem::LOREM[..=self.rng.random_range(0..lorem::LOREM.len())]
+                .iter()
+                .rposition(|&b| b != b' ')
+                .unwrap_or(0);
+
+            Some(start)
+        } else {
+            None
+        }
     }
 
     fn generate_val(
@@ -1135,18 +1174,21 @@ impl Seps {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bufjson::lexical::{Token, fixed::FixedAnalyzer};
     use rand::{SeedableRng, rngs::StdRng};
     use rstest::rstest;
 
     #[rstest]
     #[case(2)]
     #[case(3)]
+    #[case(4)]
+    #[case(5)]
     #[case(10)]
     #[case(20)]
     #[case(50)]
     #[case(100)]
-    #[case(8051)]
-    #[case(8192)]
+    #[case(8 * 1024)]
+    #[case(16 * 1024)]
     fn test_generator_default_obj(#[case] len: usize) {
         let mut g = Generator::default()
             .with_rng(StdRng::seed_from_u64(len as u64))
@@ -1158,12 +1200,30 @@ mod tests {
 
         assert_eq!(len, buf.len());
 
-        let s = String::from_utf8(buf).unwrap();
+        let mut parser = FixedAnalyzer::new(buf.clone()).into_parser();
+        loop {
+            match parser.next() {
+                Token::Eof => {
+                    assert_eq!(len, parser.pos().offset);
 
-        println!("TODO: TEMP: DELETE: ___{s}___");
+                    break;
+                }
+                Token::Err => {
+                    let pos = *parser.pos();
+                    let err = parser.err();
 
-        //let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+                    let msg = format!("{err}");
 
-        //assert!(v.is_object());
+                    eprintln!("{msg}");
+                    eprintln!("    parser pos: {pos}");
+                    eprintln!("    error detail: {err:?}");
+                    eprintln!("-------------------- JSON --------------------");
+                    eprintln!("{}", String::from_utf8(buf).unwrap());
+
+                    panic!("{msg}");
+                }
+                _ => continue,
+            }
+        }
     }
 }
