@@ -1,7 +1,7 @@
 use rand::{RngExt, rngs::ThreadRng};
 use rand_distr::{Distribution, Normal, weighted::WeightedIndex};
 use smallvec::SmallVec;
-use std::{cmp::max, io::Write, ops::Range};
+use std::{cmp::max, io::Write, ops::RangeInclusive};
 
 macro_rules! pct_value_check {
     ($val:ident) => {
@@ -92,7 +92,7 @@ impl<D: Distribution<f64>> NumRules<D> {
 
 impl Default for NumRules<Normal<f64>> {
     fn default() -> Self {
-        Self::new(Normal::new(3.0, 20.0).unwrap(), 0.15, 0.20, 0.25, 0.1)
+        Self::new(Normal::new(5.0, 15.0).unwrap(), 0.15, 0.20, 0.25, 0.1)
     }
 }
 
@@ -221,26 +221,22 @@ pub enum WhiteRules {
 }
 
 impl WhiteRules {
-    fn struct_sep(&self) -> &'static [u8] {
-        match self {
-            Self::Off => &b""[..],
-            Self::Pretty { line_break, .. } => line_break.as_bytes(),
+    pub fn off() -> Self {
+        Self::Off
+    }
+
+    pub fn pretty(line_break: LineSep, inline_space: u8, indent: usize) -> Self {
+        Self::Pretty {
+            line_break,
+            inline_space,
+            indent,
         }
     }
 
-    fn value_sep(&self) -> Vec<u8> {
+    fn line_break(&self) -> &'static [u8] {
         match self {
-            Self::Off => vec![b','],
-            Self::Pretty {
-                line_break, indent, ..
-            } => {
-                let b = line_break.as_bytes();
-                let mut value_sep = Vec::with_capacity(1 + b.len() + 16 * indent);
-                value_sep.push(b',');
-                value_sep.extend_from_slice(b);
-
-                value_sep
-            }
+            Self::Off => &b""[..],
+            Self::Pretty { line_break, .. } => line_break.as_bytes(),
         }
     }
 
@@ -251,26 +247,11 @@ impl WhiteRules {
         }
     }
 
-    fn push_level(&self, value_sep: &mut Vec<u8>) {
+    fn indent(&self) -> usize {
         match self {
-            Self::Off => (),
-            Self::Pretty {
-                line_break: _,
-                inline_space,
-                indent,
-            } => value_sep.resize(value_sep.len() + indent, *inline_space),
-        };
-    }
-
-    fn pop_level(&self, value_sep: &mut Vec<u8>) {
-        match self {
-            Self::Off => (),
-            Self::Pretty {
-                line_break: _,
-                inline_space: _,
-                indent,
-            } => value_sep.truncate(value_sep.len() - indent),
-        };
+            Self::Off => 0,
+            Self::Pretty { indent, .. } => *indent,
+        }
     }
 }
 
@@ -408,60 +389,53 @@ impl<
             );
         };
 
-        let struct_sep: &'static [u8] = self.white_rules.struct_sep();
-        let mut value_sep: Vec<u8> = self.white_rules.value_sep();
+        let mut seps = Seps::new(&self.white_rules);
 
         match self.root {
-            Root::Arr if len >= 2 => self.generate_arr(len..len, 0, struct_sep, &mut value_sep, w),
+            Root::Arr if len >= 2 => self.generate_arr(len..=len, 0, &mut seps, w),
             Root::Arr => insufficient_len(Root::Arr, 2),
-            Root::Str if len >= 2 => self.generate_str(len..len, false, w),
+            Root::Str if len >= 2 => self.generate_str(len..=len, false, w),
             Root::Str => insufficient_len(Root::Str, 2),
-            Root::Num if len >= 1 => self.generate_num(len..len, w),
+            Root::Num if len >= 1 => self.generate_num(len..=len, w),
             Root::Num => insufficient_len(Root::Num, 1),
-            Root::Obj if len >= 2 => self.generate_obj(len..len, 0, struct_sep, &mut value_sep, w),
+            Root::Obj if len >= 2 => self.generate_obj(len..=len, 0, &mut seps, w),
             Root::Obj => insufficient_len(Root::Obj, 2),
         }
     }
 
     fn generate_arr(
         &mut self,
-        rng: Range<usize>,
+        rng: RangeInclusive<usize>,
         level: usize,
-        struct_sep: &'static [u8],
-        value_sep: &mut Vec<u8>,
+        seps: &mut Seps,
         w: &mut impl Write,
     ) -> std::io::Result<usize> {
         assert!(
-            rng.start >= 2,
+            *rng.start() >= 2,
             "array requires at least 2 bytes (for the opening and closing brackets), but the requested range is {rng:?}"
         );
 
-        let len = if rng.start < rng.end {
+        let len = if rng.start() < rng.end() {
             self.arr_rules
                 .len_distr
                 .sample(&mut self.rng)
-                .clamp(rng.start as f64, rng.end as f64) as usize
+                .clamp(*rng.start() as f64, *rng.end() as f64) as usize
         } else {
-            rng.start
+            *rng.start()
         };
 
         let inner_len = len - 2;
+        let struct_sep_len = 2 * seps.struct_sep.len() + seps.indent;
 
         w.write_all(b"[")?;
-        if inner_len >= 2 * struct_sep.len() {
-            w.write_all(struct_sep)?;
-            self.white_rules.push_level(value_sep);
-            self.generate_arr_items(
-                inner_len - 2 * struct_sep.len(),
-                level + 1,
-                struct_sep,
-                value_sep,
-                w,
-            )?;
-            self.white_rules.pop_level(value_sep);
-            w.write_all(struct_sep)?;
+        if inner_len >= struct_sep_len {
+            seps.push_level();
+            w.write_all(&seps.struct_sep)?;
+            self.generate_arr_items(inner_len - struct_sep_len, level + 1, seps, w)?;
+            seps.pop_level();
+            w.write_all(&seps.struct_sep)?;
         } else {
-            self.generate_arr_items(inner_len, self.max_level, struct_sep, value_sep, w)?;
+            self.generate_arr_items(inner_len, self.max_level, seps, w)?;
         };
         w.write_all(b"]")?;
 
@@ -472,8 +446,7 @@ impl<
         &mut self,
         len: usize,
         level: usize,
-        struct_sep: &'static [u8],
-        value_sep: &mut Vec<u8>,
+        seps: &mut Seps,
         w: &mut impl Write,
     ) -> std::io::Result<usize> {
         const MIN_ITEM: usize = 1; // Smallest possible array item is a number of length 1.
@@ -481,12 +454,12 @@ impl<
             let mut n = 0;
 
             loop {
-                let m = if len - MIN_ITEM - value_sep.len() >= MIN_ITEM {
-                    let max_item = len - n - MIN_ITEM - value_sep.len();
+                let m = if len - n >= 2 * MIN_ITEM + seps.val_sep.len() {
+                    let max_item = len - n - MIN_ITEM - seps.val_sep.len();
 
-                    self.generate_val(MIN_ITEM..max_item, level, struct_sep, value_sep, w)?
+                    self.generate_val(MIN_ITEM..=max_item, level, seps, w)?
                 } else {
-                    self.generate_val(len - n..len - n, level, struct_sep, value_sep, w)?
+                    self.generate_val(len - n..=len - n, level, seps, w)?
                 };
 
                 n += m;
@@ -494,10 +467,10 @@ impl<
                     return Ok(len);
                 }
 
-                assert!(len - n >= MIN_ITEM + value_sep.len());
+                assert!(len - n >= MIN_ITEM + seps.val_sep.len());
 
-                w.write_all(value_sep)?;
-                n += value_sep.len();
+                w.write_all(&seps.val_sep)?;
+                n += seps.val_sep.len();
 
                 assert!(len - n >= MIN_ITEM);
             }
@@ -506,14 +479,18 @@ impl<
         }
     }
 
-    fn generate_lit(&mut self, rng: Range<usize>, w: &mut impl Write) -> std::io::Result<usize> {
+    fn generate_lit(
+        &mut self,
+        rng: RangeInclusive<usize>,
+        w: &mut impl Write,
+    ) -> std::io::Result<usize> {
         assert!(
-            rng.end >= 4 && rng.start <= 5,
+            *rng.end() >= 4 && *rng.start() <= 5,
             "literals are 4-5, but range given is {rng:?}"
         );
-        assert!(rng.start <= rng.end);
+        assert!(rng.start() <= rng.end());
 
-        let lit = match (rng.start, rng.end) {
+        let lit = match (rng.start(), rng.end()) {
             (..=4, 4) => ["null", "true"][self.rng.random_range(0..=1)],
             (..=4, 5..) => ["null", "true", "false"][self.rng.random_range(0..=2)],
             (5, 5) => "false",
@@ -527,31 +504,34 @@ impl<
 
     fn generate_num(
         &mut self,
-        mut rng: Range<usize>,
+        mut rng: RangeInclusive<usize>,
         w: &mut impl Write,
     ) -> std::io::Result<usize> {
         assert!(
-            rng.start >= 1,
+            *rng.start() >= 1,
             "number requires at least 1 byte, but the requested range is {rng:?}"
         );
-        assert!(rng.start <= rng.end);
+        assert!(rng.start() <= rng.end());
 
-        if rng.start == 1 && self.rng.random_bool(self.num_rules.pct_zero) {
+        if *rng.start() == 1 && self.rng.random_bool(self.num_rules.pct_zero) {
             w.write_all(&[b'0'])?;
 
             return Ok(1);
-        } else if rng.end == 1 {
+        } else if *rng.end() == 1 {
             return self.generate_int(1, false, w);
         }
 
-        if self.rng.random_bool(self.num_rules.pct_neg) {
+        let sign_len = if self.rng.random_bool(self.num_rules.pct_neg) {
             w.write_all(&[b'-'])?;
-            rng.start -= 1;
-            rng.end -= 1;
-        }
+            rng = *rng.start() - 1..=*rng.end() - 1;
 
-        if rng.end < 3 {
-            let len = self.rng.random_range(rng.start..rng.end);
+            1
+        } else {
+            0
+        };
+
+        if *rng.end() < 3 {
+            let len = self.rng.random_range(rng);
             return self.generate_int(len, true, w);
         }
 
@@ -560,7 +540,7 @@ impl<
         } else {
             0
         };
-        let min_exp = if rng.end.saturating_sub(min_frac) >= 4
+        let min_exp = if rng.end().saturating_sub(min_frac) >= 4
             && self.rng.random_bool(self.num_rules.pct_exp)
         {
             3
@@ -572,7 +552,7 @@ impl<
             .num_rules
             .len_distr
             .sample(&mut self.rng)
-            .clamp(rng.start as f64, rng.end as f64) as usize;
+            .clamp(*rng.start() as f64, *rng.end() as f64) as usize;
         if len.saturating_sub(min_frac + min_exp) < 1 {
             len = 1 + min_frac + min_exp;
         }
@@ -622,7 +602,7 @@ impl<
             self.generate_int(exp_len - 2, true, w)?;
         }
 
-        Ok(len)
+        Ok(sign_len + len)
     }
 
     fn generate_int(
@@ -638,11 +618,11 @@ impl<
         } else {
             b'1'
         };
-        let digit = self.rng.random_range(min_digit..b'9');
+        let digit = self.rng.random_range(min_digit..=b'9');
         w.write_all(&[digit])?;
 
-        for _ in 2..len {
-            let digit = self.rng.random_range(b'0'..b'9');
+        for _ in 2..=len {
+            let digit = self.rng.random_range(b'0'..=b'9');
             w.write_all(&[digit])?;
         }
 
@@ -651,43 +631,37 @@ impl<
 
     fn generate_obj(
         &mut self,
-        rng: Range<usize>,
+        rng: RangeInclusive<usize>,
         level: usize,
-        struct_sep: &'static [u8],
-        value_sep: &mut Vec<u8>,
+        seps: &mut Seps,
         w: &mut impl Write,
     ) -> std::io::Result<usize> {
         assert!(
-            rng.start >= 2,
+            *rng.start() >= 2,
             "object requires at least 2 bytes (for the opening and closing braces), but the requested range is {rng:?}"
         );
 
-        let len = if rng.start < rng.end {
+        let len = if rng.start() < rng.end() {
             self.obj_rules
                 .len_distr
                 .sample(&mut self.rng)
-                .clamp(rng.start as f64, rng.end as f64) as usize
+                .clamp(*rng.start() as f64, *rng.end() as f64) as usize
         } else {
-            rng.start
+            *rng.start()
         };
 
         let inner_len = len - 2;
+        let struct_sep_len = 2 * seps.struct_sep.len() + seps.indent;
 
         w.write_all(b"{")?;
-        if inner_len >= 2 * struct_sep.len() {
-            w.write_all(struct_sep)?;
-            self.white_rules.push_level(value_sep);
-            self.generate_obj_members(
-                inner_len - 2 * struct_sep.len(),
-                level + 1,
-                struct_sep,
-                value_sep,
-                w,
-            )?;
-            self.white_rules.pop_level(value_sep);
-            w.write_all(struct_sep)?;
+        if inner_len >= struct_sep_len {
+            seps.push_level();
+            w.write_all(&seps.struct_sep)?;
+            self.generate_obj_members(inner_len - struct_sep_len, level + 1, seps, w)?;
+            seps.pop_level();
+            w.write_all(&seps.struct_sep)?;
         } else {
-            self.generate_obj_members(inner_len, self.max_level, struct_sep, value_sep, w)?;
+            self.generate_obj_members(inner_len, self.max_level, seps, w)?;
         };
         w.write_all(b"}")?;
 
@@ -698,8 +672,7 @@ impl<
         &mut self,
         len: usize,
         level: usize,
-        struct_sep: &'static [u8],
-        value_sep: &mut Vec<u8>,
+        seps: &mut Seps,
         w: &mut impl Write,
     ) -> std::io::Result<usize> {
         let min_member = self.min_len_obj_member();
@@ -707,18 +680,12 @@ impl<
             let mut n = 0;
 
             loop {
-                let m = if len - n >= 2 * min_member + value_sep.len() {
-                    let max_member = len - n - min_member - value_sep.len();
+                let m = if len - n >= 2 * min_member + seps.val_sep.len() {
+                    let max_member = len - n - min_member - seps.val_sep.len();
 
-                    self.generate_obj_member(
-                        min_member..max_member,
-                        level,
-                        struct_sep,
-                        value_sep,
-                        w,
-                    )?
+                    self.generate_obj_member(min_member..=max_member, level, seps, w)?
                 } else {
-                    self.generate_obj_member(len - n..len - n, level, struct_sep, value_sep, w)?
+                    self.generate_obj_member(len - n..=len - n, level, seps, w)?
                 };
 
                 n += m;
@@ -726,10 +693,10 @@ impl<
                     return Ok(len);
                 }
 
-                assert!(len - n >= min_member + value_sep.len());
+                assert!(len - n >= min_member + seps.val_sep.len());
 
-                w.write_all(value_sep)?;
-                n += value_sep.len();
+                w.write_all(&seps.val_sep)?;
+                n += seps.val_sep.len();
 
                 assert!(len - n >= min_member);
             }
@@ -740,14 +707,13 @@ impl<
 
     fn generate_obj_member(
         &mut self,
-        rng: Range<usize>,
+        rng: RangeInclusive<usize>,
         level: usize,
-        struct_sep: &'static [u8],
-        value_sep: &mut Vec<u8>,
+        seps: &mut Seps,
         w: &mut impl Write,
     ) -> std::io::Result<usize> {
-        assert!(rng.start >= self.min_len_obj_member());
-        assert!(rng.start <= rng.end);
+        assert!(*rng.start() >= self.min_len_obj_member());
+        assert!(rng.start() <= rng.end());
 
         let mut name_sep_buf = [b':', 0u8];
         let name_sep = match self.white_rules.inline_space() {
@@ -759,35 +725,29 @@ impl<
             }
         };
 
-        let key_rng = 2..rng.end - name_sep.len() - 1; // 1 byte for colon, maybe 1 byte for name separator, at least 1 for value.
+        let key_rng = 2..=(*rng.end() - name_sep.len() - 1); // 1 byte for colon, maybe 1 byte for name separator, at least 1 for value.
         let key_len = self.generate_str(key_rng, true, w)?;
         w.write_all(name_sep)?;
         let used_len = key_len + name_sep.len();
-        let val_min_len = if used_len >= rng.start {
+        let val_min_len = if used_len >= *rng.start() {
             1
         } else {
-            rng.start - used_len
+            rng.start() - used_len
         };
-        let val_max_len = rng.end - key_len - name_sep.len();
-
-        println!(
-            "XX RNG {rng:?} | LEVEL {level} | KEY_LEN {key_len} | {val_min_len} .. {val_max_len}"
-        );
-
-        let val_len =
-            self.generate_val(val_min_len..val_max_len, level, struct_sep, value_sep, w)?;
+        let val_max_len = rng.end() - key_len - name_sep.len();
+        let val_len = self.generate_val(val_min_len..=val_max_len, level, seps, w)?;
 
         Ok(key_len + name_sep.len() + val_len)
     }
 
     fn generate_str(
         &mut self,
-        rng: Range<usize>,
+        rng: RangeInclusive<usize>,
         is_key: bool,
         w: &mut impl Write,
     ) -> std::io::Result<usize> {
-        assert!(rng.start >= 2);
-        assert!(rng.start <= rng.end);
+        assert!(*rng.start() >= 2);
+        assert!(rng.start() <= rng.end());
 
         w.write_all(&[b'"'])?;
 
@@ -797,7 +757,7 @@ impl<
             self.str_rules.val_len_distr.sample(&mut self.rng)
         };
 
-        let len = len_sample.clamp(rng.start as f64, rng.end as f64) as usize;
+        let len = len_sample.clamp(*rng.start() as f64, *rng.end() as f64) as usize;
 
         if self.rng.random_bool(self.str_rules.pct_multiline) {
             self.generate_str_multiline(len - 2, w)?;
@@ -853,15 +813,18 @@ impl<
         while rem > 0 {
             // Multibyte character.
             if rem >= 2 && self.rng.random_bool(self.str_rules.pct_multibyte) {
-                let c = match len {
-                    2..=3 => CharRange::random_char_byte_range(2..len, &mut self.rng),
-                    4.. => CharRange::random_char_byte_range(2..4, &mut self.rng),
+                let c = match rem {
+                    2..=3 => CharRange::random_char_byte_range(2..=rem, &mut self.rng),
+                    4.. => CharRange::random_char_byte_range(2..=4, &mut self.rng),
                     _ => unreachable!(),
                 };
 
                 let mut buf = [0u8; 4];
                 let b = c.encode_utf8(&mut buf).as_bytes();
-                assert!(b.len() <= rem);
+                assert!(
+                    b.len() <= rem,
+                    "encoded UTF-8 bytes ({b:?}) must fit in remaining length ({rem})"
+                );
 
                 w.write_all(b)?;
 
@@ -873,8 +836,8 @@ impl<
             // Escape sequence.
             if rem >= 6 && self.rng.random_bool(self.str_rules.pct_escaped) {
                 let c = match rem {
-                    6..=11 => CharRange::random_char_byte_range(1..3, &mut self.rng),
-                    12.. => CharRange::random_char_byte_range(1..4, &mut self.rng),
+                    6..=11 => CharRange::random_char_byte_range(1..=3, &mut self.rng),
+                    12.. => CharRange::random_char_byte_range(1..=4, &mut self.rng),
                     _ => unreachable!(),
                 };
 
@@ -909,7 +872,7 @@ impl<
                     w.write_all(&byte_buf[0..6])?;
                     rem -= 6;
                 } else {
-                    encode_unit(&mut byte_buf[6..], units[1], lc);
+                    encode_unit(&mut byte_buf[8..], units[1], lc);
                     w.write_all(&byte_buf[..])?;
                     rem -= 12;
                 }
@@ -918,7 +881,7 @@ impl<
             }
 
             // Ordinary single-byte character (some must be escaped using '\').
-            let b = match self.rng.random_range(b' '..0x7f) {
+            let b = match self.rng.random_range(b' '..=0x7f) {
                 b'\x08' | b'\t' | b'\n' | b'\x0c' | b'\r' if len == 1 => &b" "[..],
                 b'\x08' => &br#"\b"#[..],
                 b'\t' => &br#"\t"#[..],
@@ -938,40 +901,35 @@ impl<
 
     fn generate_val(
         &mut self,
-        rng: Range<usize>,
+        rng: RangeInclusive<usize>,
         level: usize,
-        struct_sep: &'static [u8],
-        value_sep: &mut Vec<u8>,
+        seps: &mut Seps,
         w: &mut impl Write,
     ) -> std::io::Result<usize> {
         assert!(
-            rng.end >= 1,
+            *rng.end() >= 1,
             "minimum value size is 1 (for a number), but range given is {rng:?}"
         );
-        assert!(rng.start <= rng.end);
+        assert!(rng.start() <= rng.end());
 
         let (hat, weights) = self.generate_val_setup(rng.clone());
         let dist = WeightedIndex::new(&weights).unwrap();
         let drawn = hat[dist.sample(&mut self.rng)];
 
         match drawn {
-            ValueKind::Arr => {
-                self.generate_arr(max(2, rng.start)..rng.end, level, struct_sep, value_sep, w)
-            }
-            ValueKind::Lit => self.generate_lit(max(4, rng.start)..rng.end, w),
+            ValueKind::Arr => self.generate_arr(max(2, *rng.start())..=*rng.end(), level, seps, w),
+            ValueKind::Lit => self.generate_lit(max(4, *rng.start())..=*rng.end(), w),
             ValueKind::Num => self.generate_num(rng, w),
-            ValueKind::Obj => {
-                self.generate_obj(max(2, rng.start)..rng.end, level, struct_sep, value_sep, w)
-            }
-            ValueKind::Str => self.generate_str(max(2, rng.start)..rng.end, false, w),
+            ValueKind::Obj => self.generate_obj(max(2, *rng.start())..=*rng.end(), level, seps, w),
+            ValueKind::Str => self.generate_str(max(2, *rng.start())..=*rng.end(), false, w),
         }
     }
 
     fn generate_val_setup(
         &mut self,
-        rng: Range<usize>,
+        rng: RangeInclusive<usize>,
     ) -> (SmallVec<[ValueKind; 5]>, SmallVec<[f64; 5]>) {
-        assert!(rng.start <= rng.end);
+        assert!(rng.start() <= rng.end());
 
         let mut hat = SmallVec::<[ValueKind; 5]>::new();
         let mut weights = SmallVec::<[f64; 5]>::new();
@@ -981,7 +939,7 @@ impl<
         weights.push(self.value_dist.pct_num);
 
         // If the maximum length is at least 2, arrays, objects, and strings are also possible.
-        if rng.end < 2 {
+        if *rng.end() < 2 {
             return (hat, weights);
         }
         hat.push(ValueKind::Arr);
@@ -993,7 +951,7 @@ impl<
 
         // If the maximum length is at least 4 (length of `null` and `true`) and the minimum length
         // is at most 5 (length of `false`), a literal is possible.
-        if rng.end < 4 || rng.start > 5 {
+        if *rng.end() < 4 || *rng.start() > 5 {
             return (hat, weights);
         }
         hat.push(ValueKind::Lit);
@@ -1065,7 +1023,7 @@ impl CharRange {
     fn random_char(&self, rng: &mut impl RngExt) -> char {
         let x = match self {
             Self::AsciiControl => rng.random_range(0x00..=0x1f),
-            Self::AsciiPrintable => rng.random_range(0x20..0x7f),
+            Self::AsciiPrintable => rng.random_range(0x20..=0x7f),
             Self::TwoByte => rng.random_range(0x80..=0x7ff),
             Self::ThreeByte => {
                 if rng.random_bool(0.73) {
@@ -1083,17 +1041,18 @@ impl CharRange {
         }
     }
 
-    fn random_char_byte_range(byte_rng: Range<usize>, rng: &mut impl RngExt) -> char {
+    fn random_char_byte_range(byte_rng: RangeInclusive<usize>, rng: &mut impl RngExt) -> char {
         assert!(
-            byte_rng.start < byte_rng.end,
+            byte_rng.start() <= byte_rng.end(),
             "byte range cannot be empty, but {byte_rng:?} was given"
         );
         assert!(
-            1 <= byte_rng.start && byte_rng.end <= 4,
+            1 <= *byte_rng.start() && *byte_rng.end() <= 4,
             "byte range must be contained within 1..=4, but {byte_rng:?} was given"
         );
 
         let (hat, weights) = Self::random_char_byte_range_setup(byte_rng);
+
         let dist = WeightedIndex::new(&weights).unwrap();
         let drawn = hat[dist.sample(rng)];
 
@@ -1101,7 +1060,7 @@ impl CharRange {
     }
 
     fn random_char_byte_range_setup(
-        byte_rng: Range<usize>,
+        byte_rng: RangeInclusive<usize>,
     ) -> (SmallVec<[CharRange; 5]>, SmallVec<[f64; 5]>) {
         let mut hat = SmallVec::<[CharRange; 5]>::new();
         let mut weights = SmallVec::<[f64; 5]>::new();
@@ -1132,6 +1091,47 @@ impl CharRange {
     }
 }
 
+struct Seps {
+    struct_sep: Vec<u8>,
+    val_sep: Vec<u8>,
+    inline_space: u8,
+    indent: usize,
+}
+
+impl Seps {
+    fn new(white_rules: &WhiteRules) -> Self {
+        let line_break = white_rules.line_break();
+        let indent = white_rules.indent();
+
+        let mut struct_sep = Vec::with_capacity(line_break.len() + 16 * indent);
+        struct_sep.extend_from_slice(line_break);
+
+        let mut val_sep = Vec::with_capacity(line_break.len() + 1 + 16 * indent);
+        val_sep.push(b',');
+        val_sep.extend_from_slice(line_break);
+
+        Self {
+            struct_sep,
+            val_sep,
+            inline_space: white_rules.inline_space().unwrap_or(b' '),
+            indent,
+        }
+    }
+
+    fn push_level(&mut self) {
+        self.struct_sep
+            .resize(self.struct_sep.len() + self.indent, self.inline_space);
+        self.val_sep
+            .resize(self.val_sep.len() + self.indent, self.inline_space);
+    }
+
+    fn pop_level(&mut self) {
+        self.struct_sep
+            .truncate(self.struct_sep.len() - self.indent);
+        self.val_sep.truncate(self.val_sep.len() - self.indent);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1145,11 +1145,13 @@ mod tests {
     #[case(20)]
     #[case(50)]
     #[case(100)]
+    #[case(8051)]
     #[case(8192)]
     fn test_generator_default_obj(#[case] len: usize) {
         let mut g = Generator::default()
             .with_rng(StdRng::seed_from_u64(len as u64))
-            .with_root(Root::Obj);
+            .with_root(Root::Obj)
+            .with_white_rules(WhiteRules::pretty(LineSep::N, b' ', 2));
         let mut buf = Vec::new();
 
         g.generate(len, &mut buf).unwrap();
