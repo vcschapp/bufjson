@@ -1227,7 +1227,7 @@ mod tests {
             .with_rng(StdRng::seed_from_u64(len as u64))
             .with_root(Root::Obj)
             .with_white_rules(WhiteRules::pretty(LineSep::N, b' ', 2));
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(len);
 
         g.generate(len, &mut buf).unwrap();
 
