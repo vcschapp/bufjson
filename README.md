@@ -89,8 +89,13 @@ improved. It is believed that steady incremental improvements can eventually lea
 | `Parser` + `FixedAnalyzer` | Never                | 60 MiB/s   |
 | `Parser` + `FixedAnalyzer` | Always               | 60 MiB/s   |
 
-<sup>
+<sub>
 1 Running on Ubuntu 22 with an Intel Core i7 1.8 GHz with four physical cores.
+</sub>
+
+<br>
+
+<sup>
 2 <code>ReadAnalyzer</code> is fed with an in-memory <code>std::io::Read</code> implementation
   (<code>&[u8]</code>) to eliminate the confounding effect of I/O.
 </sup>
