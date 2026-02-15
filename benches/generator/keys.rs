@@ -16287,13 +16287,11 @@ pub static KEYS: &[&[&str]] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_keys_structure() {
-        assert_eq!(31, KEYS.len());
+        assert_eq!(31, super::KEYS.len());
 
-        for (expect_len, keys) in KEYS.iter().enumerate() {
+        for (expect_len, keys) in super::KEYS.iter().enumerate() {
             for key in keys.iter() {
                 assert_eq!(
                     expect_len,
@@ -16305,7 +16303,7 @@ mod tests {
             }
         }
 
-        let n: usize = KEYS.iter().map(|arr| arr.len()).sum();
+        let n: usize = super::KEYS.iter().map(|arr| arr.len()).sum();
         println!("Key count: {n}");
     }
 
@@ -16313,7 +16311,7 @@ mod tests {
     fn test_keys_no_duplicates() {
         use std::collections::HashSet;
         let mut seen = HashSet::new();
-        for keys in KEYS.iter() {
+        for keys in super::KEYS.iter() {
             for key in keys.iter() {
                 assert!(seen.insert(*key), "Duplicate key found: {}", key);
             }

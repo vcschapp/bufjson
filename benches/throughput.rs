@@ -1,8 +1,7 @@
-mod generator;
+pub mod generator;
 
 use bufjson::{
     lexical::{Token, fixed::FixedAnalyzer, read::ReadAnalyzer},
-    syntax::Parser,
 };
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use generator::{Generator, LineSep, WhiteRules};
