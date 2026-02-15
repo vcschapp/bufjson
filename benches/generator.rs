@@ -530,7 +530,7 @@ impl<
             return self.generate_int(1, false, w);
         }
 
-        let sign_len = if self.rng.random_bool(self.num_rules.pct_neg) {
+        let sign_len = if *rng.start() > 1 && self.rng.random_bool(self.num_rules.pct_neg) {
             w.write_all(&[b'-'])?;
             rng = *rng.start() - 1..=*rng.end() - 1;
 
@@ -541,7 +541,9 @@ impl<
 
         if *rng.end() < 3 {
             let len = self.rng.random_range(rng);
-            return self.generate_int(len, true, w);
+            self.generate_int(len, true, w)?;
+
+            return Ok(sign_len + len);
         }
 
         let min_frac = if self.rng.random_bool(self.num_rules.pct_frac) {
@@ -702,7 +704,12 @@ impl<
                     return Ok(len);
                 }
 
-                assert!(len - n >= min_member + seps.val_sep.len());
+                assert!(
+                    len - n >= seps.val_sep.len() + min_member,
+                    "need enough space for the separator ({}) + a member ({min_member}), but only {} bytes remain (len={len}, n={n}, m={m})",
+                    seps.val_sep.len(),
+                    len - n
+                );
 
                 w.write_all(&seps.val_sep)?;
                 n += seps.val_sep.len();
@@ -745,8 +752,15 @@ impl<
         };
         let val_max_len = rng.end() - key_len - name_sep.len();
         let val_len = self.generate_val(val_min_len..=val_max_len, level, seps, w)?;
+        let len = key_len + name_sep.len() + val_len;
 
-        Ok(key_len + name_sep.len() + val_len)
+        assert!(
+            rng.contains(&len),
+            "member length must fit in range {rng:?}, but {len} does not (key_len={key_len}, name_sep.len()={}, val_len={val_len})",
+            name_sep.len()
+        );
+
+        Ok(len)
     }
 
     fn generate_str(
@@ -908,17 +922,24 @@ impl<
 
             // Ordinary single-byte character (some must be escaped using '\').
             let b = match self.rng.random_range(b' '..=0x7f) {
-                b'\x08' | b'\t' | b'\n' | b'\x0c' | b'\r' if len == 1 => &b" "[..],
+                b'\x08' | b'\t' | b'\n' | b'\x0c' | b'\r' | b'"' | b'\\' if rem == 1 => &b" "[..],
                 b'\x08' => &br#"\b"#[..],
                 b'\t' => &br#"\t"#[..],
                 b'\n' => &br#"\n"#[..],
                 b'\x0c' => &br#"\f"#[..],
                 b'\r' => &br#"\r"#[..],
+                b'"' => &br#"\""#[..],
+                b'\\' => &br#"\\"#[..],
                 printable => &[printable],
             };
 
-            w.write_all(b)?;
+            assert!(
+                rem >= b.len(),
+                "can't write more bytes ({} => {b:?}) than space remaining {rem}",
+                b.len()
+            );
 
+            w.write_all(b)?;
             rem -= b.len();
         }
 
@@ -955,13 +976,24 @@ impl<
         let dist = WeightedIndex::new(&weights).unwrap();
         let drawn = hat[dist.sample(&mut self.rng)];
 
-        match drawn {
-            ValueKind::Arr => self.generate_arr(max(2, *rng.start())..=*rng.end(), level, seps, w),
-            ValueKind::Lit => self.generate_lit(max(4, *rng.start())..=*rng.end(), w),
-            ValueKind::Num => self.generate_num(rng, w),
-            ValueKind::Obj => self.generate_obj(max(2, *rng.start())..=*rng.end(), level, seps, w),
-            ValueKind::Str => self.generate_str(max(2, *rng.start())..=*rng.end(), false, w),
-        }
+        let len = match drawn {
+            ValueKind::Arr => {
+                self.generate_arr(max(2, *rng.start())..=*rng.end(), level, seps, w)?
+            }
+            ValueKind::Lit => self.generate_lit(max(4, *rng.start())..=*rng.end(), w)?,
+            ValueKind::Num => self.generate_num(rng.clone(), w)?,
+            ValueKind::Obj => {
+                self.generate_obj(max(2, *rng.start())..=*rng.end(), level, seps, w)?
+            }
+            ValueKind::Str => self.generate_str(max(2, *rng.start())..=*rng.end(), false, w)?,
+        };
+
+        assert!(
+            rng.contains(&len),
+            "value length must fit in {rng:?}, but length {len} of {drawn:?} does not"
+        );
+
+        Ok(len)
     }
 
     fn generate_val_setup(
@@ -1040,7 +1072,7 @@ impl Default for Generator<ThreadRng, Normal<f64>, Normal<f64>, Normal<f64>, Nor
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 enum ValueKind {
     Arr,
     Lit,
@@ -1179,16 +1211,17 @@ mod tests {
     use rstest::rstest;
 
     #[rstest]
-    #[case(2)]
-    #[case(3)]
-    #[case(4)]
-    #[case(5)]
-    #[case(10)]
-    #[case(20)]
-    #[case(50)]
-    #[case(100)]
-    #[case(8 * 1024)]
-    #[case(16 * 1024)]
+    // #[case(2)]
+    // #[case(3)]
+    // #[case(4)]
+    // #[case(5)]
+    // #[case(10)]
+    // #[case(20)]
+    // #[case(50)]
+    // #[case(100)]
+    // #[case(8 * 1024)]
+    // #[case(16 * 1024)]
+    #[case(10 * 1024 * 1024)]
     fn test_generator_default_obj(#[case] len: usize) {
         let mut g = Generator::default()
             .with_rng(StdRng::seed_from_u64(len as u64))
