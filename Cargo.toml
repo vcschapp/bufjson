@@ -13,6 +13,10 @@ categories = ["parsing", "encoding", "network-programming", "web-programming"]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[profile.profiling]
+inherits = "release"
+debug = true
+
 [features]
 read = []
 
@@ -32,7 +36,6 @@ tempfile = "^3.25.0"
 [dev-dependencies.bufjson]
 path = "."
 features = ["read"]
-
 
 [[bench]]
 name = "throughput"
