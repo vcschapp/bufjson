@@ -965,6 +965,7 @@ mod tests {
     #[case("\"\u{ffff}\"")] // Highest BMP code point: non-character but still valid JSON
     #[case("\"\u{10000}\"")] // Lowest four-byte UTF-8 character
     #[case("\"\u{10ffff}\"")] // Highest valid Unicode scalar value
+    #[case("\"\u{3f086}\"")] // Regression test: 2026-02-14 🌹
     fn test_analyzer_utf8_seq(#[case] input: &str) {
         // With content fetch.
         {
@@ -1660,7 +1661,7 @@ mod tests {
     #[case(0xfd)]
     #[case(0xfe)]
     #[case(0xff)]
-    fn test_analyzer_single_error_invalid_utf8_start_byte(#[case] b: u8) {
+    fn test_analyzer_single_error_bad_utf8_start_byte(#[case] b: u8) {
         // Construct input buffer.
         let mut buf = Vec::with_capacity(2);
         buf.push(b'"');

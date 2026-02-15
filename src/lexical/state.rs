@@ -923,7 +923,7 @@ impl Machine {
                 },
                 Some(b3),
             ) => match (b0, b1) {
-                (0xf0, 0x90..0xbf) | (0xf4, 0x80..=0x8f)
+                (0xf0, 0x90..=0xbf) | (0xf4, 0x80..=0x8f)
                     if b2 & 0xc0 == 0x80 && b3 & 0xc0 == 0x80 =>
                 {
                     self.state = InnerState::Str(Str::Ready { escaped });
@@ -1245,6 +1245,7 @@ mod tests {
     #[case("\"\u{ffff}\"")] // Highest BMP code point: non-character but still valid JSON
     #[case("\"\u{10000}\"")] // Lowest four-byte UTF-8 character
     #[case("\"\u{10ffff}\"")] // Highest valid Unicode scalar value
+    #[case("\"\u{3f086}\"")] // Regression test: 2026-02-14 🌹
     fn test_utf8_seq(#[case] input: &str) {
         let mut mach = Machine::default();
         assert_eq!(Pos::default(), *mach.pos());
@@ -1652,7 +1653,7 @@ mod tests {
     #[case(0xfd)]
     #[case(0xfe)]
     #[case(0xff)]
-    fn test_single_error_invalid_utf8_start_byte(#[case] b: u8) {
+    fn test_single_error_bad_utf8_start_byte(#[case] b: u8) {
         let mut mach = Machine::default();
         assert_eq!(Pos::default(), *mach.pos());
 
