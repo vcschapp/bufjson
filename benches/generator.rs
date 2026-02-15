@@ -1211,16 +1211,16 @@ mod tests {
     use rstest::rstest;
 
     #[rstest]
-    // #[case(2)]
-    // #[case(3)]
-    // #[case(4)]
-    // #[case(5)]
-    // #[case(10)]
-    // #[case(20)]
-    // #[case(50)]
-    // #[case(100)]
-    // #[case(8 * 1024)]
-    // #[case(16 * 1024)]
+    #[case(2)]
+    #[case(3)]
+    #[case(4)]
+    #[case(5)]
+    #[case(10)]
+    #[case(20)]
+    #[case(50)]
+    #[case(100)]
+    #[case(8 * 1024)]
+    #[case(16 * 1024)]
     #[case(10 * 1024 * 1024)]
     fn test_generator_default_obj(#[case] len: usize) {
         let mut g = Generator::default()
