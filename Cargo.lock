@@ -58,6 +58,7 @@ name = "bufjson"
 version = "0.5.1"
 dependencies = [
  "bitvec",
+ "bufjson",
  "criterion",
  "doc-comment",
  "rand",

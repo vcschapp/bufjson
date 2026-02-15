@@ -1,22 +1,28 @@
-- For the `AsyncAnalyzer` release, expected commits:
+- For benchmarks, criterion has a benchmark group function.
+    - Goal #1 is throughput benchmarks for: Fixed no content, Fixed with content,
+                                            Read from mem no content, Read from mem with content.
+                                            Parser + Fixed no content, Parser  Fixed with content.
+    - Goal #2 is operation benchmarks for `next()` and `content()`.
+    - At a later time, not now, it would be instructive to add comparative throughput benchmarks
+      for `serde_json`.
+    - Benchmark: Using fixed seeds generate 10 MB JSON and process it repeatedly.
+                 I would do 1 version with pretty print and one more dense.
+- For the `AsyncAnalyzer` release [SEE NEW SWAG DESIGN BELOW], expected commits:
     1. Introduce:
-         - trait `lexical::AsyncAnalyzer`
-         - A new module and concrete implementation. The naming is a bit of a
-           challenge here to avoid repeating "Async", but I think it could be
-           `lexical::stream::StreamAnalyzer`.
-        - Feature "async", which should now also enable `Rope`.
+         - A new module and concrete implementation. Maybe `PipeAnalyzer` or `BytesAnalyzer` or
+           `SinkAnalyzer`.
+        - Corresponding feature flag.
         - Full unit testing from the start.
     2. Full Rust docs for #1.
     3. Update README.md.
     4. Code coverage push: 10% increase, and adding some more meaningful tests into syntax::Parser.
-    5. Release v0.5.1, which hopefully isn't breaking.
-    6. Introduce `syntax::AsyncParser` with full Rust docs and unit tests.
-    7. Update README.md
-    8. Code coverage push: 10% increase.
-    9. Release v0.5.2.
-    10. Update the main `bufjson` module rust docs with a full write-up.
-    11. Code coverage push: 10% increase.
-    12. Release v0.5.3.
+    5. Release v0.5.2+, which hopefully isn't breaking.
+    6. Update README.md
+    7. Code coverage push: 10% increase.
+    8. Release v0.5.3+.
+    9. Update the main `bufjson` module rust docs with a full write-up.
+    10. Code coverage push: 10% increase.
+    13. Release v0.5.4+.
 
 - Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
   strings without allocating to unescape. This should be a provided method on the trait.
@@ -39,8 +45,29 @@
         it for `str` and `bytes::Buf`
 
 
-SWAG DESIGN FOR STREAMING CONTENT.
-==================================
+NEW SWAG DESIGN FOR STREAMING CONTENT.
+======================================
+
+Rather than introduce a new `AsyncAnalyzer` trait, I'm thinking what if we use a push model instead
+of a pull model and reuse the existing trait.
+
+We would have something like `BytesAnalyzer` and `BytesAnalyzer::new()` would return a pair, the
+lexer itself and a pipe that you can push `Bytes` into. The lexer will stall/hang if it runs out
+of text to analyze unless/until either more `Bytes` get pushed in OR you send an explicit EOF to
+the pipe.
+
+Design consideration: You need the Pipe and the lexer to be bth independently send/sync so they can
+be used in async or multi-thread use cases.
+
+The nice thing about this is that even if you conver the lexer into a Parser or JSON Pointer
+Evaluator, you still have the pipe that you can push into, and you can hand the pipe off to a
+different part of the program.
+
+This design is much simpler, less code surface area and still supports the async use case. Also no
+need to add an endless stream of "async" variants - parser, evaluator, and so on.
+
+OLD SWAG DESIGN FOR STREAMING CONTENT.
+======================================
 
 A goal of this design is to try, if possible without bloating `Content`, to make it possible to
 back out the entire buffer associated with a `Content` to enable advanced low-copy stream editing
