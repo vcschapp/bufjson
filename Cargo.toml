@@ -18,6 +18,7 @@ inherits = "release"
 debug = true
 
 [features]
+pointer = []
 read = []
 
 [dependencies]

@@ -1,4 +1,4 @@
-//! Parse the structural meaning of a stream of JSON lexical tokens (syntactic analysis).
+//! Parse the structural meaning of a stream of JSON text (syntactic analysis).
 //!
 //! The key type in this module is [`Parser`], a JSON syntax parser that wraps any lexical analyzer,
 //! *i.e.*, any value implementing the [`lexical::Analyzer`] trait.
