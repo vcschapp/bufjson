@@ -13,7 +13,8 @@ use std::{
 
 /// A JSON Pointer syntax error detected when creating a [`Pointer`] from an input string.
 ///
-/// This error may be returned by [`Pointer::from_ref`] and [`Pointer::from_owned`].
+/// This error may be returned by [`Pointer::from_owned`] as well as by the [`FromStr`] and
+/// [`TryFrom`] trait implementations for [`Pointer`].
 ///
 /// The JSON Pointer syntax, as defined in [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901), is
 /// very simple.
@@ -81,9 +82,9 @@ impl std::error::Error for PointerError {}
 ///
 /// [`ref_tokens`]: method@Self::ref_tokens
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Pointer<'a>(Cow<'a, str>);
+pub struct Pointer(Cow<'static, str>);
 
-impl<'a> Pointer<'a> {
+impl Pointer {
     /// Creates a JSON Pointer from a static string slice.
     ///
     /// # Panics
@@ -104,29 +105,6 @@ impl<'a> Pointer<'a> {
             Ok(_) => Self(Cow::Borrowed(p)),
             Err(_) => panic!("invalid JSON Pointer"),
         }
-    }
-
-    /// Creates a JSON Pointer wrapping a borrowed string.
-    ///
-    /// If you have a static string slice, use [`from_static`].
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bufjson::pointer::{Pointer, PointerError};
-    ///
-    /// let p = Pointer::from_ref("").unwrap();
-    /// assert_eq!("", p);
-    ///
-    /// let err = Pointer::from_ref("this is not a valid JSON pointer").unwrap_err();
-    /// assert_eq!(PointerError::NoSlash, err);
-    /// ```
-    ///
-    /// [`from_static`]: method@Self::from_static
-    pub fn from_ref<T: AsRef<str> + ?Sized>(p: &'a T) -> Result<Self, PointerError> {
-        let p: &'a str = p.as_ref();
-
-        Self::parse(p).map(|_| Self(Cow::Borrowed(p)))
     }
 
     /// Creates a JSON Pointer by consuming an owned string value.
@@ -222,37 +200,37 @@ impl<'a> Pointer<'a> {
     }
 }
 
-impl<'a> Default for Pointer<'a> {
+impl Default for Pointer {
     fn default() -> Self {
         Self::from_static("")
     }
 }
 
-impl<'a> fmt::Debug for Pointer<'a> {
+impl fmt::Debug for Pointer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-impl<'a> fmt::Display for Pointer<'a> {
+impl fmt::Display for Pointer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-impl<'a> AsRef<str> for Pointer<'a> {
+impl AsRef<str> for Pointer {
     fn as_ref(&self) -> &str {
         self.0.as_ref()
     }
 }
 
-impl<'a> Borrow<str> for Pointer<'a> {
+impl Borrow<str> for Pointer {
     fn borrow(&self) -> &str {
         self.0.borrow()
     }
 }
 
-impl<'a> Deref for Pointer<'a> {
+impl Deref for Pointer {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
@@ -260,7 +238,7 @@ impl<'a> Deref for Pointer<'a> {
     }
 }
 
-impl<'a> FromStr for Pointer<'a> {
+impl FromStr for Pointer {
     type Err = PointerError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -268,15 +246,15 @@ impl<'a> FromStr for Pointer<'a> {
     }
 }
 
-impl<'a> TryFrom<&'a str> for Pointer<'a> {
+impl<'a> TryFrom<&'a str> for Pointer {
     type Error = PointerError;
 
     fn try_from(s: &'a str) -> Result<Self, Self::Error> {
-        Self::from_ref(s)
+        Self::from_owned(s)
     }
 }
 
-impl TryFrom<String> for Pointer<'_> {
+impl TryFrom<String> for Pointer {
     type Error = PointerError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
@@ -284,50 +262,50 @@ impl TryFrom<String> for Pointer<'_> {
     }
 }
 
-impl<'a> PartialEq<&str> for Pointer<'a> {
+impl PartialEq<&str> for Pointer {
     fn eq(&self, other: &&str) -> bool {
         self.0 == *other
     }
 }
 
-impl<'a> PartialEq<Pointer<'a>> for &str {
-    fn eq(&self, other: &Pointer<'a>) -> bool {
+impl PartialEq<Pointer> for &str {
+    fn eq(&self, other: &Pointer) -> bool {
         *self == other.0
     }
 }
 
-impl<'a> PartialEq<String> for Pointer<'a> {
+impl PartialEq<String> for Pointer {
     fn eq(&self, other: &String) -> bool {
         self.0 == *other
     }
 }
 
-impl<'a> PartialEq<Pointer<'a>> for String {
-    fn eq(&self, other: &Pointer<'a>) -> bool {
+impl PartialEq<Pointer> for String {
+    fn eq(&self, other: &Pointer) -> bool {
         *self == other.0
     }
 }
 
-impl<'a> PartialOrd<&str> for Pointer<'a> {
+impl PartialOrd<&str> for Pointer {
     fn partial_cmp(&self, other: &&str) -> Option<std::cmp::Ordering> {
         Some(self.0.as_ref().cmp(*other))
     }
 }
 
-impl<'a> PartialOrd<Pointer<'a>> for &str {
-    fn partial_cmp(&self, other: &Pointer<'a>) -> Option<std::cmp::Ordering> {
+impl PartialOrd<Pointer> for &str {
+    fn partial_cmp(&self, other: &Pointer) -> Option<std::cmp::Ordering> {
         Some(self.cmp(&other.0.as_ref()))
     }
 }
 
-impl<'a> PartialOrd<String> for Pointer<'a> {
+impl PartialOrd<String> for Pointer {
     fn partial_cmp(&self, other: &String) -> Option<std::cmp::Ordering> {
         Some(self.0.as_ref().cmp(other))
     }
 }
 
-impl<'a> PartialOrd<Pointer<'a>> for String {
-    fn partial_cmp(&self, other: &Pointer<'a>) -> Option<std::cmp::Ordering> {
+impl PartialOrd<Pointer> for String {
+    fn partial_cmp(&self, other: &Pointer) -> Option<std::cmp::Ordering> {
         Some(other.0.as_ref().cmp(self).reverse())
     }
 }
@@ -453,26 +431,19 @@ mod tests {
             *result.err().unwrap().downcast_ref::<&str>().unwrap()
         );
 
-        let result = Pointer::from_ref(input);
-        assert_eq!(Err(expect), result);
-
-        let s = input.to_string();
-        let result = Pointer::from_ref(&s);
-        assert_eq!(Err(expect), result);
-
         let result = Pointer::from_owned(input);
         assert_eq!(Err(expect), result);
 
-        let result = Pointer::from_owned(s);
+        let result = Pointer::from_owned(input.to_string());
         assert_eq!(Err(expect), result);
 
-        let result = Pointer::<'_>::from_str(input);
+        let result = Pointer::from_str(input);
         assert_eq!(Err(expect), result);
 
-        let result: Result<Pointer<'static>, PointerError> = input.try_into();
+        let result: Result<Pointer, PointerError> = input.try_into();
         assert_eq!(Err(expect), result);
 
-        let result: Result<Pointer<'static>, PointerError> = input.to_string().try_into();
+        let result: Result<Pointer, PointerError> = input.to_string().try_into();
         assert_eq!(Err(expect), result);
     }
 
@@ -488,11 +459,11 @@ mod tests {
         #[case] input_b: &'static str,
         #[case] input_c: &'static str,
     ) {
-        fn makem(input: &'static str) -> (Pointer<'static>, Pointer<'static>, Pointer<'static>) {
+        fn makem(input: &'static str) -> (Pointer, Pointer, Pointer) {
             (
                 Pointer::from_static(input),
-                Pointer::from_ref(input).expect("`from_ref` should succeed"),
                 Pointer::from_owned(input).expect("`from_owned` should succeed"),
+                Pointer::from_str(input).expect("`from_str` should succeed"),
             )
         }
 
