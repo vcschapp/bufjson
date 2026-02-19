@@ -4,6 +4,10 @@
 //!
 //! [JSON Pointer specification]: https://www.rfc-editor.org/rfc/rfc6901
 
+mod group;
+
+pub use group::Group;
+
 use std::{
     borrow::{Borrow, Cow},
     fmt,
