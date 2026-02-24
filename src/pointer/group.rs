@@ -1,8 +1,6 @@
 use super::Pointer;
 use std::{borrow::Cow, cmp::min, collections::VecDeque, num::NonZero, slice::SliceIndex};
 
-// FIXME: I think the `index` node order is not correct - it is lexicographical and will have to be
-//        post-sorted to get it to be numerical. Need a test case for this too, e.g. `/10` and `/2`.
 // TODO: (0) Ensure Node <= 64, normalize name of `match_index`
 // TODO: (1) Bring back lifetime on Pointer.
 // TODO: (2) Refactor pass - if possible around trie_chase! commonality.
@@ -357,7 +355,7 @@ impl Builder {
                 self.prefix_len = next.prefix_len;
             } else {
                 break Group {
-                    nodes: self.nodes,
+                    nodes: Self::sort_index_children(self.nodes),
                     parents: self.parents,
                 };
             }
@@ -460,6 +458,28 @@ impl Builder {
                 enqueue_child!(self, child, start_index, self.level + 1, i, 0);
             }
         }
+    }
+
+    fn sort_index_children(mut nodes: Vec<Node>) -> Vec<Node> {
+        for i in 0..nodes.len() {
+            let node = &nodes[i];
+            if node.num_index_children > 0 {
+                let j = (node.child_index.unwrap().get()
+                    + node.num_trie_children
+                    + node.num_name_children) as usize;
+                let k = j + node.num_index_children as usize;
+
+                nodes[j..k].sort_by_key(|n| {
+                    if let InnerNode::Index(index) = n.inner {
+                        index
+                    } else {
+                        unreachable!()
+                    }
+                });
+            }
+        }
+
+        nodes
     }
 
     fn matched(&self, is_complete_token: bool, pointer_index: usize) -> Option<Pointer> {
@@ -943,6 +963,13 @@ mod tests {
         Node::new_trie("b", Some(Pointer::from_static("/f/ob"))),
         Node::new_trie("o", Some(Pointer::from_static("/f/oo"))),
     ], [0, 1, 2, 2])]
+    #[case::two_index_node_sort(["/10", "/2"], [
+        Node::default().with_child_index(1).with_name_children(2).with_index_children(2),
+        Node::new_name("10", Some(Pointer::from_static("/10"))),
+        Node::new_name("2", Some(Pointer::from_static("/2"))),
+        Node::new_index(2, Some(Pointer::from_static("/2"))),
+        Node::new_index(10, Some(Pointer::from_static("/10"))),
+    ], [0, 0, 0, 0])]
     #[case::three_triplicate_empty(["", "", ""], [Node::default().with_match(Pointer::default())], [])]
     #[case::three_duplicate_slash_empty(["", "/", "/"], [
         Node::default().with_child_index(1).with_name_children(1).with_match(Pointer::default()),
