@@ -1,7 +1,6 @@
 use super::Pointer;
 use std::{borrow::Cow, cmp::min, collections::VecDeque, num::NonZero, slice::SliceIndex};
 
-// TODO: (0) Ensure Node <= 64, normalize name of `match_index`
 // TODO: (1) Bring back lifetime on Pointer.
 // TODO: (2) Refactor pass - if possible around trie_chase! commonality.
 // TODO: (3) Test discovery pass.
@@ -23,14 +22,15 @@ pub(crate) struct Node {
     num_name_children: u32,
     num_index_children: u32,
     inner: InnerNode,
-    match_index: Option<Pointer>, // TODO: Replace with Option<usize> indexing into a separate array of Pointers.
+    match_index: Option<usize>,
 }
 
+// Assert that `Node` does not grow beyond 64 bytes, which is 1 cache line on most modern CPU
+// architectures.
+const _: [(); 64] = [(); std::mem::size_of::<Node>()];
+
 impl Node {
-    fn new_name(
-        name: impl Into<Cow<'static, str>>,
-        match_index: Option<Pointer>, /* todo MAKE USIZE OR rename to `matched` */
-    ) -> Self {
+    fn new_name(name: impl Into<Cow<'static, str>>, match_index: Option<usize>) -> Self {
         Self {
             child_index: None,
             num_trie_children: 0,
@@ -41,10 +41,7 @@ impl Node {
         }
     }
 
-    fn new_trie(
-        name: impl Into<Cow<'static, str>>,
-        match_index: Option<Pointer>, /* todo: make usize or rename to `matched` */
-    ) -> Self {
+    fn new_trie(name: impl Into<Cow<'static, str>>, match_index: Option<usize>) -> Self {
         Self {
             child_index: None,
             num_trie_children: 0,
@@ -55,10 +52,7 @@ impl Node {
         }
     }
 
-    fn new_index(
-        index: u64,
-        match_index: Option<Pointer>, /* todo MAKE USIZE OR rename to `matched` */
-    ) -> Self {
+    fn new_index(index: u64, match_index: Option<usize>) -> Self {
         Self {
             child_index: None,
             num_trie_children: 0,
@@ -69,8 +63,7 @@ impl Node {
         }
     }
 
-    fn with_match(mut self, match_index: Pointer) -> Self {
-        // TODO: Normalize name, either match_index or match
+    fn with_match_index(mut self, match_index: usize) -> Self {
         self.match_index = Some(match_index);
 
         self
@@ -277,7 +270,7 @@ impl Builder {
         if let Some(first) = parsed_pointers.first()
             && first.ref_tokens.is_empty()
         {
-            root = root.with_match(Pointer::default());
+            root = root.with_match_index(0);
             first_child_index = 1;
         }
 
@@ -357,6 +350,11 @@ impl Builder {
                 break Group {
                     nodes: Self::sort_index_children(self.nodes),
                     parents: self.parents,
+                    pointers: self
+                        .parsed_pointers
+                        .into_iter()
+                        .map(|pp| pp.pointer)
+                        .collect(),
                 };
             }
         }
@@ -482,10 +480,10 @@ impl Builder {
         nodes
     }
 
-    fn matched(&self, is_complete_token: bool, pointer_index: usize) -> Option<Pointer> {
+    fn matched(&self, is_complete_token: bool, pointer_index: usize) -> Option<usize> {
         let parsed_pointer = &self.parsed_pointers[pointer_index];
         if is_complete_token && !parsed_pointer.has_more_tokens(self.level) {
-            Some(parsed_pointer.pointer.clone())
+            Some(pointer_index)
         } else {
             None
         }
@@ -663,6 +661,10 @@ pub struct Group {
     // is no parent node for the root node.
     #[allow(unused)]
     pub(crate) parents: Vec<u32>,
+    // The JSON pointers participating in the group sorted in lexicographical order of their
+    // reference tokens.
+    #[allow(unused)]
+    pub(crate) pointers: Vec<Pointer>,
 }
 
 impl Group {
@@ -781,84 +783,84 @@ mod tests {
     }
 
     #[rstest]
-    #[case::root(Pointer::default(), [Node::default().with_match(Pointer::default())], [])]
-    #[case::single_empty("/", [Node::default().with_child_index(1).with_name_children(1), Node::new_name("", Some(Pointer::from_static("/")))], [0])]
-    #[case::single_a("/a", [Node::default().with_child_index(1).with_name_children(1), Node::new_name("a", Some(Pointer::from_static("/a")))], [0])]
+    #[case::root(Pointer::default(), [Node::default().with_match_index(0)], [])]
+    #[case::single_empty("/", [Node::default().with_child_index(1).with_name_children(1), Node::new_name("", Some(0))], [0])]
+    #[case::single_a("/a", [Node::default().with_child_index(1).with_name_children(1), Node::new_name("a", Some(0))], [0])]
     #[case::single_0("/0", [
         Node::default().with_child_index(1).with_name_children(1).with_index_children(1),
-        Node::new_name("0", Some(Pointer::from_static("/0"))),
-        Node::new_index(0, Some(Pointer::from_static("/0"))),
+        Node::new_name("0", Some(0)),
+        Node::new_index(0, Some(0)),
     ], [0, 0])]
     #[case::single_00("/00", [
         Node::default().with_child_index(1).with_name_children(1),
-        Node::new_name("00", Some(Pointer::from_static("/00"))),
+        Node::new_name("00", Some(0)),
     ], [0])]
     #[case::single_00("/01", [
         Node::default().with_child_index(1).with_name_children(1),
-        Node::new_name("01", Some(Pointer::from_static("/01"))),
+        Node::new_name("01", Some(0)),
     ], [0])]
     #[case::single_minus_1("/-1", [
         Node::default().with_child_index(1).with_name_children(1),
-        Node::new_name("-1", Some(Pointer::from_static("/-1"))),
+        Node::new_name("-1", Some(0)),
     ], [0])]
     #[case::single_u64_max(format!("/{}", u64::MAX), [
         Node::default().with_child_index(1).with_name_children(1).with_index_children(1),
-        Node::new_name(format!("{}", usize::MAX), Some(Pointer::from_owned(format!("/{}", u64::MAX)).unwrap())),
-        Node::new_index(u64::MAX, Some(Pointer::from_owned(format!("/{}", u64::MAX)).unwrap())),
+        Node::new_name(format!("{}", usize::MAX), Some(0)),
+        Node::new_index(u64::MAX, Some(0)),
     ], [0, 0])]
     #[case::single_u64_max_plus_1(format!("/{}", u64::MAX as u128 + 1), [
         Node::default().with_child_index(1).with_name_children(1),
-        Node::new_name(format!("{}", u64::MAX as u128 + 1), Some(Pointer::from_owned(format!("/{}", u64::MAX as u128 + 1)).unwrap())),
+        Node::new_name(format!("{}", u64::MAX as u128 + 1), Some(0)),
     ], [0])]
-    #[case::single_escape_tilde("/~0", [Node::default().with_child_index(1).with_name_children(1), Node::new_name("~", Some(Pointer::from_static("/~0")))], [0])]
-    #[case::single_escape_slash("/~1", [Node::default().with_child_index(1).with_name_children(1), Node::new_name("/", Some(Pointer::from_static("/~1")))], [0])]
+    #[case::single_escape_tilde("/~0", [Node::default().with_child_index(1).with_name_children(1), Node::new_name("~", Some(0))], [0])]
+    #[case::single_escape_slash("/~1", [Node::default().with_child_index(1).with_name_children(1), Node::new_name("/", Some(0))], [0])]
     #[case::double_empty("//", [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("", None).with_child_index(2).with_name_children(1),
-        Node::new_name("", Some(Pointer::from_static("//")))
+        Node::new_name("", Some(0))
     ], [0, 1])]
     #[case::slash_a_slash_empty("/a/", [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("a", None).with_child_index(2).with_name_children(1),
-        Node::new_name("", Some(Pointer::from_static("/a/")))
+        Node::new_name("", Some(0))
     ], [0, 1])]
     #[case::slash_0_slash_empty("/0/", [
         Node::default().with_child_index(1).with_name_children(1).with_index_children(1),
         Node::new_name("0", None).with_child_index(3).with_name_children(1),
         Node::new_index(0, None).with_child_index(4).with_name_children(1),
-        Node::new_name("", Some(Pointer::from_static("/0/"))),
-        Node::new_name("", Some(Pointer::from_static("/0/"))),
+        Node::new_name("", Some(0)),
+        Node::new_name("", Some(0)),
     ], [0, 0, 1, 2])]
     #[case::slash_empty_slash_a("//a", [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("", None).with_child_index(2).with_name_children(1),
-        Node::new_name("a", Some(Pointer::from_static("//a"))),
+        Node::new_name("a", Some(0)),
     ], [0, 1])]
     #[case::slash_0_slash_empty("//0", [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("", None).with_child_index(2).with_name_children(1).with_index_children(1),
-        Node::new_name("0", Some(Pointer::from_static("//0"))),
-        Node::new_index(0, Some(Pointer::from_static("//0"))),
+        Node::new_name("0", Some(0)),
+        Node::new_index(0, Some(0)),
     ], [0, 1, 1])]
     #[case::slash_a_slash_b("/a/b", [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("a", None).with_child_index(2).with_name_children(1),
-        Node::new_name("b", Some(Pointer::from_static("/a/b"))),
+        Node::new_name("b", Some(0)),
     ], [0, 1])]
     #[case::slash_0_slash_1("/0/1", [
         Node::default().with_child_index(1).with_name_children(1).with_index_children(1),
         Node::new_name("0", None).with_child_index(3).with_name_children(1).with_index_children(1),
         Node::new_index(0, None).with_child_index(5).with_name_children(1).with_index_children(1),
-        Node::new_name("1", Some(Pointer::from_static("/0/1"))),
-        Node::new_index(1, Some(Pointer::from_static("/0/1"))),
-        Node::new_name("1", Some(Pointer::from_static("/0/1"))),
-        Node::new_index(1, Some(Pointer::from_static("/0/1"))),
+        Node::new_name("1", Some(0)),
+        Node::new_index(1, Some(0)),
+        Node::new_name("1", Some(0)),
+        Node::new_index(1, Some(0)),
     ], [0, 0, 1, 1, 2, 2])]
     #[case::triple_empty("///", [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("", None).with_child_index(2).with_name_children(1),
         Node::new_name("", None).with_child_index(3).with_name_children(1),
-        Node::new_name("", Some(Pointer::from_static("///"))),
+        Node::new_name("", Some(0)),
     ], [0, 1, 2])]
     fn test_group_from_pointer<P, I, J>(
         #[case] pointer: P,
@@ -888,187 +890,187 @@ mod tests {
 
     #[rstest]
     #[case::empty([], [Node::default()], [])]
-    #[case::two_duplicate_roots(["", ""], [Node::default().with_match(Pointer::default())], [])]
+    #[case::two_duplicate_roots(["", ""], [Node::default().with_match_index(0)], [])]
     #[case::two_duplicate_slash_empty(["/", "/"], [
         Node::default().with_child_index(1).with_name_children(1),
-        Node::new_name("", Some(Pointer::from_static("/"))),
+        Node::new_name("", Some(0)),
     ], [0])]
     #[case::two_duplicate_slash_a(["/a", "/a"], [
         Node::default().with_child_index(1).with_name_children(1),
-        Node::new_name("a", Some(Pointer::from_static("/a"))),
+        Node::new_name("a", Some(0)),
     ], [0])]
     #[case::two_root_and_slash_empty(["", "/"], [
-        Node::default().with_child_index(1).with_name_children(1).with_match(Pointer::default()),
-        Node::new_name("", Some(Pointer::from_static("/"))),
+        Node::default().with_child_index(1).with_name_children(1).with_match_index(0),
+        Node::new_name("", Some(1)),
     ], [0])]
     #[case::two_slash_empty_and_root(["/", ""], [
-        Node::default().with_child_index(1).with_name_children(1).with_match(Pointer::default()),
-        Node::new_name("", Some(Pointer::from_static("/"))),
+        Node::default().with_child_index(1).with_name_children(1).with_match_index(0),
+        Node::new_name("", Some(1)),
     ], [0])]
     #[case::two_root_and_slash_a(["", "/a"], [
-        Node::default().with_child_index(1).with_name_children(1).with_match(Pointer::default()),
-        Node::new_name("a", Some(Pointer::from_static("/a"))),
+        Node::default().with_child_index(1).with_name_children(1).with_match_index(0),
+        Node::new_name("a", Some(1)),
     ], [0])]
     #[case::two_root_and_slash_a_slash_b(["", "/a/b"], [
-        Node::default().with_child_index(1).with_name_children(1).with_match(Pointer::default()),
+        Node::default().with_child_index(1).with_name_children(1).with_match_index(0),
         Node::new_name("a", None).with_child_index(2).with_name_children(1),
-        Node::new_name("b", Some(Pointer::from_static("/a/b"))),
+        Node::new_name("b", Some(1)),
     ], [0, 1])]
     #[case::two_slash_a_and_root(["/a", ""], [
-        Node::default().with_child_index(1).with_name_children(1).with_match(Pointer::default()),
-        Node::new_name("a", Some(Pointer::from_static("/a"))),
+        Node::default().with_child_index(1).with_name_children(1).with_match_index(0),
+        Node::new_name("a", Some(1)),
     ], [0])]
     #[case::two_slash_empty_and_tokens_foo_bar_baz_13_tilde_slash(["/", "/foo/bar/baz/13/~0~1"], [
         Node::default().with_child_index(1).with_name_children(2),
-        Node::new_name("", Some(Pointer::from_static("/"))),
+        Node::new_name("", Some(0)),
         Node::new_name("foo", None).with_child_index(3).with_name_children(1),
         Node::new_name("bar", None).with_child_index(4).with_name_children(1),
         Node::new_name("baz", None).with_child_index(5).with_name_children(1).with_index_children(1),
         Node::new_name("13", None).with_child_index(7).with_name_children(1),
         Node::new_index(13, None).with_child_index(8).with_name_children(1),
-        Node::new_name("~/", Some(Pointer::from_static("/foo/bar/baz/13/~0~1"))),
-        Node::new_name("~/", Some(Pointer::from_static("/foo/bar/baz/13/~0~1"))),
+        Node::new_name("~/", Some(1)),
+        Node::new_name("~/", Some(1)),
     ], [0, 0, 2, 3, 4, 4, 5, 6])]
     #[case::two_slash_a_and_slash_b(["/a", "/b"], [
         Node::default().with_child_index(1).with_name_children(2),
-        Node::new_name("a", Some(Pointer::from_static("/a"))),
-        Node::new_name("b", Some(Pointer::from_static("/b"))),
+        Node::new_name("a", Some(0)),
+        Node::new_name("b", Some(1)),
     ], [0, 0])]
     #[case::two_slash_a_and_slash_b(["/b", "/a"], [
         Node::default().with_child_index(1).with_name_children(2),
-        Node::new_name("a", Some(Pointer::from_static("/a"))),
-        Node::new_name("b", Some(Pointer::from_static("/b"))),
+        Node::new_name("a", Some(0)),
+        Node::new_name("b", Some(1)),
     ], [0, 0])]
     #[case::two_slash_a_and_slash_ab(["/a", "/ab"], [
         Node::default().with_child_index(1).with_name_children(1),
-        Node::new_name("a", Some(Pointer::from_static("/a"))).with_child_index(2).with_trie_children(1),
-        Node::new_trie("b", Some(Pointer::from_static("/ab"))),
+        Node::new_name("a", Some(0)).with_child_index(2).with_trie_children(1),
+        Node::new_trie("b", Some(1)),
     ], [0, 1])]
     #[case::two_slash_0_and_slash_09(["/0", "/09"], [
         Node::default().with_child_index(1).with_name_children(1).with_index_children(1),
-        Node::new_name("0", Some(Pointer::from_static("/0"))).with_child_index(3).with_trie_children(1),
-        Node::new_index(0, Some(Pointer::from_static("/0"))),
-        Node::new_trie("9", Some(Pointer::from_static("/09"))),
+        Node::new_name("0", Some(0)).with_child_index(3).with_trie_children(1),
+        Node::new_index(0, Some(0)),
+        Node::new_trie("9", Some(1)),
     ], [0, 0, 1])]
     #[case::two_slash_ab_and_slash_ac(["/ab", "/ac"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("a", None).with_child_index(2).with_trie_children(2),
-        Node::new_trie("b", Some(Pointer::from_static("/ab"))),
-        Node::new_trie("c", Some(Pointer::from_static("/ac"))),
+        Node::new_trie("b", Some(0)),
+        Node::new_trie("c", Some(1)),
     ], [0, 1, 1])]
     #[case::two_slash_f_slash_oo_and_slash_f_slash_ob(["/f/oo", "/f/ob"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("f", None).with_child_index(2).with_name_children(1),
         Node::new_name("o", None).with_child_index(3).with_trie_children(2),
-        Node::new_trie("b", Some(Pointer::from_static("/f/ob"))),
-        Node::new_trie("o", Some(Pointer::from_static("/f/oo"))),
+        Node::new_trie("b", Some(0)),
+        Node::new_trie("o", Some(1)),
     ], [0, 1, 2, 2])]
     #[case::two_index_node_sort(["/10", "/2"], [
         Node::default().with_child_index(1).with_name_children(2).with_index_children(2),
-        Node::new_name("10", Some(Pointer::from_static("/10"))),
-        Node::new_name("2", Some(Pointer::from_static("/2"))),
-        Node::new_index(2, Some(Pointer::from_static("/2"))),
-        Node::new_index(10, Some(Pointer::from_static("/10"))),
+        Node::new_name("10", Some(0)),
+        Node::new_name("2", Some(1)),
+        Node::new_index(2, Some(1)),
+        Node::new_index(10, Some(0)),
     ], [0, 0, 0, 0])]
-    #[case::three_triplicate_empty(["", "", ""], [Node::default().with_match(Pointer::default())], [])]
+    #[case::three_triplicate_empty(["", "", ""], [Node::default().with_match_index(0)], [])]
     #[case::three_duplicate_slash_empty(["", "/", "/"], [
-        Node::default().with_child_index(1).with_name_children(1).with_match(Pointer::default()),
-        Node::new_name("", Some(Pointer::from_static("/"))),
+        Node::default().with_child_index(1).with_name_children(1).with_match_index(0),
+        Node::new_name("", Some(1)),
     ], [0])]
     #[case::three_root_and_slash_empty_and_slash_a(["", "/", "/a"], [
-        Node::default().with_child_index(1).with_name_children(2).with_match(Pointer::default()),
-        Node::new_name("", Some(Pointer::from_static("/"))),
-        Node::new_name("a", Some(Pointer::from_static("/a"))),
+        Node::default().with_child_index(1).with_name_children(2).with_match_index(0),
+        Node::new_name("", Some(1)),
+        Node::new_name("a", Some(2)),
     ], [0, 0])]
     #[case::three_slash_aa_slash_a_root(["/aa", "/a", ""], [
-        Node::default().with_child_index(1).with_name_children(1).with_match(Pointer::default()),
-        Node::new_name("a", Some(Pointer::from_static("/a"))).with_child_index(2).with_trie_children(1),
-        Node::new_trie("a", Some(Pointer::from_static("/aa"))),
+        Node::default().with_child_index(1).with_name_children(1).with_match_index(0),
+        Node::new_name("a", Some(1)).with_child_index(2).with_trie_children(1),
+        Node::new_trie("a", Some(2)),
     ], [0, 1])]
     #[case::three_slash_bb_slash_b_slash_a(["/bb", "/ba", "/a"], [
         Node::default().with_child_index(1).with_name_children(2),
-        Node::new_name("a", Some(Pointer::from_static("/a"))),
+        Node::new_name("a", Some(0)),
         Node::new_name("b", None).with_child_index(3).with_trie_children(2),
-        Node::new_trie("a", Some(Pointer::from_static("/ba"))),
-        Node::new_trie("b", Some(Pointer::from_static("/bb"))),
+        Node::new_trie("a", Some(1)),
+        Node::new_trie("b", Some(2)),
     ], [0, 0, 2, 2])]
     #[case::three_slash_aa_slash_a_slash_ab(["/aa", "/a", "/ab"], [
         Node::default().with_child_index(1).with_name_children(1),
-        Node::new_name("a", Some(Pointer::from_static("/a"))).with_child_index(2).with_trie_children(2),
-        Node::new_trie("a", Some(Pointer::from_static("/aa"))),
-        Node::new_trie("b", Some(Pointer::from_static("/ab"))),
+        Node::new_name("a", Some(0)).with_child_index(2).with_trie_children(2),
+        Node::new_trie("a", Some(1)),
+        Node::new_trie("b", Some(2)),
     ], [0, 1, 1])]
     #[case::three_slash_a_slash_ab_slash_abc(["/a", "/ab", "/abc"], [
         Node::default().with_child_index(1).with_name_children(1),
-        Node::new_name("a", Some(Pointer::from_static("/a"))).with_child_index(2).with_trie_children(1),
-        Node::new_trie("b", Some(Pointer::from_static("/ab"))).with_child_index(3).with_trie_children(1),
-        Node::new_trie("c", Some(Pointer::from_static("/abc")))
+        Node::new_name("a", Some(0)).with_child_index(2).with_trie_children(1),
+        Node::new_trie("b", Some(1)).with_child_index(3).with_trie_children(1),
+        Node::new_trie("c", Some(2))
     ], [0, 1, 2])]
     #[case::three_slash_a_slash_ab_path_ab_c(["/a", "/ab", "/ab/c"], [
         Node::default().with_child_index(1).with_name_children(1),
-        Node::new_name("a", Some(Pointer::from_static("/a"))).with_child_index(2).with_trie_children(1),
-        Node::new_trie("b", Some(Pointer::from_static("/ab"))).with_child_index(3).with_name_children(1),
-        Node::new_name("c", Some(Pointer::from_static("/ab/c")))
+        Node::new_name("a", Some(0)).with_child_index(2).with_trie_children(1),
+        Node::new_trie("b", Some(1)).with_child_index(3).with_name_children(1),
+        Node::new_name("c", Some(2))
     ], [0, 1, 2])]
     #[case::three_slash_a_slash_a_b_path_a_bc(["/a", "/a/b", "/a/bc"], [
         Node::default().with_child_index(1).with_name_children(1),
-        Node::new_name("a", Some(Pointer::from_static("/a"))).with_child_index(2).with_name_children(1),
-        Node::new_name("b", Some(Pointer::from_static("/a/b"))).with_child_index(3).with_trie_children(1),
-        Node::new_trie("c", Some(Pointer::from_static("/a/bc"))),
+        Node::new_name("a", Some(0)).with_child_index(2).with_name_children(1),
+        Node::new_name("b", Some(1)).with_child_index(3).with_trie_children(1),
+        Node::new_trie("c", Some(2)),
     ], [0, 1, 2])]
     #[case::three_slash_foo_slash_fob_slash_fox(["/foo", "/fob", "/fox"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("fo", None).with_child_index(2).with_trie_children(3),
-        Node::new_trie("b", Some(Pointer::from_static("/fob"))),
-        Node::new_trie("o", Some(Pointer::from_static("/foo"))),
-        Node::new_trie("x", Some(Pointer::from_static("/fox"))),
+        Node::new_trie("b", Some(0)),
+        Node::new_trie("o", Some(1)),
+        Node::new_trie("x", Some(2)),
     ], [0, 1, 1, 1])]
     #[case::four_with_root(["", "/a/b", "/a/b/c/21de", "/a/b/c/21"], [
-        Node::default().with_child_index(1).with_name_children(1).with_match(Pointer::default()),
+        Node::default().with_child_index(1).with_name_children(1).with_match_index(0),
         Node::new_name("a", None).with_child_index(2).with_name_children(1),
-        Node::new_name("b", Some(Pointer::from_static("/a/b"))).with_child_index(3).with_name_children(1),
+        Node::new_name("b", Some(1)).with_child_index(3).with_name_children(1),
         Node::new_name("c", None).with_child_index(3).with_child_index(4).with_name_children(1).with_index_children(1),
-        Node::new_name("21", Some(Pointer::from_static("/a/b/c/21"))).with_child_index(6).with_trie_children(1),
-        Node::new_index(21, Some(Pointer::from_static("/a/b/c/21"))),
-        Node::new_trie("de", Some(Pointer::from_static("/a/b/c/21de"))),
+        Node::new_name("21", Some(2)).with_child_index(6).with_trie_children(1),
+        Node::new_index(21, Some(2)),
+        Node::new_trie("de", Some(3)),
     ], [0, 1, 2, 3, 3, 4])]
     #[case::four_with_empty(["/", "/a/b", "/c/d", "/c/d~1"], [
         Node::default().with_child_index(1).with_name_children(3),
-        Node::new_name("", Some(Pointer::from_static("/"))),
+        Node::new_name("", Some(0)),
         Node::new_name("a", None).with_child_index(4).with_name_children(1),
         Node::new_name("c", None).with_child_index(5).with_name_children(1),
-        Node::new_name("b", Some(Pointer::from_static("/a/b"))),
-        Node::new_name("d", Some(Pointer::from_static("/c/d"))).with_child_index(6).with_trie_children(1),
-        Node::new_trie("/", Some(Pointer::from_static("/c/d~1"))),
+        Node::new_name("b", Some(1)),
+        Node::new_name("d", Some(2)).with_child_index(6).with_trie_children(1),
+        Node::new_trie("/", Some(3)),
     ], [0, 0, 0, 2, 3, 5])]
     #[case::big(["", "/0", "/bar", "/foo", "/foo", "/foo/0", "/foo/1/ish", "/foo/baz", "/fool", "/fool/ish", "/fool/ish", "/foolish", "/foolish/ness", "/foolishness/~0", "/foot", "/qux/corge"], [
         // Root.
-        /*  0 */ Node::default().with_child_index(1).with_name_children(4).with_index_children(1).with_match(Pointer::default()),
+        /*  0 */ Node::default().with_child_index(1).with_name_children(4).with_index_children(1).with_match_index(0),
         // Level 1.
-        /*  1 */ Node::new_name("0", Some(Pointer::from_static("/0"))),
-        /*  2 */ Node::new_name("bar", Some(Pointer::from_static("/bar"))),
-        /*  3 */ Node::new_name("foo", Some(Pointer::from_static("/foo"))).with_child_index(6).with_trie_children(2).with_name_children(3).with_index_children(2),
+        /*  1 */ Node::new_name("0", Some(1)),
+        /*  2 */ Node::new_name("bar", Some(2)),
+        /*  3 */ Node::new_name("foo", Some(3)).with_child_index(6).with_trie_children(2).with_name_children(3).with_index_children(2),
         /*  4 */ Node::new_name("qux", None).with_child_index(13).with_name_children(1),
-        /*  5 */ Node::new_index(0, Some(Pointer::from_static("/0"))),
+        /*  5 */ Node::new_index(0, Some(1)),
         // Level 2.
-        /*  6 */ Node::new_trie("l", Some(Pointer::from_static("/fool"))).with_child_index(14).with_trie_children(1).with_name_children(1),
-        /*  7 */ Node::new_trie("t", Some(Pointer::from_static("/foot"))),
-        /*  8 */ Node::new_name("0", Some(Pointer::from_static("/foo/0"))),
+        /*  6 */ Node::new_trie("l", Some(7)).with_child_index(14).with_trie_children(1).with_name_children(1),
+        /*  7 */ Node::new_trie("t", Some(12)),
+        /*  8 */ Node::new_name("0", Some(4)),
         /*  9 */ Node::new_name("1", None).with_child_index(16).with_name_children(1),
-        /* 10 */ Node::new_name("baz", Some(Pointer::from_static("/foo/baz"))),
-        /* 11 */ Node::new_index(0, Some(Pointer::from_static("/foo/0"))),
+        /* 10 */ Node::new_name("baz", Some(6)),
+        /* 11 */ Node::new_index(0, Some(4)),
         /* 12 */ Node::new_index(1, None).with_child_index(17).with_name_children(1),
-        /* 13 */ Node::new_name("corge", Some(Pointer::from_static("/qux/corge"))),
+        /* 13 */ Node::new_name("corge", Some(13)),
         // Level 3.
-        /* 14 */ Node::new_trie("ish", Some(Pointer::from_static("/foolish"))).with_child_index(18).with_trie_children(1).with_name_children(1),
-        /* 15 */ Node::new_name("ish", Some(Pointer::from_static("/fool/ish"))),
-        /* 16 */ Node::new_name("ish", Some(Pointer::from_static("/foo/1/ish"))),
-        /* 17 */ Node::new_name("ish", Some(Pointer::from_static("/foo/1/ish"))),
+        /* 14 */ Node::new_trie("ish", Some(9)).with_child_index(18).with_trie_children(1).with_name_children(1),
+        /* 15 */ Node::new_name("ish", Some(8)),
+        /* 16 */ Node::new_name("ish", Some(5)),
+        /* 17 */ Node::new_name("ish", Some(5)),
         // Level 4.
         /* 18 */ Node::new_trie("ness", None).with_child_index(20).with_name_children(1),
-        /* 19 */ Node::new_name("ness", Some(Pointer::from_static("/foolish/ness"))),
+        /* 19 */ Node::new_name("ness", Some(10)),
         // Level 5.
-        /* 20  */ Node::new_name("~", Some(Pointer::from_static("/foolishness/~0"))),
+        /* 20  */ Node::new_name("~", Some(11)),
     ], [0, 0, 0, 0, 0, 3, 3, 3, 3, 3, 3, 3, 4, 6, 6, 9, 12, 14, 14, 18])]
     fn test_group_from_pointers<I, J, K>(
         #[case] pointers: I,
@@ -1106,10 +1108,7 @@ mod tests {
     fn test_group_from_trait_from_pointer() {
         let g: Group = Pointer::default().into();
 
-        assert_eq!(
-            vec![Node::default().with_match(Pointer::default())],
-            g.nodes
-        );
+        assert_eq!(vec![Node::default().with_match_index(0)], g.nodes);
         assert_eq!(0, g.parents.len());
     }
 }
