@@ -224,3 +224,25 @@ struct BufMgr {
 }
 
 ```
+
+ALGORITHM FOR CASE INSENSITIVE COMPARISION OF JSON POINTER REFERENCE TOKENS
+===========================================================================
+
+Algorithm for case-insensitive comparision:
+
+1. Compare byte-wise until you find a difference.
+
+2. If it's an ASCII difference, do an ASCII case-insensitive compare.
+   If it succeeds, advance to next byte and go back to #1. If it fails,
+   abort as there's no way to make them the same.
+
+3. If it's a non-ASCII difference then starting at the character position
+   of the character that contains the byte with the discrepancy, you
+   continue with character-by-character matching using the 
+ 
+4. From this point forward, you basically create two `CaseFold`
+   iterators from the `caseless` crate. This struct can wrap any other
+   iterator that produces `char`, and I can create an iterator that
+   produces `char` and abstracts away the `Buf` issues. Now it's just a
+   standard dual iterator algorithm: advance both as long as they are
+   equal, success at the end, failure if any two chars are not equal.
