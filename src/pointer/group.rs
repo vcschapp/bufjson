@@ -356,15 +356,17 @@ impl Builder {
             }
 
             if !is_incomplete {
-                // Find the slice that constitutes the next-level children pointers of the current
-                // node's pointer. Since the pointers are sorted in lexicographical order by their
-                // reference tokens, this is a contiguous section.
+                // Find the position that is one past the end of the next-level children pointers of
+                // the current node's pointer. Since the pointers are sorted in lexicographical
+                // order by their reference tokens, these next-level children are contiguous
+                // starting at the current start index.
                 //
                 // If the JSON Pointer for the current node is "", we want all other nodes. If the
                 // JSON Pointer for the current node is "/foo", we want all nodes "/foo/**".
                 //
                 // Note that conceptually we are currently working with JSON Pointer children, not
-                // child nodes in the evaluation tree. We still have to make those.
+                // child nodes in the evaluation tree. Child nodes are created through the process
+                // walking the JSON Pointer children.
                 let end_index = self
                     .parsed_pointers
                     .iter()
@@ -408,8 +410,9 @@ impl Builder {
     }
 
     fn enqueue_trie_children(&mut self) {
-        let prefix = &self.parsed_pointers[self.pointer_index.unwrap()].ref_tokens[self.level]
-            [0..self.prefix_len];
+        let ref_tokens = &self.parsed_pointers[self.pointer_index.unwrap()].ref_tokens;
+        let parent_tokens = &ref_tokens[..self.level];
+        let prefix = &ref_tokens[self.level][0..self.prefix_len];
 
         let lead_iter = self
             .parsed_pointers
@@ -417,7 +420,9 @@ impl Builder {
             .enumerate()
             .skip(self.start_index)
             .take_while(|(_, pp)| {
-                pp.has_ref_token(self.level) && pp.ref_token_of(self.level).starts_with(prefix)
+                pp.ref_tokens.starts_with(parent_tokens)
+                    && pp.has_ref_token(self.level)
+                    && pp.ref_token_of(self.level).starts_with(prefix)
             })
             .filter(|(_, pp)| pp.ref_token_of(self.level) != prefix);
 
@@ -1018,6 +1023,16 @@ mod tests {
         Node::new_name("b", Some(1)).with_child_index(3).with_trie_children(1),
         Node::new_trie("c", Some(2)),
     ], [0, 1, 2])]
+    #[case::three_slash_a_slash_0_1_2(["/a/0", "/a/1", "/a/2"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("a", None).with_child_index(2).with_name_children(3).with_index_children(3),
+        Node::new_name("0", Some(0)),
+        Node::new_name("1", Some(1)),
+        Node::new_name("2", Some(2)),
+        Node::new_index(0, Some(0)),
+        Node::new_index(1, Some(1)),
+        Node::new_index(2, Some(2)),
+    ], [0, 1, 1, 1, 1, 1, 1])]
     #[case::three_slash_foo_slash_fob_slash_fox(["/foo", "/fob", "/fox"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("fo", None).with_child_index(2).with_trie_children(3),
@@ -1025,6 +1040,15 @@ mod tests {
         Node::new_trie("o", Some(1)),
         Node::new_trie("x", Some(2)),
     ], [0, 1, 1, 1])]
+    #[case::three_path_foo_bar_path_foo_baz_path_fool_bar(["/foo/bar", "/foo/baz", "/fool/bar"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("foo", None).with_child_index(2).with_trie_children(1).with_name_children(1),
+        Node::new_trie("l", None).with_child_index(4).with_name_children(1),
+        Node::new_name("ba", None).with_child_index(5).with_trie_children(2),
+        Node::new_name("bar", Some(2)),
+        Node::new_trie("r", Some(0)),
+        Node::new_trie("z", Some(1)),
+    ], [0, 1, 1, 2, 3, 3])]
     #[case::four_with_root(["", "/a/b", "/a/b/c/21de", "/a/b/c/21"], [
         Node::default().with_child_index(1).with_name_children(1).with_match_index(0),
         Node::new_name("a", None).with_child_index(2).with_name_children(1),
