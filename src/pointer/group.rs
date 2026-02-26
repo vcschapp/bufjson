@@ -1,9 +1,7 @@
 use super::Pointer;
 use std::{borrow::Cow, cmp::min, collections::VecDeque, num::NonZero, slice::SliceIndex};
 
-// TODO: (1) Bring back lifetime on Pointer.
-// TODO: (2) Test discovery pass.
-// TODO: (3) Support case-insensitive.
+// TODO: (1) Support case-insensitive.
 
 #[derive(Debug, Default, Clone, PartialEq)]
 enum InnerNode {
@@ -946,6 +944,11 @@ mod tests {
         Node::new_name("a", Some(0)),
         Node::new_name("b", Some(1)),
     ], [0, 0])]
+    #[case::two_slash_a_and_slash_aa(["/a", "/aa"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("a", Some(0)).with_child_index(2).with_trie_children(1),
+        Node::new_trie("a", Some(1)),
+    ], [0, 1])]
     #[case::two_slash_a_and_slash_ab(["/a", "/ab"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("a", Some(0)).with_child_index(2).with_trie_children(1),
@@ -1017,12 +1020,33 @@ mod tests {
         Node::new_trie("b", Some(1)).with_child_index(3).with_name_children(1),
         Node::new_name("c", Some(2))
     ], [0, 1, 2])]
-    #[case::three_slash_a_slash_a_b_path_a_bc(["/a", "/a/b", "/a/bc"], [
+    #[case::three_slash_a_path_a_b_path_a_bc(["/a", "/a/b", "/a/bc"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("a", Some(0)).with_child_index(2).with_name_children(1),
         Node::new_name("b", Some(1)).with_child_index(3).with_trie_children(1),
         Node::new_trie("c", Some(2)),
     ], [0, 1, 2])]
+    #[case::three_slash_a_path_a_b_path_a_b_c(["/a", "/a/b", "/a/b/c"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("a", Some(0)).with_child_index(2).with_name_children(1),
+        Node::new_name("b", Some(1)).with_child_index(3).with_name_children(1),
+        Node::new_name("c", Some(2)),
+    ], [0, 1, 2])]
+    #[case::three_path_a_b_path_a_c_slash_ab(["/a/b", "/a/c", "/ab"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("a", None).with_child_index(2).with_trie_children(1).with_name_children(2),
+        Node::new_trie("b", Some(2)),
+        Node::new_name("b", Some(0)),
+        Node::new_name("c", Some(1)),
+    ], [0, 1, 1, 1])]
+    #[case::three_path_a_b_c_path_a_b_d_path_a_e(["/a/b/c", "/a/b/d", "/a/e"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("a", None).with_child_index(2).with_name_children(2),
+        Node::new_name("b", None).with_child_index(4).with_name_children(2),
+        Node::new_name("e", Some(2)),
+        Node::new_name("c", Some(0)),
+        Node::new_name("d", Some(1)),
+    ], [0, 1, 1, 2, 2])]
     #[case::three_slash_a_slash_0_1_2(["/a/0", "/a/1", "/a/2"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("a", None).with_child_index(2).with_name_children(3).with_index_children(3),
@@ -1040,6 +1064,14 @@ mod tests {
         Node::new_trie("o", Some(1)),
         Node::new_trie("x", Some(2)),
     ], [0, 1, 1, 1])]
+    #[case::three_slash_abc_slash_abd_slash_acd(["/abc", "/abd", "/acd"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("a", None).with_child_index(2).with_trie_children(2),
+        Node::new_trie("b", None).with_child_index(4).with_trie_children(2),
+        Node::new_trie("cd", Some(2)),
+        Node::new_trie("c", Some(0)),
+        Node::new_trie("d", Some(1)),
+    ], [0, 1, 1, 2, 2])]
     #[case::three_path_foo_bar_path_foo_baz_path_fool_bar(["/foo/bar", "/foo/baz", "/fool/bar"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("foo", None).with_child_index(2).with_trie_children(1).with_name_children(1),
@@ -1049,6 +1081,13 @@ mod tests {
         Node::new_trie("r", Some(0)),
         Node::new_trie("z", Some(1)),
     ], [0, 1, 1, 2, 3, 3])]
+    #[case::three_slash_foo_slash_foobar_slash_foobaz(["/foo", "/foobar", "/foobaz"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("foo", Some(0)).with_child_index(2).with_trie_children(1),
+        Node::new_trie("ba", None).with_child_index(3).with_trie_children(2),
+        Node::new_trie("r", Some(1)),
+        Node::new_trie("z", Some(2)),
+    ], [0, 1, 2, 2])]
     #[case::four_with_root(["", "/a/b", "/a/b/c/21de", "/a/b/c/21"], [
         Node::default().with_child_index(1).with_name_children(1).with_match_index(0),
         Node::new_name("a", None).with_child_index(2).with_name_children(1),
@@ -1067,6 +1106,13 @@ mod tests {
         Node::new_name("d", Some(2)).with_child_index(6).with_trie_children(1),
         Node::new_trie("/", Some(3)),
     ], [0, 0, 0, 2, 3, 5])]
+    #[case::four_slash_a_slash_ab_slash_abc_slash_ac(["/a", "/ab", "/abc", "/ac"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("a", Some(0)).with_child_index(2).with_trie_children(2),
+        Node::new_trie("b", Some(1)).with_child_index(4).with_trie_children(1),
+        Node::new_trie("c", Some(3)),
+        Node::new_trie("c", Some(2)),
+    ], [0, 1, 1, 2])]
     #[case::big(["", "/0", "/bar", "/foo", "/foo", "/foo/0", "/foo/1/ish", "/foo/baz", "/fool", "/fool/ish", "/fool/ish", "/foolish", "/foolish/ness", "/foolishness/~0", "/foot", "/qux/corge"], [
         // Root.
         /*  0 */ Node::default().with_child_index(1).with_name_children(4).with_index_children(1).with_match_index(0),
