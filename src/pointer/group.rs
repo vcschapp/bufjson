@@ -1,14 +1,14 @@
 use super::Pointer;
-use std::{borrow::Cow, cmp::min, collections::VecDeque, num::NonZero, slice::SliceIndex};
-
-// TODO: (1) Support case-insensitive.
+#[cfg(feature = "ignore_case")]
+use std::cmp::Ordering;
+use std::{borrow::Cow, cmp::min, collections::VecDeque, num::NonZero};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 enum InnerNode {
     #[default]
     Root,
-    Trie(Cow<'static, str>),
-    Name(Cow<'static, str>),
+    Trie(String),
+    Name(String),
     Index(u64),
 }
 
@@ -27,7 +27,7 @@ pub(crate) struct Node {
 const _: [(); 64] = [(); std::mem::size_of::<Node>()];
 
 impl Node {
-    fn new_name(name: impl Into<Cow<'static, str>>, match_index: Option<usize>) -> Self {
+    fn new_name(name: impl Into<String>, match_index: Option<usize>) -> Self {
         Self {
             child_index: None,
             num_trie_children: 0,
@@ -38,7 +38,7 @@ impl Node {
         }
     }
 
-    fn new_trie(name: impl Into<Cow<'static, str>>, match_index: Option<usize>) -> Self {
+    fn new_trie(name: impl Into<String>, match_index: Option<usize>) -> Self {
         Self {
             child_index: None,
             num_trie_children: 0,
@@ -125,19 +125,36 @@ impl WorkPiece {
 #[derive(Debug)]
 struct ParsedPointer {
     pointer: Pointer,
-    ref_tokens: Vec<Cow<'static, str>>,
+    ref_tokens: Vec<String>,
 }
 
 impl ParsedPointer {
-    fn new(pointer: Pointer) -> Self {
-        let ref_tokens = pointer
-            .ref_tokens()
-            .map(|t| Cow::Owned(t.into_owned()))
-            .collect();
+    fn new(pointer: Pointer, #[cfg(feature = "ignore_case")] ignore_case: bool) -> Self {
+        let ref_tokens = pointer.ref_tokens();
+
+        #[cfg(not(feature = "ignore_case"))]
+        let ref_tokens = ref_tokens.map(Cow::into_owned).collect::<Vec<_>>();
+
+        #[cfg(feature = "ignore_case")]
+        let ref_tokens = if !ignore_case {
+            ref_tokens.map(Cow::into_owned).collect::<Vec<_>>()
+        } else {
+            ref_tokens.map(Self::case_fold).collect::<Vec<_>>()
+        };
 
         Self {
             pointer,
             ref_tokens,
+        }
+    }
+
+    #[cfg(feature = "ignore_case")]
+    fn case_fold<'a>(ref_token: Cow<'a, str>) -> String {
+        match ref_token.is_ascii() {
+            true if matches!(ref_token, Cow::Borrowed(_)) => ref_token.to_lowercase(),
+            true if ref_token.bytes().any(|b| b.is_ascii_uppercase()) => ref_token.to_lowercase(),
+            true => ref_token.into_owned(),
+            false => caseless::default_case_fold_str(ref_token.as_ref()),
         }
     }
 
@@ -149,7 +166,7 @@ impl ParsedPointer {
         level < self.ref_tokens.len()
     }
 
-    fn ref_token_of(&self, level: usize) -> &Cow<'static, str> {
+    fn ref_token_of(&self, level: usize) -> &str {
         &self.ref_tokens[level]
     }
 }
@@ -161,6 +178,8 @@ struct Builder {
     // =================================
     nodes: Vec<Node>,
     parents: Vec<u32>,
+    #[cfg(feature = "ignore_case")]
+    ignore_case: bool,
 
     // ==============================================
     // Primary state used in the construction process
@@ -239,10 +258,7 @@ macro_rules! enqueue_trie_children {
             for ((_, lead), trail) in lead_iter.zip(trail_iter) {
                 let lead_token: &str = &lead.ref_token_of($self.level)[$prev_prefix_len..];
                 let (trail_index, trail_token) = match trail {
-                    Some((i, pp)) => (
-                        i,
-                        &pp.ref_token_of($self.level).as_ref()[$prev_prefix_len..],
-                    ),
+                    Some((i, pp)) => (i, &pp.ref_token_of($self.level)[$prev_prefix_len..]),
                     None => (0, ""),
                 };
                 match Self::common_prefix_len(lead_token, trail_token) {
@@ -252,8 +268,7 @@ macro_rules! enqueue_trie_children {
 
                         let name =
                             $self.parsed_pointers[child_pointer_index].ref_token_of($self.level);
-                        let name_part =
-                            Self::slice_cow(name, $prev_prefix_len..$prev_prefix_len + part_len);
+                        let name_part = &name[$prev_prefix_len..$prev_prefix_len + part_len];
                         let is_complete_token = $prev_prefix_len + part_len == name.len();
                         let has_more_tokens =
                             $self.parsed_pointers[child_pointer_index].has_more_tokens($self.level);
@@ -288,13 +303,19 @@ macro_rules! enqueue_trie_children {
 }
 
 impl Builder {
-    fn new(pointers: Vec<Pointer>) -> Self {
-        // Collect the pointers.
-        let mut pointers = pointers.into_iter().collect::<Vec<_>>();
-
-        // Eliminate duplicate pointers, which are meaningless.
-        pointers.sort();
-        pointers.dedup();
+    fn new(pointers: Vec<Pointer>, #[cfg(feature = "ignore_case")] ignore_case: bool) -> Self {
+        // Split the pointers into their reference tokens; and pair each pointer with its list of
+        // reference tokens. In case-insensitive mode, the reference tokens are case folded.
+        let mut parsed_pointers: Vec<ParsedPointer> = pointers
+            .into_iter()
+            .map(|p| {
+                ParsedPointer::new(
+                    p,
+                    #[cfg(feature = "ignore_case")]
+                    ignore_case,
+                )
+            })
+            .collect();
 
         // Sort the pointers in lexicographical order of their reference tokens. Within a reference
         // token index `i`, this will ensure common prefixes are adjacent.
@@ -303,9 +324,16 @@ impl Builder {
         // possible along each branch before backtracking.
         //
         // e.g., "/foo", "/foo/bar", and "/fool" will sort in that order.
-        let mut parsed_pointers: Vec<ParsedPointer> =
-            pointers.into_iter().map(ParsedPointer::new).collect();
+        #[cfg(not(feature = "ignore_case"))]
         parsed_pointers.sort_unstable_by(|a, b| a.ref_tokens.cmp(&b.ref_tokens));
+        #[cfg(feature = "ignore_case")]
+        parsed_pointers.sort_unstable_by(|a, b| match a.ref_tokens.cmp(&b.ref_tokens) {
+            Ordering::Equal if ignore_case => a.pointer.cmp(&b.pointer),
+            o => o,
+        });
+
+        // Eliminate duplicate pointers, which are meaningless.
+        parsed_pointers.dedup_by(|a, b| a.ref_tokens == b.ref_tokens);
 
         // Start the evaluation tree by creating a root node.
         let nodes: Vec<Node> = Vec::new();
@@ -326,6 +354,8 @@ impl Builder {
         Builder {
             nodes,
             parents,
+            #[cfg(feature = "ignore_case")]
+            ignore_case,
             parsed_pointers,
             queue,
             node: root,
@@ -402,6 +432,8 @@ impl Builder {
                         .into_iter()
                         .map(|pp| pp.pointer)
                         .collect(),
+                    #[cfg(feature = "ignore_case")]
+                    ignore_case: self.ignore_case,
                 };
             }
         }
@@ -492,11 +524,11 @@ impl Builder {
         }
     }
 
-    fn ref_token(&self) -> &Cow<'static, str> {
+    fn ref_token(&self) -> &str {
         &self.ref_tokens()[self.level]
     }
 
-    fn ref_tokens(&self) -> &[Cow<'static, str>] {
+    fn ref_tokens(&self) -> &[String] {
         match self.pointer_index {
             Some(i) => &self.parsed_pointers[i].ref_tokens,
             None => &[],
@@ -520,27 +552,35 @@ impl Builder {
     fn common_prefix_len(a: &str, b: &str) -> usize {
         a.chars().zip(b.chars()).take_while(|(a, b)| a == b).count()
     }
-
-    #[allow(clippy::ptr_arg)]
-    #[inline]
-    fn slice_cow<R>(cow: &Cow<'static, str>, range: R) -> Cow<'static, str>
-    where
-        R: SliceIndex<str, Output = str>,
-    {
-        match cow {
-            Cow::Borrowed(s) => Cow::Borrowed(&s[range]),
-            Cow::Owned(s) => Cow::Owned(s[range].to_owned()),
-        }
-    }
 }
 
 /// A group of JSON Pointers that can be efficiently searched for in a JSON stream.
 ///
 /// `Group` is an opaque type that enables evaluating an arbitrarily large number of [`Pointer`]
-/// values against an arbitrary amount of JSON with essentially zero overhead.
+/// values against an arbitrary amount of JSON with essentially zero overhead. Think of it as the
+/// JSON Pointer equivalent to a compiled regular expression ([`from_pointer`]) or a compiled
+/// regular expression *set* ([`from_pointers`]).
 ///
 /// <!-- TODO: Update here on completion of `state::Machine` and `Evaluator`: "A `Group` is used"
 /// indirectly by loading it into an `Evaluator` or a `state::Machine`, and add examples. -->
+///
+/// # Case sensitivity
+///
+/// The JSON Pointer specification, [RFC 6901], requires byte-for-byte equality of object member
+/// names to get a match:
+///
+/// > The member name is equal to the token if it has the same number of Unicode characters as the
+/// > token and their code points are byte-by-byte equal.  No Unicode character normalization is
+/// > performed.
+///
+/// By default,`Group` follows the requirement for byte-by-byte comparison, which makes it case
+/// sensitive. A case-insensitive matching mode is available under the feature flag `ignore_case`,
+/// which make available the constructor function
+#[cfg_attr(
+    feature = "ignore_case",
+    doc = "[`from_pointers_ignore_case`][method@Self::from_pointers_ignore_case]"
+)]
+#[cfg_attr(not(feature = "ignore_case"), doc = "`from_pointers_ignore_case`.")]
 ///
 /// # Data structure
 ///
@@ -613,6 +653,10 @@ impl Builder {
 /// │ g  │  │ o  │ │ x  │
 /// └────┘  └────┘ └────┘
 /// ```
+///
+/// [`from_pointer`]: method@Self::from_pointer
+/// [`from_pointers`]: method@Self::from_pointers
+/// [RFC 6901]: https://www.rfc-editor.org/rfc/rfc6901
 #[derive(Clone, Debug)]
 pub struct Group {
     // The nodes of the evaluation tree, stored as a flat array.
@@ -668,10 +712,15 @@ pub struct Group {
     // reference tokens.
     #[allow(unused)]
     pub(crate) pointers: Vec<Pointer>,
+    // Whether to evaluate JSON Pointers case-insensitively.
+    #[cfg(feature = "ignore_case")]
+    #[allow(unused)]
+    pub(crate) ignore_case: bool,
 }
 
 impl Group {
-    /// Creates a singleton `Group` from an owned [`Pointer`], consuming the `Pointer` in the process.
+    /// Creates a singleton `Group` from an owned [`Pointer`], consuming the `Pointer` in the
+    /// process.
     ///
     /// # Examples
     ///
@@ -720,7 +769,36 @@ impl Group {
     pub fn from_pointers<I: IntoIterator<Item = Pointer>>(pointers: I) -> Self {
         let pointers = pointers.into_iter().collect();
 
-        Builder::new(pointers).build()
+        Builder::new(
+            pointers,
+            #[cfg(feature = "ignore_case")]
+            false,
+        )
+        .build()
+    }
+
+    /// Creates a case-insensitive `Group` from zero or more [`Pointer`] values, consuming them in
+    /// the process.
+    ///
+    /// # Case insensitivity
+    ///
+    /// The group produced by this function matches JSON on a Unicode case-insensitive basis. Object
+    /// member names are matched using Unicode case folding. Thus, for example, the JSON Pointer
+    /// `/straße` would match the member names "straße", "Straße", "strasse", "STRASSE", and so on.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bufjson::pointer::{Group, Pointer};
+    ///
+    /// let g = Group::from_pointers_ignore_case([Pointer::from_static("/adresse/straße")]);
+    /// println!("{g:?}");
+    /// ```
+    #[cfg(feature = "ignore_case")]
+    pub fn from_pointers_ignore_case<I: IntoIterator<Item = Pointer>>(pointers: I) -> Self {
+        let pointers = pointers.into_iter().collect();
+
+        Builder::new(pointers, true).build()
     }
 }
 
@@ -756,36 +834,6 @@ mod tests {
     }
 
     #[rstest]
-    #[case("", 0.., "")]
-    #[case("".to_string(), 0..0, "".to_string())]
-    #[case("a", 0..0, "")]
-    #[case("a", 0..1, "a")]
-    #[case("a", 0..=0, "a")]
-    #[case("a", 1..1, "")]
-    #[case("a barrier to entry".to_string(), 2..=4, "bar".to_string())]
-    fn test_builder_slice_cow<S, R>(#[case] s: S, #[case] r: R, #[case] expect: S)
-    where
-        S: Into<Cow<'static, str>>,
-        R: SliceIndex<str, Output = str>,
-    {
-        let s = s.into();
-        let expect = expect.into();
-
-        let actual = Builder::slice_cow(&s, r);
-
-        assert_eq!(expect, actual);
-        assert!(
-            matches!(
-                (&s, &actual),
-                (Cow::Borrowed(_), Cow::Borrowed(_)) | (Cow::Owned(_), Cow::Owned(_))
-            ),
-            "`s` should have same discriminant (`Cow` variant) as `expect`, but `s` has {:?} and `expect` has {:?}",
-            std::mem::discriminant(&s),
-            std::mem::discriminant(&expect),
-        )
-    }
-
-    #[rstest]
     #[case::root(Pointer::default(), [Node::default().with_match_index(0)], [])]
     #[case::single_empty("/", [Node::default().with_child_index(1).with_name_children(1), Node::new_name("", Some(0))], [0])]
     #[case::single_a("/a", [Node::default().with_child_index(1).with_name_children(1), Node::new_name("a", Some(0))], [0])]
@@ -817,6 +865,10 @@ mod tests {
     ], [0])]
     #[case::single_escape_tilde("/~0", [Node::default().with_child_index(1).with_name_children(1), Node::new_name("~", Some(0))], [0])]
     #[case::single_escape_slash("/~1", [Node::default().with_child_index(1).with_name_children(1), Node::new_name("/", Some(0))], [0])]
+    #[case::single_no_case_fold("/Straße", [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("Straße", Some(0)),
+    ], [0])]
     #[case::double_empty("//", [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("", None).with_child_index(2).with_name_children(1),
@@ -1163,6 +1215,56 @@ mod tests {
         let expect_parents = expect_parents.into_iter().collect::<Vec<_>>();
 
         let g = Group::from_pointers(pointers);
+
+        assert_eq!(
+            expect_nodes,
+            g.nodes,
+            "node array mismatch: {} expected nodes (left) do not match {} actual nodes (right)",
+            expect_nodes.len(),
+            g.nodes.len(),
+        );
+        assert_eq!(expect_parents, g.parents);
+    }
+
+    #[rstest]
+    #[cfg(feature = "ignore_case")]
+    #[case(["/Straße"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("strasse", Some(0)),
+    ], [0])]
+    #[case(["/Straße", "/strasse"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("strasse", Some(0)),
+    ], [0])]
+    #[case(["/straße", "/Strasbourg", "/strauss"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("stra", None).with_child_index(2).with_trie_children(2),
+        Node::new_trie("s", None).with_child_index(4).with_trie_children(2),
+        Node::new_trie("uss", Some(2)),
+        Node::new_trie("bourg", Some(0)),
+        Node::new_trie("se", Some(1)),
+    ], [0, 1, 1, 2, 2])]
+    fn test_group_from_pointers_ignore_case<I, J, K>(
+        #[case] pointers: I,
+        #[case] expect_nodes: J,
+        #[case] expect_parents: K,
+    ) where
+        I: IntoIterator<Item = &'static str>,
+        J: IntoIterator<Item = Node>,
+        K: IntoIterator<Item = u32>,
+    {
+        let pointers = pointers
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                p.try_into()
+                    .unwrap_or_else(|err| panic!("invalid pointer {p:?} at index {i}: {err}"))
+            })
+            .collect::<Vec<_>>();
+        let expect_nodes = expect_nodes.into_iter().collect::<Vec<_>>();
+        let expect_parents = expect_parents.into_iter().collect::<Vec<_>>();
+
+        let g = Group::from_pointers_ignore_case(pointers);
 
         assert_eq!(
             expect_nodes,

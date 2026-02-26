@@ -20,9 +20,11 @@ debug = true
 [features]
 pointer = []
 read = []
+ignore_case = ["dep:caseless"]
 
 [dependencies]
 bitvec = { version = "^1.0.1", default-features = false, features = ["alloc"] }
+caseless = { version = "^0.2.2", optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
