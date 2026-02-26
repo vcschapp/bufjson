@@ -2,9 +2,8 @@ use super::Pointer;
 use std::{borrow::Cow, cmp::min, collections::VecDeque, num::NonZero, slice::SliceIndex};
 
 // TODO: (1) Bring back lifetime on Pointer.
-// TODO: (2) Refactor pass - if possible around trie_chase! commonality.
-// TODO: (3) Test discovery pass.
-// TODO: (4) Support case-insensitive.
+// TODO: (2) Test discovery pass.
+// TODO: (3) Support case-insensitive.
 
 #[derive(Debug, Default, Clone, PartialEq)]
 enum InnerNode {
@@ -181,6 +180,9 @@ struct Builder {
     prefix_len: usize,
 }
 
+// Add a new child node to the builder's BFS queue.
+//
+// This is a macro rather than a method so it can benefit from field-level disjoint borrowing.
 macro_rules! enqueue_child {
     ($self:expr, $child:expr, $start_index:expr, $child_level:expr, $pointer_index:expr, $prefix_len:expr) => {{
         let current_index = $self
@@ -211,30 +213,75 @@ macro_rules! enqueue_child {
     }};
 }
 
-macro_rules! trie_chase {
-    ($self:expr, $lead_iter:expr, |$child_pointer_index:ident, $part_len:ident| $block:block) => {{
-        let trail_iter = $lead_iter.clone().into_iter().skip(1).map(Some).chain(std::iter::once(None));
+// Enqueue all the trie children of the builder's current node.
+//
+// This is a macro rather than a method so it can benefit from field-level disjoint borrowing.
+//
+// The main input is a cloneable iterator over `parsed_pointers` (`$lead_iter) that represents the
+// group of pointers that may contain trie children. This iterator is then cloned into a second
+// iterator that is staggered one element ahead, and then the list of pairs (lead, trail), where
+// lead is the current pointer and trail is the next one after it, is traversed to to find groups
+// with a common non-empty prefix.
+macro_rules! enqueue_trie_children {
+    ($self:expr, $lead_iter:expr, $prev_prefix_len:expr, $new_node:ident) => {{
+        let trail_iter = $lead_iter
+            .clone()
+            .into_iter()
+            .skip(1)
+            .map(Some)
+            .chain(std::iter::once(None));
         let mut lead_iter = $lead_iter.into_iter().peekable();
 
         if let Some((prev_index, prev)) = lead_iter.peek() {
-            let (mut prev_index, mut prev_common_len) = (*prev_index, prev.ref_token_of($self.level).len() - $self.prefix_len);
+            let (mut prev_index, mut prev_common_len) = (
+                *prev_index,
+                prev.ref_token_of($self.level).len() - $prev_prefix_len,
+            );
 
             for ((_, lead), trail) in lead_iter.zip(trail_iter) {
-                let lead_token: &str = &lead.ref_token_of($self.level)[$self.prefix_len..];
+                let lead_token: &str = &lead.ref_token_of($self.level)[$prev_prefix_len..];
                 let (trail_index, trail_token) = match trail {
-                    Some((i, pp)) => (i, &pp.ref_token_of($self.level).as_ref()[$self.prefix_len..]),
+                    Some((i, pp)) => (
+                        i,
+                        &pp.ref_token_of($self.level).as_ref()[$prev_prefix_len..],
+                    ),
                     None => (0, ""),
                 };
                 match Self::common_prefix_len(lead_token, trail_token) {
                     0 => {
-                        let $child_pointer_index = prev_index;
-                        let $part_len = prev_common_len;
+                        let child_pointer_index = prev_index;
+                        let part_len = prev_common_len;
 
-                        $block
+                        let name =
+                            $self.parsed_pointers[child_pointer_index].ref_token_of($self.level);
+                        let name_part =
+                            Self::slice_cow(name, $prev_prefix_len..$prev_prefix_len + part_len);
+                        let is_complete_token = $prev_prefix_len + part_len == name.len();
+                        let has_more_tokens =
+                            $self.parsed_pointers[child_pointer_index].has_more_tokens($self.level);
+                        let child = Node::$new_node(
+                            name_part,
+                            $self.matched(is_complete_token, child_pointer_index),
+                        );
+
+                        let start_index = if is_complete_token && !has_more_tokens {
+                            child_pointer_index + 1
+                        } else {
+                            child_pointer_index
+                        };
+
+                        enqueue_child!(
+                            $self,
+                            child,
+                            start_index,
+                            $self.level,
+                            child_pointer_index,
+                            $prev_prefix_len + part_len
+                        );
 
                         prev_index = trail_index;
                         prev_common_len = trail_token.len();
-                    },
+                    }
                     n => prev_common_len = min(n, prev_common_len),
                 }
             }
@@ -374,31 +421,7 @@ impl Builder {
             })
             .filter(|(_, pp)| pp.ref_token_of(self.level) != prefix);
 
-        trie_chase!(self, lead_iter, |child_pointer_index, part_len| {
-            let name = self.parsed_pointers[child_pointer_index].ref_token_of(self.level);
-            let name_part = Self::slice_cow(name, self.prefix_len..self.prefix_len + part_len);
-            let is_complete_token = self.prefix_len + part_len == name.len();
-            let has_more_tokens =
-                self.parsed_pointers[child_pointer_index].has_more_tokens(self.level);
-            let child = Node::new_trie(
-                name_part,
-                self.matched(is_complete_token, child_pointer_index),
-            );
-
-            let start_index = if is_complete_token && !has_more_tokens {
-                child_pointer_index + 1
-            } else {
-                child_pointer_index
-            };
-            enqueue_child!(
-                self,
-                child,
-                start_index,
-                self.level,
-                child_pointer_index,
-                self.prefix_len + part_len
-            );
-        });
+        enqueue_trie_children!(self, lead_iter, self.prefix_len, new_trie);
     }
 
     fn enqueue_name_children(&mut self, end_index: usize) {
@@ -409,30 +432,7 @@ impl Builder {
             .take(end_index)
             .skip(self.start_index);
 
-        trie_chase!(self, lead_iter, |child_pointer_index, part_len| {
-            let name = self.parsed_pointers[child_pointer_index].ref_token_of(self.level);
-            let name_part = Self::slice_cow(name, 0..part_len);
-            let is_complete_token = part_len == name.len();
-            let has_more_tokens =
-                self.parsed_pointers[child_pointer_index].has_more_tokens(self.level);
-            let child = Node::new_name(
-                name_part,
-                self.matched(is_complete_token, child_pointer_index),
-            );
-            let start_index = if is_complete_token && !has_more_tokens {
-                child_pointer_index + 1
-            } else {
-                child_pointer_index
-            };
-            enqueue_child!(
-                self,
-                child,
-                start_index,
-                self.level,
-                child_pointer_index,
-                part_len
-            );
-        });
+        enqueue_trie_children!(self, lead_iter, 0, new_name);
     }
 
     fn enqueue_index_children(&mut self, end_index: usize) {
