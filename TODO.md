@@ -198,33 +198,6 @@ I started trying to lay out the design tenets and challenges, but it feels a bit
 until a version of the streaming stuff is in, because
 
 
-
-MORE DETAILED MAP OF DATA STRUCTURE NEEDED FOR READ ANALYZER
-============================================================
-
-1. Need a ring buffer of available buffers. The idea is that when you need a new
-   buffer, you run through the ring buffer. On every stop, you `into_inner()` it
-   and if the result is `Some()` you take that as your buffer else keep chewing.
-2. Need a straight `Vec` of in-use buffers for the current token, but it would
-   be useful to keep the "actual current" buffer out of this.
-3. For the in-use buffers, need the start position in bufs[0] and the end
-   position in the last buf.
-4. After recognizing the current token, the in-use buffers get drained into the
-   back of the ring buffer of available buffers. (Except the current one.)
-
-So we need something a bit like:
-
-```rust
-struct BufMgr {
-    maybe_free: VecDeque<Arc<Vec<u8>>>,
-    used: Vec<Vec<u8>>,
-    current: Vec<u8>,
-    i: usize,   // Start index into either used[0] or current
-    j: usize,   // End index into current
-}
-
-```
-
 ALGORITHM FOR CASE INSENSITIVE COMPARISION OF JSON POINTER REFERENCE TOKENS
 ===========================================================================
 
@@ -238,8 +211,8 @@ Algorithm for case-insensitive comparision:
 
 3. If it's a non-ASCII difference then starting at the character position
    of the character that contains the byte with the discrepancy, you
-   continue with character-by-character matching using the 
- 
+   continue with character-by-character matching using the
+
 4. From this point forward, you basically create two `CaseFold`
    iterators from the `caseless` crate. This struct can wrap any other
    iterator that produces `char`, and I can create an iterator that
