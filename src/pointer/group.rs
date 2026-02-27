@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::{borrow::Cow, cmp::min, collections::VecDeque, num::NonZero};
 
 #[derive(Debug, Default, Clone, PartialEq)]
-enum InnerNode {
+pub(crate) enum InnerNode {
     #[default]
     Root,
     Trie(String),
@@ -14,12 +14,12 @@ enum InnerNode {
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct Node {
-    child_index: Option<NonZero<u32>>,
-    num_trie_children: u32,
-    num_name_children: u32,
-    num_index_children: u32,
-    inner: InnerNode,
-    match_index: Option<usize>,
+    pub(crate) child_index: Option<NonZero<u32>>,
+    pub(crate) num_trie_children: u32,
+    pub(crate) num_name_children: u32,
+    pub(crate) num_index_children: u32,
+    pub(crate) inner: InnerNode,
+    pub(crate) match_index: Option<usize>,
 }
 
 // Assert that `Node` does not grow beyond 64 bytes, which is 1 cache line on most modern CPU
@@ -92,6 +92,14 @@ impl Node {
         self.num_index_children = n;
 
         self
+    }
+
+    pub(crate) fn name_part(&self) -> &str {
+        match self.inner {
+            InnerNode::Root => panic!("root node does not have a name part: {self:?}"),
+            InnerNode::Trie(ref s) | InnerNode::Name(ref s) => s,
+            InnerNode::Index(_) => panic!("index node does not have a name part: {self:?}"),
+        }
     }
 }
 
@@ -567,15 +575,16 @@ impl Builder {
     }
 }
 
-/// A group of JSON Pointers that can be efficiently searched for in a JSON stream.
+/// An immutable set of JSON Pointers that can be efficiently searched for in a JSON stream.
 ///
 /// `Group` is an opaque type that enables evaluating an arbitrarily large number of [`Pointer`]
 /// values against an arbitrary amount of JSON with essentially zero overhead. Think of it as the
 /// JSON Pointer equivalent to a compiled regular expression ([`from_pointer`]) or a compiled
 /// regular expression *set* ([`from_pointers`]).
 ///
-/// <!-- TODO: Update here on completion of `state::Machine` and `Evaluator`: "A `Group` is used"
-/// indirectly by loading it into an `Evaluator` or a `state::Machine`, and add examples. -->
+/// `Group` is not used directly. To use a group in JSON Pointer evaluation, load it into an
+/// [`Evaluator`][crate::pointer::Evaluator], or the lower-level
+/// [`state::Machine`][crate::pointer::state::Machine].
 ///
 /// # Case sensitivity
 ///
@@ -586,9 +595,9 @@ impl Builder {
 /// > token and their code points are byte-by-byte equal.  No Unicode character normalization is
 /// > performed.
 ///
-/// By default,`Group` follows the requirement for byte-by-byte comparison, which makes it case
+/// By default, `Group` follows the requirement for byte-by-byte comparison, which makes it case
 /// sensitive. A case-insensitive matching mode is available under the feature flag `ignore_case`,
-/// which make available the constructor function
+/// which makes available the constructor function
 #[cfg_attr(
     feature = "ignore_case",
     doc = "[`from_pointers_ignore_case`][method@Self::from_pointers_ignore_case]"
@@ -597,7 +606,7 @@ impl Builder {
 ///
 /// # Data structure
 ///
-/// While the implementation may change, in its current implementation, `Group` is as a "trie of
+/// While the implementation may change, in its current implementation, `Group` is a "trie of
 /// tries".
 ///
 /// ## Outer trie
@@ -607,10 +616,10 @@ impl Builder {
 /// regardless of how many pointers the group contains.
 ///
 /// The JSON Pointer can be thought of as the "string" to match, with the individual reference
-/// tokens make up the pointer being the "symbols" or "characters" of the string. At any point in
-/// the JSON text being evaluated against the JSON Pointer, the next token may allow a transition
-/// one level deeper into the trie in time that is effectively O(1), regardless of how many pointers
-/// the trie contains.
+/// tokens that make up the pointer being the "symbols" or "characters" of the string. At any point
+/// in the JSON text being evaluated against the JSON Pointer, the next token may allow a transition
+/// one level deeper into the trie in effectively O(1) time, regardless of how many pointers the
+/// trie contains.
 ///
 /// Consider the JSON Pointer `/foo/baz/1` with input text `{"foo":{"bar":true,"baz":[0,{"qux":1}]}`.
 ///
@@ -654,7 +663,7 @@ impl Builder {
 /// Consider the group formed by the three pointers `/fog`, `/foo`, and `/fox`. In this group, there
 /// are three possible transitions from the root node to first level object member names. These
 /// transitions are structured as a trie, allowing every member name transition to take place with
-/// worst case time complexity proportional to the length of the member name's string token,.
+/// worst case time complexity proportional to the length of the member name's string token.
 ///
 /// ```text
 ///         ┌────┐
@@ -818,6 +827,15 @@ impl Group {
 impl From<Pointer> for Group {
     fn from(pointer: Pointer) -> Self {
         Self::from_pointer(pointer)
+    }
+}
+
+impl<T> From<T> for Group
+where
+    T: IntoIterator<Item = Pointer>,
+{
+    fn from(pointers: T) -> Self {
+        Self::from_pointers(pointers)
     }
 }
 
@@ -1330,5 +1348,22 @@ mod tests {
 
         assert_eq!(vec![Node::default().with_match_index(0)], g.nodes);
         assert_eq!(0, g.parents.len());
+    }
+
+    #[rstest]
+    #[case([])]
+    #[case([Pointer::default()])]
+    #[case([Pointer::from_static("/")])]
+    #[case([Pointer::from_static("/a")])]
+    #[case([Pointer::from_static("/a")])]
+    #[case([Pointer::default(), Pointer::from_static("/"), Pointer::from_static("/a")])]
+    fn test_group_from_trait_for_into_iterator_pointer<I>(#[case] pointers: I)
+    where
+        I: IntoIterator<Item = Pointer> + Clone,
+    {
+        let expect: Vec<Pointer> = pointers.clone().into_iter().collect();
+        let group: Group = pointers.into();
+
+        assert_eq!(expect, group.pointers);
     }
 }

@@ -48,6 +48,65 @@ enum InnerContent<B: Deref<Target = [u8]>> {
 #[derive(Clone, Debug)]
 pub struct Content<B: Deref<Target = [u8]> + fmt::Debug>(InnerContent<B>);
 
+impl Content<Vec<u8>> {
+    /// Constructs a new `Content` value from a static lifetime string that contains a valid JSON
+    /// token.
+    ///
+    /// The entire string must be a single valid lexical token. It may be the empty string, which is
+    /// equivalent to `Token::Eof`; or may be all whitespace, equivalent to [`Token::White`]. String
+    /// token content must begin and end with a double quote character.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the string is not a valid JSON token.
+    pub fn from_static(s: &'static str) -> Self {
+        let mut i = 0;
+        let b = s.as_bytes();
+        let state = if !s.is_empty() {
+            let mut mach = state::Machine::default();
+            loop {
+                let state = mach.next(Some(b[i]));
+                match state {
+                    state::State::End { repeat: false, .. } => {
+                        i += 1;
+
+                        break state;
+                    }
+
+                    state::State::Mid => {
+                        i += 1;
+                        if i == s.len() {
+                            break mach.next(None);
+                        }
+                    }
+
+                    _ => break state,
+                }
+            }
+        } else {
+            state::State::End {
+                token: Token::Eof,
+                escaped: false,
+                repeat: false,
+            }
+        };
+
+        match state {
+            state::State::End { token, escaped, .. } if i == s.len() && !token.is_err() => {
+                if !escaped {
+                    Self(InnerContent::Static(s))
+                } else {
+                    Self(InnerContent::Escaped(Ref::new(
+                        Arc::new(b.to_vec()),
+                        0..b.len(),
+                    )))
+                }
+            }
+            _ => panic!("invalid JSON token"),
+        }
+    }
+}
+
 impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
     /// Returns the literal content of the token exactly as it appears in the JSON text.
     ///
@@ -108,7 +167,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
 }
 
 impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
-    fn from_static(s: &'static str) -> Self {
+    fn from_static_internal(s: &'static str) -> Self {
         Self(InnerContent::Static(s))
     }
 
@@ -136,6 +195,12 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
 
     fn inline_str(len: u8, buf: &InlineBuf) -> &str {
         unsafe { std::str::from_utf8_unchecked(&buf[0..len as usize]) }
+    }
+}
+
+impl Default for Content<Vec<u8>> {
+    fn default() -> Self {
+        Self(InnerContent::Static("")) // Equivalent to EOF
     }
 }
 
@@ -581,7 +646,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// ```
     pub fn try_content(&self) -> Result<Content<B>, Error> {
         match &self.content {
-            StoredContent::Literal(s) => Ok(Content::from_static(s)),
+            StoredContent::Literal(s) => Ok(Content::from_static_internal(s)),
             StoredContent::Range(r, escaped) => {
                 Ok(Content::from_buf(&self.buf, r.clone(), *escaped))
             }
@@ -653,6 +718,83 @@ mod tests {
     use crate::lexical::Expect;
     use rstest::rstest;
     use std::error::Error as _;
+
+    #[rstest]
+    #[case::invalid_char("a")]
+    #[case::f("f")]
+    #[case::fa("fa")]
+    #[case::fal("fal")]
+    #[case::fals("fals")]
+    #[case::false_leading_space(" false")]
+    #[case::false_trailing_space("false ")]
+    #[case::n("n")]
+    #[case::nu("nu")]
+    #[case::nul("nul")]
+    #[case::null_leading_space(" null")]
+    #[case::null_trailing_space("null ")]
+    #[case::t("t")]
+    #[case::tr("tr")]
+    #[case::tru("tru")]
+    #[case::true_leading_space(" true")]
+    #[case::true_trailing_space("true ")]
+    #[case::num_dot(".")]
+    #[case::num_zero_dot("0.")]
+    #[case::num_zero_zero("00")]
+    #[case::num_leading_space(" 0")]
+    #[case::num_trailing_space("0 ")]
+    #[case::str_unterminated_0(r#"""#)]
+    #[case::str_unterminated_1(r#""a"#)]
+    #[case::str_leading_space(r#" "a""#)]
+    #[case::str_trailing_space(r#""a" "#)]
+    #[should_panic(expected = "invalid JSON token")]
+    fn test_content_from_static_panic(#[case] s: &'static str) {
+        let _ = Content::from_static(s);
+    }
+
+    #[rstest]
+    #[case::eof("", None)]
+    #[case::arr_begin("[", None)]
+    #[case::arr_end("]", None)]
+    #[case::obj_begin("{", None)]
+    #[case::obj_end("}", None)]
+    #[case::value_sep(",", None)]
+    #[case::name_sep(":", None)]
+    #[case::white_space(" ", None)]
+    #[case::white_tab("\t", None)]
+    #[case::white_lf("\n", None)]
+    #[case::white_cr("\r", None)]
+    #[case::white_lots("   \t\t   \r  \r\n  \t\n", None)]
+    #[case::lit_false("false", None)]
+    #[case::lit_null("null", None)]
+    #[case::lit_true("true", None)]
+    #[case::num_zero("0", None)]
+    #[case::num_zero_point_one("0.1", None)]
+    #[case::num_123("123", None)]
+    #[case::num_neg_zero("-0", None)]
+    #[case::num_neg_zero_point_one("-0.1", None)]
+    #[case::num_neg_123("-123", None)]
+    #[case::num_1e1("1e1", None)]
+    #[case::num_1e_plus_1("1e+1", None)]
+    #[case::num_1e_minus_1("1e-1", None)]
+    #[case::str_empty(r#""""#, None)]
+    #[case::str_a(r#""a""#, None)]
+    #[case::str_emoji(r#""🤠""#, None)]
+    #[case::str_escaped_nul(r#""\u0000""#, Some("\"\u{00}\""))]
+    fn test_content_from_static_ok(
+        #[case] s: &'static str,
+        #[case] unescaped: Option<&'static str>,
+    ) {
+        let c = Content::from_static(s);
+
+        assert_eq!(s, c.literal());
+
+        eprintln!(" HERE'S THE THING! {c:?}");
+
+        match unescaped {
+            Some(u) => assert_eq!(u, c.unescaped()),
+            None => assert!(!c.is_escaped()),
+        };
+    }
 
     #[rstest]
     #[case(

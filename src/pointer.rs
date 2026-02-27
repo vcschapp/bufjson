@@ -4,8 +4,11 @@
 //!
 //! [JSON Pointer specification]: https://www.rfc-editor.org/rfc/rfc6901
 
+mod eval;
 mod group;
+pub mod state;
 
+pub use eval::{Evaluator, Event};
 pub use group::Group;
 
 use std::{

@@ -152,7 +152,7 @@ pub struct Machine {
 }
 
 impl Machine {
-    /// Provides the input to the state machine and transitions it to its next state.
+    /// Provides input to the state machine and transitions it to its next state.
     ///
     /// A `Some` value represents an actual input byte; `None` represents the end of the input.
     ///

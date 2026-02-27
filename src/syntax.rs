@@ -806,18 +806,16 @@ impl std::error::Error for Error {
 /// [`next_meaningful`]: method@Self::next_meaningful
 /// [json_streaming_wiki]: https://en.wikipedia.org/wiki/JSON_streaming
 /// [jq]: https://jqlang.org/
-pub struct Parser<L: lexical::Analyzer>
-where
-    L::Error: 'static,
-{
+pub struct Parser<L> {
     lexer: L,
     context: Context,
     content: Content,
     max_level: usize,
 }
 
-impl<L: lexical::Analyzer> Parser<L>
+impl<L> Parser<L>
 where
+    L: lexical::Analyzer,
     L::Error: 'static,
 {
     /// Constructs a new parser wrapping an underlying lexical analyzer.
@@ -850,8 +848,8 @@ where
     /// Returns the next syntactically valid lexical token.
     ///
     /// If a lexical or syntax error is detected, returns [`Token::Err`] and the specific error can
-    /// be obtained from [`content`][Self::content]. Otherwise, returns the next non-error token and
-    /// the token content can be obtained from [`content`][Self::content].
+    /// be obtained from [`err`][Self::err]. Otherwise, returns the next non-error token and the
+    /// token content can be obtained from [`content`][Self::content].
     ///
     /// # Example
     ///
@@ -1144,7 +1142,7 @@ where
         self.try_content().unwrap()
     }
 
-    /// Fetches the err value associated with the current error token.
+    /// Fetches the error value associated with the current error token.
     ///
     /// The current token is the token most recently returned by [`next`], [`next_non_white`], or
     /// [`next_meaningful`].
@@ -1241,7 +1239,7 @@ where
 
     /// Returns the current parse context, which includes the nesting state and next expected token.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// Before observing any tokens, there is no nesting and the parser expects any valid JSON
     /// value.
