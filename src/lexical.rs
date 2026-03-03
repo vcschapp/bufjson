@@ -272,34 +272,51 @@ impl Token {
     ///
     /// The following tokens are considered punctuation:
     ///
-    /// - [`ArrBegin`][Token::ArrBegin]
-    /// - [`ArrEnd`][Token::ArrEnd]
     /// - [`NameSep`][Token::NameSep]
-    /// - [`ObjBegin`][Token::ObjBegin]
-    /// - [`ObjEnd`][Token::ObjEnd]
     /// - [`ValueSep`][Token::ValueSep]
     ///
     /// # Examples
     ///
     /// ```
     /// # use bufjson::lexical::Token;
-    /// assert!(Token::ArrBegin.is_punct());
+    /// assert!(Token::NameSep.is_punct());
     /// assert!(Token::ValueSep.is_punct());
     ///
+    /// assert!(!Token::ArrBegin.is_punct());
     /// assert!(!Token::Num.is_punct());
     /// assert!(!Token::White.is_punct());
     /// assert!(!Token::Err.is_punct());
     /// ```
     #[inline]
     pub const fn is_punct(&self) -> bool {
+        matches!(self, Self::NameSep | Self::ValueSep)
+    }
+
+    /// Returns `true` for lexical tokens that are structural and `false` otherwise.
+    ///
+    /// The following tokens are considered structural:
+    ///
+    /// - [`ArrBegin`][Token::ArrBegin]
+    /// - [`ArrEnd`][Token::ArrEnd]
+    /// - [`ObjBegin`][Token::ObjBegin]
+    /// - [`ObjEnd`][Token::ObjEnd]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bufjson::lexical::Token;
+    /// assert!(Token::ArrBegin.is_struct());
+    /// assert!(Token::ObjEnd.is_struct());
+    ///
+    /// assert!(!Token::Str.is_struct());
+    /// assert!(!Token::ValueSep.is_struct());
+    /// assert!(!Token::White.is_struct());
+    /// ```
+    #[inline]
+    pub const fn is_struct(&self) -> bool {
         matches!(
             self,
-            Self::ArrBegin
-                | Self::ArrEnd
-                | Self::NameSep
-                | Self::ObjBegin
-                | Self::ObjEnd
-                | Self::ValueSep
+            Self::ArrBegin | Self::ArrEnd | Self::ObjBegin | Self::ObjEnd
         )
     }
 
@@ -1675,8 +1692,8 @@ mod tests {
     }
 
     #[rstest]
-    #[case(Token::ArrBegin, true)]
-    #[case(Token::ArrEnd, true)]
+    #[case(Token::ArrBegin, false)]
+    #[case(Token::ArrEnd, false)]
     #[case(Token::Eof, false)]
     #[case(Token::Err, false)]
     #[case(Token::LitFalse, false)]
@@ -1684,13 +1701,32 @@ mod tests {
     #[case(Token::LitTrue, false)]
     #[case(Token::NameSep, true)]
     #[case(Token::Num, false)]
-    #[case(Token::ObjBegin, true)]
-    #[case(Token::ObjEnd, true)]
+    #[case(Token::ObjBegin, false)]
+    #[case(Token::ObjEnd, false)]
     #[case(Token::Str, false)]
     #[case(Token::ValueSep, true)]
     #[case(Token::White, false)]
     fn test_token_is_punct(#[case] token: Token, #[case] is_punct: bool) {
         assert_eq!(is_punct, token.is_punct());
+    }
+
+    #[rstest]
+    #[case(Token::ArrBegin, true)]
+    #[case(Token::ArrEnd, true)]
+    #[case(Token::Eof, false)]
+    #[case(Token::Err, false)]
+    #[case(Token::LitFalse, false)]
+    #[case(Token::LitNull, false)]
+    #[case(Token::LitTrue, false)]
+    #[case(Token::NameSep, false)]
+    #[case(Token::Num, false)]
+    #[case(Token::ObjBegin, true)]
+    #[case(Token::ObjEnd, true)]
+    #[case(Token::Str, false)]
+    #[case(Token::ValueSep, false)]
+    #[case(Token::White, false)]
+    fn test_token_is_struct(#[case] token: Token, #[case] is_struct: bool) {
+        assert_eq!(is_struct, token.is_struct());
     }
 
     #[rstest]
