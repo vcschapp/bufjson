@@ -64,7 +64,7 @@ use std::{fmt, iter::Take, sync::Arc};
 /// Type of structured JSON value: [`Arr`][Self::Arr] or [`Obj`][Self::Obj].
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
-pub enum Struct {
+pub enum StructKind {
     /// An array value, *i.e.* `[ ... ]` in a JSON text.
     Arr = 0,
 
@@ -72,22 +72,22 @@ pub enum Struct {
     Obj = 1,
 }
 
-impl From<Struct> for bool {
-    fn from(value: Struct) -> Self {
+impl From<StructKind> for bool {
+    fn from(value: StructKind) -> Self {
         (value as u8) == 1
     }
 }
 
-impl From<bool> for Struct {
+impl From<bool> for StructKind {
     fn from(value: bool) -> Self {
         match value {
-            false => Struct::Arr,
-            true => Struct::Obj,
+            false => StructKind::Arr,
+            true => StructKind::Obj,
         }
     }
 }
 
-impl From<BitRef<'_>> for Struct {
+impl From<BitRef<'_>> for StructKind {
     fn from(value: BitRef<'_>) -> Self {
         let value: bool = *value;
 
@@ -213,13 +213,13 @@ impl fmt::Display for Expect {
     }
 }
 
-// Number of bytes a `Parser` will dedicate to inlinining the `Struct` level.
+// Number of bytes a `Parser` will dedicate to inlinining the `StructKind` level.
 const INLINE_LEN_BYTES: usize = 16;
 
 // Number of `usize` values that provide the "backing storage" for the bytes that inline the level.
 const INLINE_LEN_USIZES: usize = INLINE_LEN_BYTES / std::mem::size_of::<usize>();
 
-// Number of `Struct` levels that can be inlined. Since `Struct` level requires one bit of
+// Number of `StructKind` levels that can be inlined. Since `StructKind` level requires one bit of
 // bookkeeping, we can pack eight levels per byte.
 const NUM_INLINED_LEVELS: usize = INLINE_LEN_BYTES * 8;
 
@@ -230,7 +230,7 @@ enum StructContext {
 }
 
 impl StructContext {
-    fn push(&mut self, s: Struct) {
+    fn push(&mut self, s: StructKind) {
         match self {
             StructContext::Inline(len, array) => {
                 if *len < array.len() {
@@ -257,17 +257,11 @@ impl StructContext {
         };
     }
 
-    fn peek(&mut self) -> Option<Struct> {
+    fn peek(&self) -> Option<StructKind> {
         match self {
-            StructContext::Inline(len, array) => {
-                if *len > 0 {
-                    Some(array[*len - 1].into())
-                } else {
-                    None
-                }
-            }
-
-            StructContext::Heap(v) => v.last().map(Into::<Struct>::into),
+            StructContext::Inline(0, _) => None,
+            StructContext::Inline(len, array) => Some(array[*len - 1].into()),
+            StructContext::Heap(v) => v.last().map(Into::into),
         }
     }
 
@@ -372,6 +366,7 @@ impl Context {
     ///
     /// assert_eq!(0, ctx.level());
     /// assert!(!ctx.is_struct());
+    /// assert!(ctx.struct_kind().is_none());
     /// ```
     ///
     /// The level is one inside the first structured value.
@@ -390,7 +385,7 @@ impl Context {
     /// The level increases as the parser proceeds deeper into a multi-level nested structure.
     ///
     /// ```
-    /// use bufjson::lexical::fixed::FixedAnalyzer;
+    /// use bufjson::{lexical::fixed::FixedAnalyzer, syntax::StructKind};
     ///
     /// let mut parser = FixedAnalyzer::new(r#"[{"foo":[]}]"#.as_bytes()).into_parser();
     /// let _ = parser.next_meaningful(); // Consume the `[`.
@@ -401,6 +396,7 @@ impl Context {
     ///
     /// assert_eq!(3, ctx.level());
     /// assert!(ctx.is_struct());
+    /// assert_eq!(Some(StructKind::Arr), ctx.struct_kind());
     /// ```
     ///
     /// The level returns to zero after a top-level structured value is fully parsed.
@@ -415,6 +411,7 @@ impl Context {
     ///
     /// assert_eq!(0, ctx.level());
     /// assert!(!ctx.is_struct());
+    /// assert!(ctx.struct_kind().is_none());
     /// ```
     pub fn level(&self) -> usize {
         self.inner.level()
@@ -428,6 +425,18 @@ impl Context {
     /// [`level`]: method@Self::level
     pub fn is_struct(&self) -> bool {
         self.inner.is_struct()
+    }
+
+    /// Returns the kind of structured value, array or object, that the current parse position is
+    /// inside.
+    ///
+    /// This method returns `None` when [`is_struct`] returns `false`, and `Some` when [`is_struct`]
+    /// returns `true`. See the examples on the [`level` ] method.
+    ///
+    /// [`is_struct`]: method@Self::is_struct
+    /// [`level`]: method@Self::level
+    pub fn struct_kind(&self) -> Option<StructKind> {
+        self.inner.peek()
     }
 
     /// Returns an iterator over the structured JSON value types that comprise the current nesting
@@ -451,7 +460,7 @@ impl Context {
     /// JSON text to the current parse position.
     ///
     /// ```
-    /// use bufjson::{lexical::fixed::FixedAnalyzer, syntax::Struct};
+    /// use bufjson::{lexical::fixed::FixedAnalyzer, syntax::StructKind};
     ///
     /// let mut parser = FixedAnalyzer::new(r#"[{"foo":{}}]"#.as_bytes()).into_parser();
     /// let _ = parser.next_meaningful(); // Consume the `[`.
@@ -462,7 +471,10 @@ impl Context {
     ///
     /// assert_eq!(3, ctx.level());
     /// assert_eq!(3, ctx.iter().len());
-    /// assert_eq!(vec![Struct::Arr, Struct::Obj, Struct::Obj], ctx.iter().collect::<Vec<_>>());
+    /// assert_eq!(
+    ///     vec![StructKind::Arr, StructKind::Obj, StructKind::Obj],
+    ///     ctx.iter().collect::<Vec<_>>(),
+    /// );
     /// ```
     pub fn iter(&self) -> StructIter<bitvec::slice::Iter<'_, usize, Lsb0>> {
         self.inner.iter()
@@ -470,7 +482,7 @@ impl Context {
 }
 
 impl IntoIterator for Context {
-    type Item = Struct;
+    type Item = StructKind;
     type IntoIter = StructIter<StructContextIntoIter>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -478,7 +490,7 @@ impl IntoIterator for Context {
     }
 }
 
-/// Iterator over the [`Struct`] values that define the nesting level of a parser context.
+/// Iterator over the [`StructKind`] values that define the nesting level of a parser context.
 ///
 /// This iterator can be obtained from a [`Context`] using its [`iter`] method or its implementation
 /// of the [`into_iter`] trait method.
@@ -490,12 +502,12 @@ pub struct StructIter<I>(I);
 impl<I> Iterator for StructIter<I>
 where
     I: Iterator,
-    I::Item: Into<Struct>,
+    I::Item: Into<StructKind>,
 {
-    type Item = Struct;
+    type Item = StructKind;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(Into::<Struct>::into)
+        self.0.next().map(Into::<StructKind>::into)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -506,7 +518,7 @@ where
 impl<I> ExactSizeIterator for StructIter<I>
 where
     I: ExactSizeIterator,
-    I::Item: Into<Struct>,
+    I::Item: Into<StructKind>,
 {
     fn len(&self) -> usize {
         self.0.len()
@@ -854,7 +866,7 @@ where
             (e, Token::ObjBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
                 let level = self.level();
                 if level < self.max_level {
-                    self.context.inner.push(Struct::Obj);
+                    self.context.inner.push(StructKind::Obj);
                     self.context.expect = Expect::ObjNameOrEnd;
                 } else {
                     content = Content::Err(Error {
@@ -869,7 +881,7 @@ where
             (e, Token::ArrBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
                 let level = self.level();
                 if level < self.max_level {
-                    self.context.inner.push(Struct::Arr);
+                    self.context.inner.push(StructKind::Arr);
                     self.context.expect = Expect::ArrElementOrEnd;
                 } else {
                     content = Content::Err(Error {
@@ -1233,12 +1245,12 @@ where
     /// expects either a string (containing the first member name) or an object end token.
     ///
     /// ```
-    /// use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::{Expect, Struct}};
+    /// use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::{Expect, StructKind}};
     ///
     /// let mut parser = FixedAnalyzer::new(&b"{"[..]).into_parser();
     /// assert_eq!(Token::ObjBegin, parser.next());
     /// assert_eq!(1, parser.context().level());
-    /// assert_eq!(Struct::Obj, parser.context().iter().next().unwrap());
+    /// assert_eq!(StructKind::Obj, parser.context().struct_kind().unwrap());
     /// assert_eq!(Expect::ObjNameOrEnd, parser.context().expect());
     /// ```
     pub fn context(&self) -> &Context {
@@ -1404,8 +1416,8 @@ where
         }
 
         match self.context.inner.peek() {
-            Some(Struct::Arr) => self.context.expect = Expect::ArrElementSepOrEnd,
-            Some(Struct::Obj) => self.context.expect = Expect::ObjValueSepOrEnd,
+            Some(StructKind::Arr) => self.context.expect = Expect::ArrElementSepOrEnd,
+            Some(StructKind::Obj) => self.context.expect = Expect::ObjValueSepOrEnd,
             None => self.context.expect = Expect::Eof,
         }
     }
@@ -1417,19 +1429,84 @@ mod tests {
     use rstest::rstest;
 
     #[rstest]
-    #[case(false, Struct::Arr)]
-    #[case(true, Struct::Obj)]
-    fn test_struct_from_bool(#[case] t: bool, #[case] expect: Struct) {
+    #[case(false, StructKind::Arr)]
+    #[case(true, StructKind::Obj)]
+    fn test_struct_kind_from_bool(#[case] t: bool, #[case] expect: StructKind) {
         assert_eq!(expect, t.into());
         assert_eq!(t, Into::<bool>::into(expect));
     }
 
     #[test]
-    fn test_struct_from_bitref() {
+    fn test_struct_kind_from_bitref() {
         let bits: BitArray<[u8; 1]> = bitarr![u8, Lsb0; 0, 1];
 
-        assert_eq!(Struct::Arr, bits[0].into());
-        assert_eq!(Struct::Obj, bits[1].into());
+        assert_eq!(StructKind::Arr, bits[0].into());
+        assert_eq!(StructKind::Obj, bits[1].into());
+    }
+
+    #[rstest]
+    #[case::empty(None::<StructKind>)]
+    #[case::array([StructKind::Arr])]
+    #[case::array_array([StructKind::Arr, StructKind::Arr])]
+    #[case::array_array_array([StructKind::Arr, StructKind::Arr, StructKind::Arr])]
+    #[case::array_array_object([StructKind::Arr, StructKind::Arr, StructKind::Obj])]
+    #[case::array_object([StructKind::Arr, StructKind::Obj])]
+    #[case::array_object_array([StructKind::Arr, StructKind::Obj, StructKind::Arr])]
+    #[case::array_object_object([StructKind::Arr, StructKind::Obj, StructKind::Obj])]
+    #[case::object([StructKind::Obj])]
+    #[case::object_array([StructKind::Obj, StructKind::Arr])]
+    #[case::object_array_array([StructKind::Obj, StructKind::Arr, StructKind::Arr])]
+    #[case::object_array_object([StructKind::Obj, StructKind::Arr, StructKind::Obj])]
+    #[case::object_object([StructKind::Obj, StructKind::Obj])]
+    #[case::object_object_array([StructKind::Obj, StructKind::Obj, StructKind::Arr])]
+    #[case::object_object_object([StructKind::Obj, StructKind::Obj, StructKind::Obj])]
+    #[case::heap(std::iter::repeat([false, true]).take(NUM_INLINED_LEVELS+3).flatten().map(Into::into))]
+    fn test_struct_context<I>(#[case] expect: I)
+    where
+        I: IntoIterator<Item = StructKind>,
+    {
+        let expect = expect.into_iter().collect::<Vec<_>>();
+        let mut ctx = StructContext::default();
+
+        // Verify initial state.
+        assert_eq!(0, ctx.level());
+        assert_eq!(None, ctx.peek());
+        assert!(!ctx.is_struct());
+        assert_eq!(Vec::<StructKind>::new(), ctx.iter().collect::<Vec<_>>());
+
+        // Push them in.
+        for (i, s) in expect.iter().enumerate() {
+            ctx.push(*s);
+
+            assert_eq!(i + 1, ctx.level());
+            assert_eq!(Some(*s), ctx.peek());
+            assert!(ctx.is_struct());
+            let progress = expect[0..=i].to_vec();
+            assert_eq!(progress, ctx.iter().collect::<Vec<_>>());
+            let iter = ctx.clone().into_iter();
+            assert_eq!(i + 1, iter.len());
+            assert_eq!(progress, iter.map(Into::into).collect::<Vec<_>>());
+        }
+
+        // Pop them back out.
+        for (i, s) in expect.iter().enumerate().rev() {
+            assert_eq!(i + 1, ctx.level());
+            assert_eq!(Some(*s), ctx.peek());
+            assert!(ctx.is_struct());
+            let progress = expect[0..=i].to_vec();
+            assert_eq!(progress, ctx.iter().collect::<Vec<_>>());
+            let iter = ctx.clone().into_iter();
+            assert_eq!(i + 1, iter.len());
+            assert_eq!(progress, iter.map(Into::into).collect::<Vec<_>>());
+
+            ctx.pop();
+        }
+
+        // Verify final state.
+        assert_eq!(0, ctx.level());
+        assert_eq!(None, ctx.peek());
+        assert!(!ctx.is_struct());
+        assert_eq!(Vec::<StructKind>::new(), ctx.iter().collect::<Vec<_>>());
     }
 
     #[rstest]
