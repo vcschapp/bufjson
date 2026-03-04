@@ -425,7 +425,7 @@ impl Builder {
                 self.prefix_len = next.prefix_len;
             } else {
                 break Group {
-                    nodes: Self::sort_index_children(self.nodes),
+                    nodes: self.nodes,
                     parents: self.parents,
                     pointers: self
                         .parsed_pointers
@@ -471,7 +471,20 @@ impl Builder {
     }
 
     fn enqueue_index_children(&mut self, end_index: usize) {
-        for (i, parsed_pointer) in self
+        // Buffer index nodes locally so we can sort into numerical order before adding them to the
+        // main queue.
+        struct LocalChild {
+            index: u64,
+            start_index: usize,
+            pointer_index: usize,
+        }
+        let mut local_buf = Vec::new();
+
+        // Index of the child that was previously added to the local buffer.
+        let mut prev = None;
+
+        // Add the nodes to the queue.
+        for (pointer_index, parsed_pointer) in self
             .parsed_pointers
             .iter()
             .enumerate()
@@ -481,38 +494,38 @@ impl Builder {
             let ref_token = parsed_pointer.ref_token_of(self.level);
             if let Ok(index) = ref_token.parse::<u64>()
                 && (ref_token.len() == 1 || !ref_token.starts_with('0'))
+                && !matches!(prev, Some(x) if x == index)
             {
+                prev = Some(index);
                 let start_index = if parsed_pointer.has_more_tokens(self.level) {
-                    i
+                    pointer_index
                 } else {
-                    i + 1
+                    pointer_index + 1
                 };
-                let child = Node::new_index(index, self.matched(true, i));
-                enqueue_child!(self, child, start_index, self.level + 1, i, 0);
-            }
-        }
-    }
-
-    fn sort_index_children(mut nodes: Vec<Node>) -> Vec<Node> {
-        for i in 0..nodes.len() {
-            let node = &nodes[i];
-            if node.num_index_children > 0 {
-                let j = (node.child_index.unwrap().get()
-                    + node.num_trie_children
-                    + node.num_name_children) as usize;
-                let k = j + node.num_index_children as usize;
-
-                nodes[j..k].sort_by_key(|n| {
-                    if let InnerNode::Index(index) = n.inner {
-                        index
-                    } else {
-                        unreachable!()
-                    }
+                local_buf.push(LocalChild {
+                    index,
+                    start_index,
+                    pointer_index,
                 });
             }
         }
 
-        nodes
+        // The indices were buffered in lexicographical order, because that's the order in which
+        // the reference tokens came in sorted. Re-sort them into numerical order.
+        local_buf.sort_unstable_by_key(|n| n.index);
+
+        // Push the new index nodes into the queue.
+        for n in local_buf {
+            let child = Node::new_index(n.index, self.matched(true, n.pointer_index));
+            enqueue_child!(
+                self,
+                child,
+                n.start_index,
+                self.level + 1,
+                n.pointer_index,
+                0
+            );
+        }
     }
 
     fn matched(&self, is_complete_token: bool, pointer_index: usize) -> Option<usize> {
@@ -1012,6 +1025,15 @@ mod tests {
         Node::new_index(0, Some(0)),
         Node::new_trie("9", Some(1)),
     ], [0, 0, 1])]
+    #[case::two_slash_0_and_slash_0_slash_1(["/0", "/0/1"], [
+        Node::default().with_child_index(1).with_name_children(1).with_index_children(1),
+        Node::new_name("0", Some(0)).with_child_index(3).with_name_children(1).with_index_children(1),
+        Node::new_index(0, Some(0)).with_child_index(5).with_name_children(1).with_index_children(1),
+        Node::new_name("1", Some(1)),
+        Node::new_index(1, Some(1)),
+        Node::new_name("1", Some(1)),
+        Node::new_index(1, Some(1)),
+    ], [0, 0, 1, 1, 2, 2])]
     #[case::two_slash_ab_and_slash_ac(["/ab", "/ac"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("a", None).with_child_index(2).with_trie_children(2),
@@ -1165,7 +1187,33 @@ mod tests {
         Node::new_trie("c", Some(3)),
         Node::new_trie("c", Some(2)),
     ], [0, 1, 1, 2])]
-    #[case::big(["", "/0", "/bar", "/foo", "/foo", "/foo/0", "/foo/1/ish", "/foo/baz", "/fool", "/fool/ish", "/fool/ish", "/foolish", "/foolish/ness", "/foolishness/~0", "/foot", "/qux/corge"], [
+    #[case::big1(["", "/0", "/1", "/1/1", "/1/3", "/10", "/3", "/3/0"], [
+        // Root.
+        /*  0 */ Node::default().with_match_index(0).with_child_index(1).with_name_children(3).with_index_children(4),
+        // Level 1.
+        /*  1 */ Node::new_name("0", Some(1)),
+        /*  2 */ Node::new_name("1", Some(2)).with_child_index(8).with_trie_children(1).with_name_children(2).with_index_children(2),
+        /*  3 */ Node::new_name("3", Some(6)).with_child_index(13).with_name_children(1).with_index_children(1),
+        /*  4 */ Node::new_index(0, Some(1)),
+        /*  5 */ Node::new_index(1, Some(2)).with_child_index(15).with_name_children(2).with_index_children(2),
+        /*  6 */ Node::new_index(3, Some(6)).with_child_index(19).with_name_children(1).with_index_children(1),
+        /*  7 */ Node::new_index(10, Some(5)),
+        // Level 2.
+        /*  8 */ Node::new_trie("0", Some(5)),
+        /*  9 */ Node::new_name("1", Some(3)),
+        /* 10 */ Node::new_name("3", Some(4)),
+        /* 11 */ Node::new_index(1, Some(3)),
+        /* 12 */ Node::new_index(3, Some(4)),
+        /* 13 */ Node::new_name("0", Some(7)),
+        /* 14 */ Node::new_index(0, Some(7)),
+        /* 15 */ Node::new_name("1", Some(3)),
+        /* 16 */ Node::new_name("3", Some(4)),
+        /* 17 */ Node::new_index(1, Some(3)),
+        /* 18 */ Node::new_index(3, Some(4)),
+        /* 19 */ Node::new_name("0", Some(7)),
+        /* 20 */ Node::new_index(0, Some(7)),
+    ], [0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 3, 3, 5, 5, 5, 5, 6, 6])]
+    #[case::big2(["", "/0", "/bar", "/foo", "/foo", "/foo/0", "/foo/1/ish", "/foo/baz", "/fool", "/fool/ish", "/fool/ish", "/foolish", "/foolish/ness", "/foolishness/~0", "/foot", "/qux/corge"], [
         // Root.
         /*  0 */ Node::default().with_child_index(1).with_name_children(4).with_index_children(1).with_match_index(0),
         // Level 1.
