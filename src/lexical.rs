@@ -151,6 +151,24 @@ pub enum Token {
 }
 
 impl Token {
+    /// Complete list of token variants.
+    pub const ALL: &[Token] = &[
+        Self::ArrBegin,
+        Self::ArrEnd,
+        Self::Eof,
+        Self::Err,
+        Self::LitFalse,
+        Self::LitNull,
+        Self::LitTrue,
+        Self::NameSep,
+        Self::Num,
+        Self::ObjBegin,
+        Self::ObjEnd,
+        Self::Str,
+        Self::ValueSep,
+        Self::White,
+    ];
+
     /// Returns `true` for the [`Eof`] pseudo-token and `false` otherwise.
     ///
     /// Since a stream of JSON text can stop due to either the physical end of the stream
