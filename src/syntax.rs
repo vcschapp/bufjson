@@ -296,6 +296,19 @@ impl IntoIterator for StructContext {
     }
 }
 
+impl PartialEq<StructContext> for StructContext {
+    fn eq(&self, other: &StructContext) -> bool {
+        match (self, other) {
+            (Self::Inline(m, a), Self::Inline(n, b)) => m == n && a[..*m] == b[..*m],
+            (Self::Inline(m, a), Self::Heap(w)) => *m == w.len() && &a[..*m] == w,
+            (Self::Heap(v), Self::Inline(n, b)) => v.len() == *n && &b[..*n] == v,
+            (Self::Heap(v), Self::Heap(w)) => v == w,
+        }
+    }
+}
+
+impl Eq for StructContext {}
+
 #[doc(hidden)]
 pub enum StructContextIntoIter {
     Inline(Take<<BitArray<[usize; INLINE_LEN_USIZES]> as IntoIterator>::IntoIter>),
@@ -332,7 +345,7 @@ impl Default for StructContext {
 ///
 /// Returned from the method [`Parser::context`] and stored on syntax errors in
 /// [`ErrorKind::Syntax`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Context {
     inner: StructContext,
     expect: Expect,
@@ -531,7 +544,7 @@ enum Content {
 }
 
 /// Category of parsing error that can occur while parsing a JSON text.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorKind {
     /// The next lexical token is a `{` or `[` character that would cause the parser's configured
     /// [maximum nesting level][Parser::max_level] to be exceeded.
@@ -1469,6 +1482,7 @@ mod tests {
         let mut ctx = StructContext::default();
 
         // Verify initial state.
+        assert_eq!(ctx, ctx);
         assert_eq!(0, ctx.level());
         assert_eq!(None, ctx.peek());
         assert!(!ctx.is_struct());
@@ -1476,7 +1490,12 @@ mod tests {
 
         // Push them in.
         for (i, s) in expect.iter().enumerate() {
+            let prev_ctx = ctx.clone();
             ctx.push(*s);
+
+            assert_eq!(ctx, ctx);
+            assert_ne!(prev_ctx, ctx);
+            assert_ne!(ctx, prev_ctx);
 
             assert_eq!(i + 1, ctx.level());
             assert_eq!(Some(*s), ctx.peek());
@@ -1499,10 +1518,16 @@ mod tests {
             assert_eq!(i + 1, iter.len());
             assert_eq!(progress, iter.map(Into::into).collect::<Vec<_>>());
 
+            let prev_ctx = ctx.clone();
             ctx.pop();
+
+            assert_eq!(ctx, ctx);
+            assert_ne!(prev_ctx, ctx);
+            assert_ne!(ctx, prev_ctx);
         }
 
         // Verify final state.
+        assert_eq!(ctx, ctx);
         assert_eq!(0, ctx.level());
         assert_eq!(None, ctx.peek());
         assert!(!ctx.is_struct());
