@@ -788,8 +788,6 @@ mod tests {
 
         assert_eq!(s, c.literal());
 
-        eprintln!(" HERE'S THE THING! {c:?}");
-
         match unescaped {
             Some(u) => assert_eq!(u, c.unescaped()),
             None => assert!(!c.is_escaped()),

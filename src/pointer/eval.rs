@@ -928,6 +928,11 @@ mod tests {
         let exit = Event::Exit(Token::ArrEnd, &pointer);
         let match_ = Event::Match(Token::Str, &pointer);
 
+        assert!(nil.is_nil());
+        assert!(enter.is_enter());
+        assert!(exit.is_exit());
+        assert!(match_.is_match());
+
         validate(nil, [enter, exit, match_]);
         validate(enter, [nil, exit, match_]);
         validate(exit, [nil, enter, match_]);
@@ -1278,11 +1283,6 @@ mod tests {
         assert_eq!(Token::Eof, terminal);
         assert_eq!(expect, events);
     }
-
-    // TODO: dedicated test cases for unescaping
-    // TODO: dedicated test cases for buf splitting issues.
-    // TODO: dedicated test cases for ASCII case insensitivity.
-    // TODO: dedicated test cases for true Unicode case folding.
 
     #[rstest]
     #[case::no_unescape(false)]

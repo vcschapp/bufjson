@@ -158,11 +158,16 @@ impl ParsedPointer {
 
     #[cfg(feature = "ignore_case")]
     fn case_fold<'a>(ref_token: Cow<'a, str>) -> String {
-        match ref_token.is_ascii() {
-            true if matches!(ref_token, Cow::Borrowed(_)) => ref_token.to_lowercase(),
-            true if ref_token.bytes().any(|b| b.is_ascii_uppercase()) => ref_token.to_lowercase(),
-            true => ref_token.into_owned(),
-            false => caseless::default_case_fold_str(ref_token.as_ref()),
+        // We expect all the input Cows to be borrowed, because they all come from
+        // Pointer::ref_tokens, which borrows. If there was a chance or receiving owned Cows, we
+        // might want to check for non-lowercase characters in the ASCII branch to see if we ned to
+        // call `.to_lowercase()` (always allocates) or if we can get away with `.into_owned()`.
+        debug_assert!(matches!(ref_token, Cow::Borrowed(_)));
+
+        if ref_token.is_ascii() {
+            ref_token.to_lowercase()
+        } else {
+            caseless::default_case_fold_str(ref_token.as_ref())
         }
     }
 
@@ -571,7 +576,7 @@ impl Builder {
 
     #[inline]
     fn common_prefix_len(a: &str, b: &str) -> usize {
-        a.chars().zip(b.chars()).take_while(|(a, b)| a == b).count()
+        a.bytes().zip(b.bytes()).take_while(|(a, b)| a == b).count()
     }
 }
 
@@ -824,6 +829,12 @@ impl Group {
     }
 }
 
+impl AsRef<Group> for Group {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
 impl From<Pointer> for Group {
     fn from(pointer: Pointer) -> Self {
         Self::from_pointer(pointer)
@@ -841,6 +852,27 @@ mod tests {
     use super::*;
     use rstest::rstest;
     use std::fmt;
+
+    #[rstest]
+    #[case::name_no_match(Node::new_name("foo", None), "foo")]
+    #[case::name_match(Node::new_name("bar", Some(0)), "bar")]
+    #[case::trie_no_match(Node::new_trie("baz", None), "baz")]
+    #[case::trie_no_match(Node::new_trie("qux", Some(0)), "qux")]
+    fn test_node_name_part_ok(#[case] node: Node, #[case] expect: &str) {
+        assert_eq!(expect, node.name_part());
+    }
+
+    #[test]
+    #[should_panic(expected = "root node does not have a name part")]
+    fn test_node_name_part_panic_root() {
+        let _ = Node::default().name_part();
+    }
+
+    #[test]
+    #[should_panic(expected = "index node does not have a name part")]
+    fn test_node_name_part_panic_index() {
+        let _ = Node::new_index(0, None).name_part();
+    }
 
     #[rstest]
     #[case("", "", 0)]
@@ -1291,6 +1323,14 @@ mod tests {
 
     #[rstest]
     #[cfg(feature = "ignore_case")]
+    #[case(["/strasse"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("strasse", Some(0)),
+    ], [0])]
+    #[case(["/STRASSE"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("strasse", Some(0)),
+    ], [0])]
     #[case(["/Straße"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("strasse", Some(0)),

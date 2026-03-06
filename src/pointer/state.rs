@@ -14,8 +14,10 @@ use crate::{
         group::{InnerNode, Node},
     },
 };
+#[cfg(feature = "ignore_case")]
+use caseless::Caseless;
 use smallvec::{SmallVec, smallvec};
-use std::{cmp::Ordering, ops::Range};
+use std::{cmp::Ordering, iter::Peekable, ops::Range};
 
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
 enum State {
@@ -611,20 +613,32 @@ impl<G: AsRef<Group>> Machine<G> {
     }
 
     fn find_name_child_in_buf<B: Buf>(
-        &mut self,
+        &self,
         node_range: Range<usize>,
         mut name_buf: B,
     ) -> Option<usize> {
         Self::consume_quote(&mut name_buf);
 
-        #[cfg(not(feature = "ignore_case"))]
-        let child_node = { self.find_name_child_exact(node_range, &mut name_buf) };
+        let name_iter = BufIter::new(&mut name_buf);
 
-        #[cfg(feature = "ignore_case")]
-        let child_node = if !self.group().ignore_case {
-            self.find_name_child_exact(node_range, &mut name_buf)
-        } else {
-            self.find_name_child_ignore_case(node_range, &mut name_buf)
+        let child_node = {
+            #[cfg(not(feature = "ignore_case"))]
+            {
+                let mut name_iter = name_iter.peekable();
+
+                self.find_name_child_iter(node_range, &mut name_iter)
+            }
+
+            #[cfg(feature = "ignore_case")]
+            if !self.group().ignore_case {
+                let mut name_iter = name_iter.peekable();
+
+                self.find_name_child_iter(node_range, &mut name_iter)
+            } else {
+                let mut name_iter = name_iter.default_case_fold().peekable();
+
+                self.find_name_child_iter(node_range, &mut name_iter)
+            }
         };
 
         if name_buf.remaining() > 1 {
@@ -635,104 +649,127 @@ impl<G: AsRef<Group>> Machine<G> {
         child_node
     }
 
-    fn find_name_child_exact<B: Buf>(
-        &mut self,
+    fn find_name_child_iter<I>(
+        &self,
         node_range: Range<usize>,
-        name_buf: &mut B,
-    ) -> Option<usize> {
-        // Get the next chunk from the buffer.
-        let (mut chunk, mut has_more_after_chunk) = Self::next_unquoted_chunk(name_buf);
-
-        // Find the first viable index where the child may occur.
-        let start_index: usize = if node_range.len() <= Self::MAX_LINEAR_SEARCH_LEN {
-            self.group().nodes[node_range.clone()]
-                .iter()
-                .position(|child| Self::one_prefixes_other(child.name_part(), chunk))
-                .map(|i| node_range.start + i)?
+        name_iter: &mut Peekable<I>,
+    ) -> Option<usize>
+    where
+        I: Iterator<Item = char>,
+    {
+        // Find the index of the node within the node range where the member name may match. This is
+        // always an exact match, so if we get a matching child index, it's a full amtch at this
+        // elvel of the trie.
+        let current_index: usize = if node_range.len() <= Self::MAX_LINEAR_SEARCH_LEN {
+            self.iter_search_linear(node_range.clone(), name_iter)
         } else {
-            let closest_index = node_range.start
-                + self.group().nodes[node_range.clone()]
-                    .binary_search_by(|child| {
-                        let s = child.name_part();
-                        let len = s.len().min(chunk.len());
-                        match s.as_bytes()[..len].cmp(&chunk[..len]) {
-                            Ordering::Equal => Ordering::Greater, // Found prefix match, search left.
-                            ord => ord,
-                        }
-                    })
-                    .unwrap_err();
-
-            if closest_index < self.group().nodes.len()
-                && Self::one_prefixes_other(self.node_at_index(closest_index).name_part(), chunk)
-            {
-                closest_index
-            } else {
-                return None;
-            }
-        };
+            self.iter_search_binary(node_range.clone(), name_iter)
+        }?;
 
         // Searching linearly from the first viable index, find index of the child node whose name
-        // fully consumes the bytes available from the member name buffer.
-        let current_index = start_index;
-        let current_node = self.node_at_index(current_index);
-        let mut s = current_node.name_part();
-        loop {
-            debug_assert!(
-                Self::one_prefixes_other(s.as_bytes(), chunk),
-                "one of `s` or `chunk` must be a bytewise prefix of the other; but this is not true for {s:?} and {chunk:?}"
-            );
+        // fully consumes the characters available from the case-insensitive member name iterator.
+        let has_more_chars = name_iter.peek().is_some();
+        let current_node = &self.group().nodes[current_index];
+        if !has_more_chars
+            && (current_node.match_index.is_some() || current_node.num_trie_children == 0)
+        {
+            Some(current_index)
+        } else if has_more_chars && current_node.num_trie_children > 0 {
+            let i = current_node
+                .child_index
+                .expect("node with trie children must have child index")
+                .get() as usize;
+            let j = i + current_node.num_trie_children as usize;
 
-            if s.len() > chunk.len() && !has_more_after_chunk {
-                // Name isn't long enough to match this node.
-                return None;
-            } else if s.len() == chunk.len()
-                && !has_more_after_chunk
-                && (current_node.match_index.is_some() || current_node.num_trie_children == 0)
-            {
-                // Full match.
-                return Some(current_index);
-            } else if s.len() < chunk.len() || (s.len() == chunk.len() && has_more_after_chunk) {
-                // Full prefix match at this level, but name has unmatched suffix.
-                if current_node.num_trie_children > 0 {
-                    let i = current_node
-                        .child_index
-                        .expect("node with trie children must have child index")
-                        .get() as usize;
-                    let j = i + current_node.num_trie_children as usize;
-                    name_buf.advance(s.len());
-
-                    return self.find_name_child_exact(i..j, name_buf);
-                } else {
-                    return None;
-                }
-            } else {
-                // Name has more bytes available to try matching at this level.
-                let common_len = chunk.len().min(s.len());
-                name_buf.advance(chunk.len());
-                #[allow(unused)]
-                {
-                    chunk = &[]; // Cancel the immutable borrow so we can borrow mutably.
-                }
-                (chunk, has_more_after_chunk) = Self::next_unquoted_chunk(name_buf);
-                debug_assert!(
-                    !chunk.is_empty(),
-                    "got an empty chunk even though more bytes were expected after the previous chunk"
-                );
-                s = &s[common_len..];
-                if !Self::one_prefixes_other(s, chunk) {
-                    return None;
-                }
-            }
+            self.find_name_child_iter(i..j, name_iter)
+        } else {
+            None
         }
     }
 
-    #[cfg(feature = "ignore_case")]
-    fn find_name_child_ignore_case<B: Buf>(
-        &mut self,
-        _node_range: Range<usize>,
-        _name_buf: &mut B,
-    ) -> Option<usize> {
-        todo!("case=insensitive matching")
+    /// Finds the index within the range of node indices that is a complete prefix match of the
+    /// name by linear search.
+    fn iter_search_linear<I>(
+        &self,
+        node_range: Range<usize>,
+        name_iter: &mut Peekable<I>,
+    ) -> Option<usize>
+    where
+        I: Iterator<Item = char>,
+    {
+        let mut prefix: &str = "";
+        for i in node_range {
+            let s = self.group().nodes[i].name_part();
+            match self.iter_search_compare(s, &mut prefix, name_iter) {
+                Ordering::Equal => return Some(i),
+                Ordering::Less => continue,
+                Ordering::Greater => return None,
+            }
+        }
+
+        None
+    }
+
+    // Finds the index within the range of node indices that is a complete prefix match of the name
+    // by binary search.
+    fn iter_search_binary<I>(
+        &self,
+        node_range: Range<usize>,
+        name_iter: &mut Peekable<I>,
+    ) -> Option<usize>
+    where
+        I: Iterator<Item = char>,
+    {
+        let mut prefix: &str = "";
+        let mut lo = node_range.start;
+        let mut hi = node_range.end;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            match self.iter_search_compare(
+                self.group().nodes[mid].name_part(),
+                &mut prefix,
+                name_iter,
+            ) {
+                Ordering::Less => lo = mid + 1,
+                Ordering::Greater => hi = mid,
+                Ordering::Equal => return Some(mid),
+            }
+        }
+
+        None
+    }
+
+    fn iter_search_compare<'a, I>(
+        &self,
+        s: &'a str,
+        prefix: &mut &'a str,
+        name_iter: &mut Peekable<I>,
+    ) -> Ordering
+    where
+        I: Iterator<Item = char>,
+    {
+        if !s.starts_with(*prefix) {
+            return s.cmp(prefix);
+        }
+
+        let mut s_iter = s.chars().skip(prefix.len());
+        let mut n = prefix.len();
+
+        let ord = loop {
+            match (s_iter.next(), name_iter.peek()) {
+                (None, _) => break Ordering::Equal,
+                (Some(want), Some(have)) if want == *have => {
+                    name_iter.next();
+                    n += want.len_utf8();
+                }
+                (Some(want), Some(have)) => break want.cmp(have),
+                (Some(_), None) => break Ordering::Greater,
+            }
+        };
+
+        *prefix = &s[..n];
+
+        ord
     }
 
     fn consume_quote<B: Buf>(name: &mut B) {
@@ -741,29 +778,120 @@ impl<G: AsRef<Group>> Machine<G> {
             panic!("member name must be a valid JSON string enclosed in double quotes ('\"')");
         }
     }
+}
 
-    fn next_unquoted_chunk<B: Buf>(b: &B) -> (&[u8], bool) {
-        let chunk = b.chunk();
-        if chunk.len() + 2 <= b.remaining() {
-            (chunk, true) // At least two more byte remain, of which the ending double quote is one.
-        } else if !chunk.is_empty() && chunk.len() == b.remaining() {
-            (&chunk[..chunk.len() - 1], false) // All remaining bytes are in non-empty chunk.
-        } else {
-            (chunk, false) // Chunk is empty, or the only byte remaming is the ending double quote.
-        }
+/// Iterator over the characters in a `Buf` that does not consume the last byte.
+#[derive(Debug)]
+pub struct BufIter<'a, B> {
+    buf: &'a mut B, // `Buf` being converted to an iterator.
+    pos: usize,     // Position within the current chunk.
+}
+
+impl<'a, B: Buf> BufIter<'a, B> {
+    pub fn new(buf: &'a mut B) -> Self {
+        Self { buf, pos: 0 }
     }
 
-    #[inline]
-    fn one_prefixes_other(a: impl AsRef<[u8]>, b: impl AsRef<[u8]>) -> bool {
-        let (a, b) = (a.as_ref(), b.as_ref());
-        let (shorter, longer) = if a.len() < b.len() { (a, b) } else { (b, a) };
-        longer.starts_with(shorter)
+    fn has_more_chars(&self) -> bool {
+        let n = self.buf.chunk().len();
+
+        if self.pos + 1 < n {
+            // At least two chars still in this chunk, enough for 1 real char plus the ending
+            // double quote.
+            true
+        } else if self.pos < n {
+            // At least one char still in this chunk, need 1 more remaining for ending double quote.
+            n < self.buf.remaining()
+        } else {
+            // Chunk is exhausted, need at least 2 chars remaining, enough for 1 real char plus
+            // the ending double quote.
+            n + 1 < self.buf.remaining()
+        }
     }
 }
 
-impl AsRef<Group> for Group {
-    fn as_ref(&self) -> &Self {
-        self
+impl<'a, B: Buf> Iterator for BufIter<'a, B> {
+    type Item = char;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !self.has_more_chars() {
+            return None;
+        }
+
+        let mut chunk = self.buf.chunk();
+        if self.pos == chunk.len() {
+            let n = chunk.len();
+            #[allow(unused)]
+            {
+                chunk = &[]; // Cancel the immutable borrow so we can borrow mutably.
+            }
+            self.buf.advance(n);
+            self.pos = 0;
+            chunk = self.buf.chunk();
+        }
+
+        let b = chunk[self.pos];
+        if b.is_ascii() {
+            self.pos += 1;
+
+            return Some(char::from(b));
+        }
+
+        let m = match b >> 4 {
+            0b1100 | 0b1101 => 2,
+            0b1110 => 3,
+            0b1111 => 4,
+            _ => panic!("unexpected UTF-8 continuation byte {b:02x}"),
+        };
+
+        let rem = self.buf.remaining() - self.pos;
+        if rem < m + 1 {
+            panic!(
+                "only {rem} bytes remaining, not enough to complete {m}-byte sequenced started by {b:02x}"
+            );
+        }
+
+        let mut tmp = [b, 0, 0, 0];
+        self.pos += 1;
+
+        for b in tmp.iter_mut().take(m).skip(1) {
+            if self.pos == chunk.len() {
+                let n = chunk.len();
+                #[allow(unused)]
+                {
+                    chunk = &[]; // Cancel the immutable borrow so we can borrow mutably.
+                }
+                self.buf.advance(n);
+                self.pos = 0;
+                chunk = self.buf.chunk();
+            }
+
+            *b = chunk[self.pos];
+            self.pos += 1;
+        }
+
+        let code_point = match m {
+            2 => ((tmp[0] as u32 & 0x1f) << 6) | (tmp[1] as u32 & 0x3f),
+            3 => {
+                ((tmp[0] as u32 & 0x0f) << 12)
+                    | ((tmp[1] as u32 & 0x3f) << 6)
+                    | (tmp[2] as u32 & 0x3f)
+            }
+            4 => {
+                ((tmp[0] as u32 & 0x07) << 18)
+                    | ((tmp[1] as u32 & 0x3f) << 12)
+                    | ((tmp[2] as u32 & 0x3f) << 6)
+                    | (tmp[3] as u32 & 0x3f)
+            }
+            _ => unreachable!(),
+        };
+
+        let c = char::from_u32(code_point);
+        if c.is_some() {
+            c
+        } else {
+            panic!("invalid {m}-byte UTF-8 character: {:02x?}", &tmp[..m]);
+        }
     }
 }
 
@@ -771,8 +899,9 @@ impl AsRef<Group> for Group {
 mod tests {
     use super::*;
     use crate::{BufUnderflow, lexical::fixed, pointer::Pointer};
+    #[cfg(feature = "ignore_case")]
+    use caseless::default_case_fold_str;
     use rstest::rstest;
-    use std::fmt;
 
     macro_rules! for_ignore_case_options {
         ($pointers:expr, $unescape:expr, |$mach:ident, $ignore_case:ident| $b:block) => {
@@ -808,91 +937,11 @@ mod tests {
     }
 
     #[rstest]
-    #[case::empty_fixed(fixed::Content::from_static(r#""""#), [""])]
-    #[case::empty_chunky_1(ChunkyContent::new(r#""""#, 1), [""])]
-    #[case::empty_chunky_2(ChunkyContent::new(r#""""#, 2), [""])]
-    #[case::one_fixed(fixed::Content::from_static(r#""a""#), ["a"])]
-    #[case::one_chunky_1(ChunkyContent::new(r#""a""#, 1), ["a"])]
-    #[case::one_chunky_2(ChunkyContent::new(r#""a""#, 2), ["a"])]
-    #[case::one_chunky_3(ChunkyContent::new(r#""a""#, 3), ["a"])]
-    #[case::two_fixed(fixed::Content::from_static(r#""aa""#), ["aa"])]
-    #[case::two_chunky_1(ChunkyContent::new(r#""ab""#, 1), ["a", "b"])]
-    #[case::two_chunky_2(ChunkyContent::new(r#""ab""#, 2), ["a", "b"])]
-    #[case::two_chunky_3(ChunkyContent::new(r#""ab""#, 3), ["ab"])]
-    #[case::three_fixed(fixed::Content::from_static(r#""abc""#), ["abc"])]
-    #[case::three_chunky_1(ChunkyContent::new(r#""abc""#, 1), ["a", "b", "c"])]
-    #[case::three_chunky_2(ChunkyContent::new(r#""abc""#, 2), ["a", "bc"])]
-    #[case::three_chunky_3(ChunkyContent::new(r#""abc""#, 3), ["ab", "c"])]
-    #[case::three_chunky_4(ChunkyContent::new(r#""abc""#, 4), ["abc"])]
-    fn next_unquoted_chunk<C, R, I>(#[case] c: C, #[case] expect_chunks: I)
-    where
-        C: lexical::Content,
-        R: AsRef<[u8]> + fmt::Debug,
-        I: IntoIterator<Item = R>,
-    {
-        let mut b = c.literal().into_buf();
-        Machine::<Group>::consume_quote(&mut b);
-
-        let mut prev_has_more = true;
-
-        for (i, r) in expect_chunks.into_iter().enumerate() {
-            assert!(
-                prev_has_more,
-                "previous iteration said has_more=false, but current iteration {i} expects a chunk: {r:?}"
-            );
-
-            let rem = b.remaining();
-            let expect = r.as_ref();
-            let (actual, actual_has_more) = Machine::<Group>::next_unquoted_chunk(&mut b);
-            let n = actual.len();
-            let expect_has_more = rem >= actual.len() + 2;
-
-            assert_eq!(
-                expect,
-                actual,
-                "content mismatch at chunk {i}: expected {r:?} ({} bytes), got {actual:?} ({} bytes)",
-                expect.len(),
-                actual.len()
-            );
-            assert_eq!(
-                expect_has_more,
-                actual_has_more,
-                "has more mismatch at chunk {i}: expect {expect_has_more}, got {actual_has_more}, actual.len()={}, b.remaining={}",
-                actual.len(),
-                rem
-            );
-            assert_eq!(rem, b.remaining());
-
-            b.advance(n);
-            prev_has_more = actual_has_more;
-        }
-
-        let rem = b.remaining();
-        let (actual, actual_has_more) = Machine::<Group>::next_unquoted_chunk(&mut b);
-        assert_eq!(
-            b"",
-            actual,
-            "content mismatch at end: expected \"\" (0 bytes), got {actual:?} ({} bytes)",
-            actual.len()
-        );
-        assert_eq!(
-            false,
-            actual_has_more,
-            "has more mismatch at end: expect false, got {actual_has_more}, actual.len()={}, b.remaining={}",
-            actual.len(),
-            rem
-        );
-
-        Machine::<Group>::consume_quote(&mut b);
-        assert_eq!(0, b.remaining());
-    }
-
-    #[rstest]
     #[case::array(|m: &mut Machine| { m.arr_begin(); })]
     #[case::object(|m: &mut Machine| { m.obj_begin(); })]
     #[case::primitive(|m: &mut Machine| { m.primitive(); })]
     #[should_panic(expected = "value not allowed in skipped array")]
-    fn arr_begin_panics_when_should_skip<T>(#[case] trigger: T)
+    fn test_arr_begin_panics_when_should_skip<T>(#[case] trigger: T)
     where
         T: Fn(&mut Machine),
     {
@@ -911,7 +960,7 @@ mod tests {
     #[case::object(|m: &mut Machine| { m.obj_begin(); })]
     #[case::primitive(|m: &mut Machine| { m.primitive(); })]
     #[should_panic(expected = "value not allowed in skipped array")]
-    fn arr_begin_panics_when_should_skip_outer_obj<T>(#[case] trigger: T)
+    fn test_arr_begin_panics_when_should_skip_outer_obj<T>(#[case] trigger: T)
     where
         T: Fn(&mut Machine),
     {
@@ -938,7 +987,7 @@ mod tests {
     #[case::object(|m: &mut Machine| { m.obj_begin(); })]
     #[case::object_member(|m: &mut Machine| { m.obj_begin(); m.member_name(fixed::Content::from_static(r#""""#)); })]
     #[should_panic(expected = "no array to end")]
-    fn arr_end_panics_when_no_arr<S>(#[case] setup: S)
+    fn test_arr_end_panics_when_no_arr<S>(#[case] setup: S)
     where
         S: Fn(&mut Machine),
     {
@@ -957,7 +1006,7 @@ mod tests {
     #[case::object(|m: &mut Machine| { m.obj_begin(); })]
     #[case::primitive(|m: &mut Machine| { m.primitive(); })]
     #[should_panic(expected = "value not allowed in skipped object")]
-    fn obj_begin_panics_when_should_skip<T>(#[case] trigger: T)
+    fn test_obj_begin_panics_when_should_skip<T>(#[case] trigger: T)
     where
         T: Fn(&mut Machine),
     {
@@ -976,7 +1025,7 @@ mod tests {
     #[case::object(|m: &mut Machine| { m.obj_begin(); })]
     #[case::primitive(|m: &mut Machine| { m.primitive(); })]
     #[should_panic(expected = "value not allowed in skipped object")]
-    fn obj_begin_panics_when_should_skip_outer_obj<T>(#[case] trigger: T)
+    fn test_obj_begin_panics_when_should_skip_outer_obj<T>(#[case] trigger: T)
     where
         T: Fn(&mut Machine),
     {
@@ -1002,7 +1051,7 @@ mod tests {
     #[case::root(|_: &mut Machine| { })]
     #[case::array(|m: &mut Machine| { m.arr_begin(); })]
     #[should_panic(expected = "no object to end")]
-    fn obj_end_panics_when_no_obj<S>(#[case] setup: S)
+    fn test_obj_end_panics_when_no_obj<S>(#[case] setup: S)
     where
         S: Fn(&mut Machine),
     {
@@ -1018,7 +1067,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "member name not allowed in skipped object")]
-    fn member_name_panics_when_should_skip() {
+    fn test_member_name_panics_when_should_skip() {
         for_all_options!(Vec::<Pointer>::new(), |mach, _unescape, _ignore_case| {
             // Begin a top-level object that has no path to matching anything, as there are no
             // pointers.
@@ -1034,7 +1083,7 @@ mod tests {
     #[case("/something/else")]
     #[case("/something_else")]
     #[should_panic(expected = "member value required before next member name")]
-    fn member_name_panics_when_repeated(#[case] pointer: &'static str) {
+    fn test_member_name_panics_when_repeated(#[case] pointer: &'static str) {
         for_all_options!(
             [Pointer::from_static(pointer)],
             |mach, _unescape, _ignore_case| {
@@ -1057,7 +1106,7 @@ mod tests {
     #[case::root_pointer_root_after_primitive(Some(""), |_: &mut Machine| {})]
     #[case::index_pointer_array(Some("/0"), |m: &mut Machine| { m.arr_begin(); })]
     #[should_panic(expected = "member name not allowed here")]
-    fn member_name_panics_when_not_allowed<S>(
+    fn test_member_name_panics_when_not_allowed<S>(
         #[case] pointer: Option<&'static str>,
         #[case] setup: S,
     ) where
@@ -1090,7 +1139,7 @@ mod tests {
     #[should_panic(
         expected = r#"member name must be a valid JSON string enclosed in double quotes ('"')"#
     )]
-    fn member_name_panics_when_not_double_quoted(#[case] name: &'static str) {
+    fn test_member_name_panics_when_not_double_quoted(#[case] name: &'static str) {
         #[derive(Debug)]
         struct BadContent(&'static str);
 
@@ -1127,7 +1176,7 @@ mod tests {
     #[case::object(|m: &mut Machine| { m.obj_begin(); })]
     #[case::primitive(|m: &mut Machine| { m.primitive(); })]
     #[should_panic(expected = "missing object member name")]
-    fn value_methods_panic_when_obj_missing_member_name_first_value<T>(#[case] trigger: T)
+    fn test_value_methods_panic_when_obj_missing_member_name_first_value<T>(#[case] trigger: T)
     where
         T: Fn(&mut Machine),
     {
@@ -1148,7 +1197,7 @@ mod tests {
     #[case::object(|m: &mut Machine| { m.obj_begin(); })]
     #[case::primitive(|m: &mut Machine| { m.primitive(); })]
     #[should_panic(expected = "missing object member name")]
-    fn value_methods_panic_when_obj_missing_member_name_second_value<T>(#[case] trigger: T)
+    fn test_value_methods_panic_when_obj_missing_member_name_second_value<T>(#[case] trigger: T)
     where
         T: Fn(&mut Machine),
     {
@@ -1174,7 +1223,7 @@ mod tests {
     #[case([Pointer::from_static("/0")], StructAction::Enter)]
     #[case([Pointer::from_static("/a")], StructAction::Skip)]
     #[case([Pointer::from_static("/a"), Pointer::from_static("/1")], StructAction::Enter)]
-    fn empty_array_does_not_match<I>(#[case] pointers: I, #[case] expect_action: StructAction)
+    fn test_empty_array_does_not_match<I>(#[case] pointers: I, #[case] expect_action: StructAction)
     where
         I: IntoIterator<Item = Pointer> + Clone,
     {
@@ -1193,7 +1242,7 @@ mod tests {
     #[case(Vec::<Pointer>::new(), StructAction::Skip)]
     #[case([Pointer::from_static("/")], StructAction::Enter)]
     #[case([Pointer::from_static("/0")], StructAction::Enter)]
-    fn empty_object_does_not_match<I>(#[case] pointers: I, #[case] expect_action: StructAction)
+    fn test_empty_object_does_not_match<I>(#[case] pointers: I, #[case] expect_action: StructAction)
     where
         I: IntoIterator<Item = Pointer> + Clone,
     {
@@ -1212,7 +1261,7 @@ mod tests {
     #[case(Vec::<Pointer>::new())]
     #[case([Pointer::from_static("/")])]
     #[case([Pointer::from_static("/0")])]
-    fn primitive_does_not_match<I>(#[case] pointers: I)
+    fn test_primitive_does_not_match<I>(#[case] pointers: I)
     where
         I: IntoIterator<Item = Pointer> + Clone,
     {
@@ -1229,7 +1278,7 @@ mod tests {
     #[case([Pointer::default()], StructAction::Skip, StructAction::Skip)]
     #[case([Pointer::default(), Pointer::from_static("/")], StructAction::Skip, StructAction::Enter)]
     #[case([Pointer::default(), Pointer::from_static("/0")], StructAction::Enter, StructAction::Enter)]
-    fn root_value_matches<I>(
+    fn test_root_value_matches<I>(
         #[case] pointers: I,
         #[case] arr_action: StructAction,
         #[case] obj_action: StructAction,
@@ -1272,10 +1321,14 @@ mod tests {
 
     #[rstest]
     #[case::empty([""], ["foo"])]
+    #[case::escape_not_expanded(
+        ["\\", "\\\\", "\\\"", "\\t", "\\n", "\\r", "\\u1234"],
+        ["", "a", "\"", "\t", "\n", "\r", "\u{1234}"])
+    ]
     #[case::a(["a"], ["", "ab", " a", "foo"])]
-    #[case::ab(["ab"], ["", "a", " a", "ac", "abc", "foo"])]
-    #[case::abc(["abc"], ["", "a", " a", "ab", "ac", "foo"])]
-    #[case::a_ab(["a", "ab"], ["", "A", "Ab", "abc", "foo", "foo"])]
+    #[case::ab(["ab"], ["", "A", "a", " a", "aB", "ac", "abc", "foo"])]
+    #[case::abc(["abc"], ["", "A", "a", " a", "ab", "ac", "foo"])]
+    #[case::a_ab(["a", "ab"], ["", "abc", "foo", "foo"])]
     #[case::f_mostly([
        "a", "air", "b", "bar", "bat", "baz", "c", "d", "e", "f", "fan", "fanatical", "fang", "fig",
        "fight", "foal", "fob", "fog", "folly", "foo", "food", "fool", "foolery", "foolhardy",
@@ -1290,7 +1343,14 @@ mod tests {
     ], [
         "grandfather", "grandiloquent", "granite", "grandma", "grandmaster", "grandson", "grant"
     ])]
-    fn chunked_name_matches<I, J>(#[case] ref_tokens: I, #[case] non_matches: J)
+    #[case::utf8_2_byte([
+        "\u{0080}", "\u{07ff}", "\u{0080}\u{07ff}", "\u{0080}foo", "bar\u{0080}"
+    ], [
+        "a", "\u{0081}", "\u{0800}"
+    ])]
+    #[case::utf8_3_byte(["\u{0800}", "\u{ffff}"], ["a", "\u{0080}"])]
+    #[case::utf8_4_byte(["\u{10000}", "\u{10ffff}"], ["a", "\u{0080}", "{\u{0800}"])]
+    fn test_chunked_name_matches<I, J>(#[case] ref_tokens: I, #[case] non_matches: J)
     where
         I: IntoIterator<Item = &'static str> + Clone,
         J: IntoIterator<Item = &'static str> + Clone,
@@ -1298,7 +1358,7 @@ mod tests {
         // This test case exercises the exact name matching logic.
         //
         // The input `ref_tokens` is the list of reference tokens used to create both the pointers
-        // and the synthetic object member names that matche them, while `non_matches` is a list of
+        // and the synthetic object member names that match them, while `non_matches` is a list of
         // member names that don't match any of the pointers.
         //
         // Each test case runs three times, with chunk lengths from 1..3.
@@ -1313,14 +1373,14 @@ mod tests {
 
         for n in 1..=3 {
             // Create the state machine.
-            let mut mach = Machine::new(&g, false);
+            let mut mach = Machine::new(&g, /* do not unescape */ false);
 
             // Start an object.
             assert_eq!((StructAction::Enter, None), mach.obj_begin());
 
             // Check the reference tokens that we made into pointers. Each should match.
             for (i, t) in ref_tokens.clone().into_iter().enumerate() {
-                let quoted = format!("{t:?}");
+                let quoted = format!(r#""{t}""#);
                 mach.member_name(ChunkyContent::new(&quoted, n));
                 assert_eq!(
                     Some(&pointers[i]),
@@ -1333,14 +1393,236 @@ mod tests {
 
             // Check the non-matching strings. None of them should match.
             for (j, x) in non_matches.clone().into_iter().enumerate() {
-                let quoted = format!("{x:?}");
+                let quoted = format!(r#""{x}""#);
+                mach.member_name(ChunkyContent::new(&quoted, n));
+                assert_eq!(None, mach.primitive(), "n={n}, j={j}, non_match={x:?}",);
+            }
+        }
+    }
+
+    #[rstest]
+    #[case::empty([""], [], ["foo"])]
+    #[case::simple_tab(["\t"], ["\\t"], ["\\ta", "\\t\\t"])]
+    #[case::simple_nl(["\n"], ["\\n"], ["\\na", "\\n\\n"])]
+    #[case::simple_cr(["\r"], ["\\r"], ["\\ra", "\\r\\r"])]
+    #[case::simple_backslash(["\\"], ["\\\\"], ["\\\\a", "\\\\\\\\"])]
+    #[case::simple_double_quote(["\""], ["\\\""], ["\"a", "\"\""])]
+    #[case::unicode_utf8_2_bytes(
+        ["\u{0080}", "\u{07ff}", "\u{0080}\u{07ff}", "\u{0080}foo", "bar\u{0080}"],
+        ["\\u0080", "\\u07ff", "\\u07FF", "\\u0080\\u07Ff", "\\u0080foo", "bar\\u0080"],
+        ["a", "\\u0081", "\\u0800"],
+    )]
+    #[case::unicode_utf8_3_bytes(
+        ["\u{0800}", "\u{ffff}"],
+        ["\\u0800", "\\uffff", "\\ufFfF"],
+        ["a", r#"\u0080"#]
+    )]
+    #[case::unicode_utf8_4_bytes(
+        ["\u{10000}", "\u{10ffff}"],
+        ["\\ud800\\uDC00", "\\uDBFF\\udffF"],
+        ["a", "\\uffff", "\\uDBFF\\uDFFE"],
+    )]
+    #[case::json_pointer_escapes(
+        ["~0", "~1", "~0~0", "~0~1", "~1~0", "~1~1"],
+        ["~", "/", "~~", "~/", "/~", "//"],
+        ["~0", "~1", "~0~0", "~0~1", "~1~0", "~1~1"],
+    )]
+    #[case::multiple_pointers(
+        [
+            "\t", "\n", "\r", "\\", "\"", "~0", "~1", "hello, world", r#""hello, world""#,
+            "hello\nworld", "hello\r\nworld", "hello~1world", "hello\\world",
+            "hello\t\nworld", "hello\n\nworld", "hello\r~0world~0",
+        ],
+        [
+            "\\t", "\\n", "\\r", "\\\\", "\\\"", "~", "/", "hello, world", r#"\"hello, world\""#,
+            "hello\\nworld", "hello\\r\\nworld", "hello/world", "hello\\\\world",
+            "hello\\t\\nworld", "hello\\n\\nworld", "hello\\r~world~",
+        ],
+        [
+            "~~", "//", "hello", "hello,", "hello, ", "hello, w", "hello, wo", "hello, wor",
+            "hello, worl", r#"\"hello, world"#, r#"hello, world\""#, "hello\\n", "hello\\r",
+            "hello\\nw", "hello\\nwo", "hello\\nwor", "hello\\nworl", "hello\\nworld",
+        ]
+    )]
+    fn test_chunked_name_matches_unescape<I, J, K>(
+        #[case] ref_tokens: I,
+        #[case] matches: J,
+        #[case] non_matches: K,
+    ) where
+        I: IntoIterator<Item = &'static str>,
+        J: IntoIterator<Item = &'static str> + Clone,
+        K: IntoIterator<Item = &'static str> + Clone,
+    {
+        // This test case exercises the exact name matching logic with expansion of JSON escape
+        // sequences occurring in the member name.
+        //
+        // The input `ref_tokens` is the list of reference tokens used to create the pointers;
+        // and the synthetic object member names that match them; `matches` contain the object
+        // member names that match one of the pointers; and `non_matches` is a list of member names
+        // that don't match any of the pointers.
+        //
+        // Each test case runs three times, with chunk lengths from 1..3.
+
+        // Create the pointer group. We can reuse it once per test case.
+        let pointers: Vec<Pointer> = ref_tokens
+            .into_iter()
+            .map(|t| format!("/{t}").try_into().unwrap())
+            .collect();
+        let g: Group = pointers.clone().into_iter().collect();
+
+        for n in 1..=3 {
+            // Create the state machine.
+            let mut mach = Machine::new(&g, /* unescape */ true);
+
+            // Start an object.
+            assert_eq!((StructAction::Enter, None), mach.obj_begin());
+
+            // Check each of the matches. All of them should match.
+            for (i, m) in matches.clone().into_iter().enumerate() {
+                let quoted = format!(r#""{m}""#);
+                mach.member_name(ChunkyContent::new_escaped(&quoted, n));
+                if let Some(p) = mach.primitive() {
+                    let ref_token = p
+                        .ref_tokens()
+                        .next()
+                        .expect("matched pointer should have a ref token");
+                    let mut unescape_buf = Vec::new();
+                    lexical::unescape(m, &mut unescape_buf);
+                    let unescaped_match = String::from_utf8(unescape_buf).unwrap();
+
+                    assert_eq!(
+                        ref_token, unescaped_match,
+                        "n={n}, i={i}, ref_token={ref_token:?}, match={m:?}, unescaped_match={unescaped_match:?}, pointer={p}",
+                    );
+                } else {
+                    panic!("expected match, but didn't get it: n={n}, i={i}, match={m:?}");
+                }
+            }
+
+            // Check the non-matching strings. None of them should match.
+            for (j, x) in non_matches.clone().into_iter().enumerate() {
+                let quoted = format!(r#""{x}""#);
+                mach.member_name(ChunkyContent::new(&quoted, n));
+                assert_eq!(None, mach.primitive(), "n={n}, j={j}, non_match={x:?}");
+            }
+        }
+    }
+
+    #[cfg(feature = "ignore_case")]
+    #[rstest]
+    #[case::empty([""], None::<&str>, ["foo"])]
+    #[case::escape_not_expanded(
+        ["\\", "\\\\", "\\\"", "\\t", "\\n", "\\r", "\\u1234"],
+        ["\\T", "\\N", "\\R", "\\U1234"],
+        ["", "a", "\"", "\t", "\n", "\r", "\u{1234}"]
+    )]
+    #[case::a(["a"], ["A"], ["", "aa", "aA", "Aa", "AA"])]
+    #[case::ab(["ab"], ["aB", "Ab", "AB"], ["", "aa", "aA", "Aa", "AA"])]
+    #[case::a_upper(["A"], ["a"], ["", "aa", "aA", "Aa", "AA"])]
+    #[case::ab_upper(["AB"], ["ab", "aB", "Ab"], ["", "aa", "aA", "Aa", "AA"])]
+    #[case::friedrichstraße(
+        ["friedrichstraße"],
+        ["Friedrichstraße", "Friedrichstrasse", "FRIEDRICHSTRASSE", "FRIEDRICHSTRASSE"],
+        ["f", "friedrich", "friedrichstrase"]
+    )]
+    #[case::f_mostly([
+       "A", "air", "b", "bar", "bat", "baz", "c", "d", "e", "f", "fan", "fanatical", "fang", "fig",
+       "fight", "foal", "fob", "fog", "folly", "foo", "food", "fool", "foolery", "foolhardy",
+       "fooling", "foolish", "foolishness", "fools", "foolscap", "foot", "football", "footie",
+       "footsie", "for", "forecast", "foreign", "foreigner", "fork", "fox", "foxy",
+       "friar", "Friar Tuck", "fried", "fried eggs",
+       "Friedrichsplatz", "Friedrichstraße", "Friedrichswall", "frill", "frills", "fritter",
+       "frothy",
+       "g", "h",
+    ], [
+        "a", "Baz", "FaNg", "friar tuck", "FRIED EGGS", "friedrichstrasse", "friedrichstraSSe",
+        "frILL",
+    ], [
+       "aim", "ban", "FAANGS", "fanatic", "farm", "figure", "foe", "fool of a Took!", "fooled",
+       "foolhardiness", "foggy", "foxbat", "fried EGG", "friedrich", "Friedrich", "fulsome",
+       "hardy",
+    ])]
+    #[case::utf8_2_byte([
+        "\u{0080}", "\u{07ff}", "\u{0080}\u{07ff}", "\u{0080}foo", "bar\u{0080}"
+    ], ["\u{0080}fOo", "BAR\u{0080}"], [
+        "a", "\u{0081}", "\u{0800}"
+    ])]
+    #[case::utf8_3_byte(["\u{0800}", "\u{ffff}"], [], ["a", "\u{0080}"])]
+    #[case::utf8_4_byte(["\u{10000}", "\u{10ffff}"], [], ["a", "\u{0080}", "{\u{0800}"])]
+    fn test_chunked_name_matches_ignore_case<I, J, K>(
+        #[case] ref_tokens: I,
+        #[case] extra_matches: J,
+        #[case] non_matches: K,
+    ) where
+        I: IntoIterator<Item = &'static str> + Clone,
+        J: IntoIterator<Item = &'static str> + Clone,
+        K: IntoIterator<Item = &'static str> + Clone,
+    {
+        // This test case exercises the case-insensitive matching logic using Unicode case folding.
+        //
+        // The input `ref_tokens` is the list of reference tokens used to create both the pointers
+        // and the synthetic object member names that match them; `extra_matches` contain case
+        // folding variants that match one of the pointers case-insensitively; and `non_matches` is
+        // a list of member names that don't match any of the pointers.
+        //
+        // Each test case runs three times, with chunk lengths from 1..3.
+
+        // Create the pointer group. We can reuse it once per test case.
+        let pointers: Vec<Pointer> = ref_tokens
+            .clone()
+            .into_iter()
+            .map(|t| format!("/{t}").try_into().unwrap())
+            .collect();
+        let g: Group = Group::from_pointers_ignore_case(pointers.clone());
+
+        for n in 1..=3 {
+            // Create the state machine.
+            let mut mach = Machine::new(&g, false);
+
+            // Start an object.
+            assert_eq!((StructAction::Enter, None), mach.obj_begin());
+
+            // Check the reference tokens that we made into pointers. Each should match.
+            for (i, t) in ref_tokens.clone().into_iter().enumerate() {
+                let quoted = format!(r#""{t}""#);
                 mach.member_name(ChunkyContent::new(&quoted, n));
                 assert_eq!(
-                    None,
+                    Some(&pointers[i]),
                     mach.primitive(),
-                    "n={n}, j={j}/{}, non_match={x:?}",
-                    pointers.len()
+                    "n={n}, i={i}/{}, ref_token={t:?}, pointer={}",
+                    pointers.len(),
+                    pointers[i]
                 );
+            }
+
+            // Check each of the additional matches. Again, each should match.
+            for (j, x) in extra_matches.clone().into_iter().enumerate() {
+                let quoted = format!(r#""{x}""#);
+                mach.member_name(ChunkyContent::new(&quoted, n));
+                if let Some(p) = mach.primitive() {
+                    let ref_token = p
+                        .ref_tokens()
+                        .next()
+                        .expect("matched pointer should have a ref token");
+                    let ref_token_case_folded = default_case_fold_str(ref_token.as_ref());
+                    let extra_case_folded = default_case_fold_str(x);
+
+                    assert_eq!(
+                        ref_token_case_folded, extra_case_folded,
+                        "n={n}, j={j}, ref_token={ref_token:?}, extra_match={x:?}, pointer={p}"
+                    );
+                } else {
+                    panic!(
+                        "expected extra match, but didn't get it: n={n}, j={j}, extra_match={x:?}"
+                    );
+                }
+            }
+
+            // Check the non-matching strings. None of them should match.
+            for (k, x) in non_matches.clone().into_iter().enumerate() {
+                let quoted = format!(r#""{x}""#);
+                mach.member_name(ChunkyContent::new(&quoted, n));
+                assert_eq!(None, mach.primitive(), "n={n}, k={k}, non_match={x:?}",);
             }
         }
     }
@@ -1362,11 +1644,24 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct ChunkyContent<'a>(Chunky<'a>);
+    struct ChunkyContent<'a> {
+        chunky: Chunky<'a>,
+        is_escaped: bool,
+    }
 
     impl<'a> ChunkyContent<'a> {
         fn new(s: &'a str, n: usize) -> Self {
-            Self(Chunky::new(s, n))
+            Self {
+                chunky: Chunky::new(s, n),
+                is_escaped: false,
+            }
+        }
+
+        fn new_escaped(s: &'a str, n: usize) -> Self {
+            Self {
+                chunky: Chunky::new(s, n),
+                is_escaped: true,
+            }
         }
     }
 
@@ -1377,15 +1672,15 @@ mod tests {
             Self: 'b;
 
         fn literal<'b>(&'b self) -> Self::Literal<'b> {
-            ChunkyLit(self.0)
+            ChunkyLit(self.chunky)
         }
 
         fn is_escaped(&self) -> bool {
-            false
+            self.is_escaped
         }
 
         fn unescaped<'b>(&'b self) -> lexical::Unescaped<Self::Literal<'b>> {
-            panic!("not escaped")
+            panic!("not implemented: not needed")
         }
     }
 
