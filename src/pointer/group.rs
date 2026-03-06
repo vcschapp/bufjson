@@ -830,12 +830,9 @@ impl From<Pointer> for Group {
     }
 }
 
-impl<T> From<T> for Group
-where
-    T: IntoIterator<Item = Pointer>,
-{
-    fn from(pointers: T) -> Self {
-        Self::from_pointers(pointers)
+impl FromIterator<Pointer> for Group {
+    fn from_iter<T: IntoIterator<Item = Pointer>>(iter: T) -> Self {
+        Self::from_pointers(iter)
     }
 }
 
@@ -1357,12 +1354,12 @@ mod tests {
     #[case([Pointer::from_static("/a")])]
     #[case([Pointer::from_static("/a")])]
     #[case([Pointer::default(), Pointer::from_static("/"), Pointer::from_static("/a")])]
-    fn test_group_from_trait_for_into_iterator_pointer<I>(#[case] pointers: I)
+    fn test_group_from_iterator_trait<I>(#[case] pointers: I)
     where
         I: IntoIterator<Item = Pointer> + Clone,
     {
         let expect: Vec<Pointer> = pointers.clone().into_iter().collect();
-        let group: Group = pointers.into();
+        let group: Group = pointers.into_iter().collect();
 
         assert_eq!(expect, group.pointers);
     }

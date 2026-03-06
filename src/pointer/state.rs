@@ -673,30 +673,26 @@ impl<G: AsRef<Group>> Machine<G> {
 
         // Searching linearly from the first viable index, find index of the child node whose name
         // fully consumes the bytes available from the member name buffer.
-        let mut current_index = start_index;
-        let mut current_node = self.node_at_index(current_index);
+        let current_index = start_index;
+        let current_node = self.node_at_index(current_index);
         let mut s = current_node.name_part();
-        let mut consumed_len = chunk.len();
-        debug_assert!(
-            Self::one_prefixes_other(s.as_bytes(), chunk),
-            "one of `s` or `chunk` must be a bytewise prefix of the other; but this is not true for {s:?} and {chunk:?}"
-        );
         loop {
-            let common_len = consumed_len.min(s.len());
-            if s.len() > common_len && consumed_len > common_len {
-                // Strings diverge after common prefix, e.g. "foo" and "fox".
-                return None;
-            } else if s.len() > consumed_len && !has_more_after_chunk {
+            debug_assert!(
+                Self::one_prefixes_other(s.as_bytes(), chunk),
+                "one of `s` or `chunk` must be a bytewise prefix of the other; but this is not true for {s:?} and {chunk:?}"
+            );
+
+            if s.len() > chunk.len() && !has_more_after_chunk {
                 // Name isn't long enough to match this node.
                 return None;
-            } else if s.len() == consumed_len
+            } else if s.len() == chunk.len()
                 && !has_more_after_chunk
                 && (current_node.match_index.is_some() || current_node.num_trie_children == 0)
             {
                 // Full match.
                 return Some(current_index);
-            } else if s.len() < consumed_len || (s.len() == consumed_len && has_more_after_chunk) {
-                // Prefix match at this level, but a suffix of name isn't matched yet.
+            } else if s.len() < chunk.len() || (s.len() == chunk.len() && has_more_after_chunk) {
+                // Full prefix match at this level, but name has unmatched suffix.
                 if current_node.num_trie_children > 0 {
                     let i = current_node
                         .child_index
@@ -709,39 +705,23 @@ impl<G: AsRef<Group>> Machine<G> {
                 } else {
                     return None;
                 }
-            } else if s.len() > consumed_len && has_more_after_chunk {
-                // At least some suffix bytes haven't yet been compared at this level.
+            } else {
+                // Name has more bytes available to try matching at this level.
+                let common_len = chunk.len().min(s.len());
+                name_buf.advance(chunk.len());
                 #[allow(unused)]
                 {
                     chunk = &[]; // Cancel the immutable borrow so we can borrow mutably.
                 }
-                name_buf.advance(s.len());
                 (chunk, has_more_after_chunk) = Self::next_unquoted_chunk(name_buf);
-                if !Self::one_prefixes_other(&s.as_bytes()[common_len..], chunk) {
+                debug_assert!(
+                    !chunk.is_empty(),
+                    "got an empty chunk even though more bytes were expected after the previous chunk"
+                );
+                s = &s[common_len..];
+                if !Self::one_prefixes_other(s, chunk) {
                     return None;
                 }
-                consumed_len += chunk.len();
-                while consumed_len > s.len() && current_index < node_range.end {
-                    let next_node = self.node_at_index(current_index + 1);
-                    let t = next_node.name_part();
-                    if t.starts_with(s)
-                        && Self::one_prefixes_other(&t.as_bytes()[common_len..], chunk)
-                    {
-                        current_index += 1;
-                        current_node = next_node;
-                        s = t;
-                    } else {
-                        break;
-                    }
-                }
-            } else {
-                unreachable!(
-                    "s.len()={}, chunk.len()={}, more?={has_more_after_chunk}, s={:?}, chunk={:?}, current_node={current_node:?}",
-                    s.len(),
-                    chunk.len(),
-                    s,
-                    chunk
-                );
             }
         }
     }
@@ -764,12 +744,12 @@ impl<G: AsRef<Group>> Machine<G> {
 
     fn next_unquoted_chunk<B: Buf>(b: &B) -> (&[u8], bool) {
         let chunk = b.chunk();
-        if chunk.len() + 1 < b.remaining() {
-            (chunk, true) // At least one more byte remains after chunk.
-        } else if !chunk.is_empty() {
-            (&chunk[..chunk.len() - 1], false) // Chunk has all the remaining bytes.
+        if chunk.len() + 2 <= b.remaining() {
+            (chunk, true) // At least two more byte remain, of which the ending double quote is one.
+        } else if !chunk.is_empty() && chunk.len() == b.remaining() {
+            (&chunk[..chunk.len() - 1], false) // All remaining bytes are in non-empty chunk.
         } else {
-            (chunk, false) // Chunk is empty, which means there's no `"` at the end.
+            (chunk, false) // Chunk is empty, or the only byte remaming is the ending double quote.
         }
     }
 
@@ -790,15 +770,16 @@ impl AsRef<Group> for Group {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{lexical::fixed::Content, pointer::Pointer};
+    use crate::{BufUnderflow, lexical::fixed, pointer::Pointer};
     use rstest::rstest;
+    use std::fmt;
 
     macro_rules! for_ignore_case_options {
         ($pointers:expr, $unescape:expr, |$mach:ident, $ignore_case:ident| $b:block) => {
             #[cfg(not(feature = "ignore_case"))]
             {
                 let $ignore_case = false;
-                let group: Group = $pointers.clone().into();
+                let group: Group = $pointers.clone().into_iter().collect();
                 let mut $mach = Machine::new(group, $unescape);
 
                 $b
@@ -824,6 +805,86 @@ mod tests {
                 for_ignore_case_options!($pointers, $unescape, |$mach, $ignore_case| $b);
             }
         };
+    }
+
+    #[rstest]
+    #[case::empty_fixed(fixed::Content::from_static(r#""""#), [""])]
+    #[case::empty_chunky_1(ChunkyContent::new(r#""""#, 1), [""])]
+    #[case::empty_chunky_2(ChunkyContent::new(r#""""#, 2), [""])]
+    #[case::one_fixed(fixed::Content::from_static(r#""a""#), ["a"])]
+    #[case::one_chunky_1(ChunkyContent::new(r#""a""#, 1), ["a"])]
+    #[case::one_chunky_2(ChunkyContent::new(r#""a""#, 2), ["a"])]
+    #[case::one_chunky_3(ChunkyContent::new(r#""a""#, 3), ["a"])]
+    #[case::two_fixed(fixed::Content::from_static(r#""aa""#), ["aa"])]
+    #[case::two_chunky_1(ChunkyContent::new(r#""ab""#, 1), ["a", "b"])]
+    #[case::two_chunky_2(ChunkyContent::new(r#""ab""#, 2), ["a", "b"])]
+    #[case::two_chunky_3(ChunkyContent::new(r#""ab""#, 3), ["ab"])]
+    #[case::three_fixed(fixed::Content::from_static(r#""abc""#), ["abc"])]
+    #[case::three_chunky_1(ChunkyContent::new(r#""abc""#, 1), ["a", "b", "c"])]
+    #[case::three_chunky_2(ChunkyContent::new(r#""abc""#, 2), ["a", "bc"])]
+    #[case::three_chunky_3(ChunkyContent::new(r#""abc""#, 3), ["ab", "c"])]
+    #[case::three_chunky_4(ChunkyContent::new(r#""abc""#, 4), ["abc"])]
+    fn next_unquoted_chunk<C, R, I>(#[case] c: C, #[case] expect_chunks: I)
+    where
+        C: lexical::Content,
+        R: AsRef<[u8]> + fmt::Debug,
+        I: IntoIterator<Item = R>,
+    {
+        let mut b = c.literal().into_buf();
+        Machine::<Group>::consume_quote(&mut b);
+
+        let mut prev_has_more = true;
+
+        for (i, r) in expect_chunks.into_iter().enumerate() {
+            assert!(
+                prev_has_more,
+                "previous iteration said has_more=false, but current iteration {i} expects a chunk: {r:?}"
+            );
+
+            let rem = b.remaining();
+            let expect = r.as_ref();
+            let (actual, actual_has_more) = Machine::<Group>::next_unquoted_chunk(&mut b);
+            let n = actual.len();
+            let expect_has_more = rem >= actual.len() + 2;
+
+            assert_eq!(
+                expect,
+                actual,
+                "content mismatch at chunk {i}: expected {r:?} ({} bytes), got {actual:?} ({} bytes)",
+                expect.len(),
+                actual.len()
+            );
+            assert_eq!(
+                expect_has_more,
+                actual_has_more,
+                "has more mismatch at chunk {i}: expect {expect_has_more}, got {actual_has_more}, actual.len()={}, b.remaining={}",
+                actual.len(),
+                rem
+            );
+            assert_eq!(rem, b.remaining());
+
+            b.advance(n);
+            prev_has_more = actual_has_more;
+        }
+
+        let rem = b.remaining();
+        let (actual, actual_has_more) = Machine::<Group>::next_unquoted_chunk(&mut b);
+        assert_eq!(
+            b"",
+            actual,
+            "content mismatch at end: expected \"\" (0 bytes), got {actual:?} ({} bytes)",
+            actual.len()
+        );
+        assert_eq!(
+            false,
+            actual_has_more,
+            "has more mismatch at end: expect false, got {actual_has_more}, actual.len()={}, b.remaining={}",
+            actual.len(),
+            rem
+        );
+
+        Machine::<Group>::consume_quote(&mut b);
+        assert_eq!(0, b.remaining());
     }
 
     #[rstest]
@@ -861,7 +922,7 @@ mod tests {
                 assert_eq!((StructAction::Enter, None), mach.obj_begin());
 
                 // Begin a member that has no path to matching the pointer.
-                mach.member_name(Content::from_static(r#""foo""#));
+                mach.member_name(fixed::Content::from_static(r#""foo""#));
 
                 // Begin an array that is the member value and has no path to matching the pointer.
                 assert_eq!((StructAction::Skip, None), mach.arr_begin());
@@ -875,7 +936,7 @@ mod tests {
     #[rstest]
     #[case::root(|_: &mut Machine| { })]
     #[case::object(|m: &mut Machine| { m.obj_begin(); })]
-    #[case::object_member(|m: &mut Machine| { m.obj_begin(); m.member_name(Content::from_static(r#""""#)); })]
+    #[case::object_member(|m: &mut Machine| { m.obj_begin(); m.member_name(fixed::Content::from_static(r#""""#)); })]
     #[should_panic(expected = "no array to end")]
     fn arr_end_panics_when_no_arr<S>(#[case] setup: S)
     where
@@ -926,7 +987,7 @@ mod tests {
                 assert_eq!((StructAction::Enter, None), mach.obj_begin());
 
                 // Begin a member that has no path to matching the pointer.
-                mach.member_name(Content::from_static(r#""foo""#));
+                mach.member_name(fixed::Content::from_static(r#""foo""#));
 
                 // Begin an object that is the member value and has no path to matching the pointer.
                 assert_eq!((StructAction::Skip, None), mach.obj_begin());
@@ -964,7 +1025,7 @@ mod tests {
             assert_eq!((StructAction::Skip, None), mach.obj_begin());
 
             // Trigger the panic.
-            mach.member_name(Content::default());
+            mach.member_name(fixed::Content::default());
         });
     }
 
@@ -981,10 +1042,10 @@ mod tests {
                 assert_eq!((StructAction::Enter, None), mach.obj_begin());
 
                 // First member name is OK.
-                mach.member_name(Content::from_static(r#""foo""#));
+                mach.member_name(fixed::Content::from_static(r#""foo""#));
 
                 // Second member name without a value, not so much.
-                mach.member_name(Content::default());
+                mach.member_name(fixed::Content::default());
             }
         );
     }
@@ -1009,7 +1070,7 @@ mod tests {
                 setup(&mut mach);
 
                 // Trigger the panic.
-                mach.member_name(Content::default());
+                mach.member_name(fixed::Content::default());
             }
         );
     }
@@ -1098,7 +1159,7 @@ mod tests {
                 assert_eq!((StructAction::Enter, None), mach.obj_begin());
 
                 // Create an initial member name/value pair.
-                mach.member_name(Content::from_static(r#""anything""#));
+                mach.member_name(fixed::Content::from_static(r#""anything""#));
                 assert_eq!(Some(&Pointer::from_static("/anything")), mach.primitive());
 
                 // Trigger the panic due to missing member name on the second member.
@@ -1207,5 +1268,182 @@ mod tests {
                 "root pointer should trigger exit event on object end but doesn't (unescape={unescape}, ignore_case={ignore_case})"
             );
         });
+    }
+
+    #[rstest]
+    #[case::empty([""], ["foo"])]
+    #[case::a(["a"], ["", "ab", " a", "foo"])]
+    #[case::ab(["ab"], ["", "a", " a", "ac", "abc", "foo"])]
+    #[case::abc(["abc"], ["", "a", " a", "ab", "ac", "foo"])]
+    #[case::a_ab(["a", "ab"], ["", "A", "Ab", "abc", "foo", "foo"])]
+    #[case::f_mostly([
+       "a", "air", "b", "bar", "bat", "baz", "c", "d", "e", "f", "fan", "fanatical", "fang", "fig",
+       "fight", "foal", "fob", "fog", "folly", "foo", "food", "fool", "foolery", "foolhardy",
+       "fooling", "foolish", "foolishness", "fools", "foolscap", "foot", "football", "footie",
+       "footsie", "for", "forecast", "foreign", "foreigner", "fork", "fox", "foxy", "g", "h",
+    ], [
+       "A", "aim", "ban", "fanatic", "farm", "figure", "foe", "fool of a Took!", "fooled",
+       "foolhardiness", "foggy", "foxbat", "fulsome", "hardy",
+    ])]
+    #[case::g([
+        "grand", "grand piano", "grandeur", "grandiose", "grandiloquently", "grandstanding",
+    ], [
+        "grandfather", "grandiloquent", "granite", "grandma", "grandmaster", "grandson", "grant"
+    ])]
+    fn chunked_name_matches<I, J>(#[case] ref_tokens: I, #[case] non_matches: J)
+    where
+        I: IntoIterator<Item = &'static str> + Clone,
+        J: IntoIterator<Item = &'static str> + Clone,
+    {
+        // This test case exercises the exact name matching logic.
+        //
+        // The input `ref_tokens` is the list of reference tokens used to create both the pointers
+        // and the synthetic object member names that matche them, while `non_matches` is a list of
+        // member names that don't match any of the pointers.
+        //
+        // Each test case runs three times, with chunk lengths from 1..3.
+
+        // Create the pointer group. We can reuse it once per test case.
+        let pointers: Vec<Pointer> = ref_tokens
+            .clone()
+            .into_iter()
+            .map(|t| format!("/{t}").try_into().unwrap())
+            .collect();
+        let g: Group = pointers.clone().into_iter().collect();
+
+        for n in 1..=3 {
+            // Create the state machine.
+            let mut mach = Machine::new(&g, false);
+
+            // Start an object.
+            assert_eq!((StructAction::Enter, None), mach.obj_begin());
+
+            // Check the reference tokens that we made into pointers. Each should match.
+            for (i, t) in ref_tokens.clone().into_iter().enumerate() {
+                let quoted = format!("{t:?}");
+                mach.member_name(ChunkyContent::new(&quoted, n));
+                assert_eq!(
+                    Some(&pointers[i]),
+                    mach.primitive(),
+                    "n={n}, i={i}/{}, ref_token={t:?}, pointer={}",
+                    pointers.len(),
+                    pointers[i]
+                );
+            }
+
+            // Check the non-matching strings. None of them should match.
+            for (j, x) in non_matches.clone().into_iter().enumerate() {
+                let quoted = format!("{x:?}");
+                mach.member_name(ChunkyContent::new(&quoted, n));
+                assert_eq!(
+                    None,
+                    mach.primitive(),
+                    "n={n}, j={j}/{}, non_match={x:?}",
+                    pointers.len()
+                );
+            }
+        }
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    struct Chunky<'a> {
+        s: &'a str,
+        n: usize,
+    }
+
+    impl<'a> Chunky<'a> {
+        fn new(s: &'a str, n: usize) -> Self {
+            if n == 0 {
+                panic!("n can't be zero")
+            }
+
+            Self { s, n }
+        }
+    }
+
+    #[derive(Debug)]
+    struct ChunkyContent<'a>(Chunky<'a>);
+
+    impl<'a> ChunkyContent<'a> {
+        fn new(s: &'a str, n: usize) -> Self {
+            Self(Chunky::new(s, n))
+        }
+    }
+
+    impl<'a> lexical::Content for ChunkyContent<'a> {
+        type Literal<'b>
+            = ChunkyLit<'a>
+        where
+            Self: 'b;
+
+        fn literal<'b>(&'b self) -> Self::Literal<'b> {
+            ChunkyLit(self.0)
+        }
+
+        fn is_escaped(&self) -> bool {
+            false
+        }
+
+        fn unescaped<'b>(&'b self) -> lexical::Unescaped<Self::Literal<'b>> {
+            panic!("not escaped")
+        }
+    }
+
+    struct ChunkyLit<'a>(Chunky<'a>);
+
+    impl<'a> IntoBuf for ChunkyLit<'a> {
+        type Buf = ChunkyBuf<'a>;
+
+        fn into_buf(self) -> Self::Buf {
+            ChunkyBuf {
+                chunky: self.0,
+                pos: 0,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct ChunkyBuf<'a> {
+        chunky: Chunky<'a>,
+        pos: usize,
+    }
+
+    impl<'a> Buf for ChunkyBuf<'a> {
+        fn advance(&mut self, n: usize) {
+            if n > self.remaining() {
+                panic!(
+                    "{}",
+                    &BufUnderflow {
+                        requested: n,
+                        remaining: self.remaining()
+                    }
+                );
+            }
+            self.pos += n;
+        }
+
+        fn chunk(&self) -> &[u8] {
+            let chunk_start = (self.pos / self.chunky.n) * self.chunky.n;
+            let chunk_end = (chunk_start + self.chunky.n).min(self.chunky.s.len());
+
+            &self.chunky.s.as_bytes()[self.pos..chunk_end]
+        }
+
+        fn remaining(&self) -> usize {
+            self.chunky.s.len() - self.pos
+        }
+
+        fn try_copy_to_slice(&mut self, dst: &mut [u8]) -> Result<(), BufUnderflow> {
+            if self.remaining() < dst.len() {
+                Err(BufUnderflow {
+                    requested: dst.len(),
+                    remaining: self.remaining(),
+                })
+            } else {
+                dst.copy_from_slice(&self.chunky.s.as_bytes()[self.pos..self.pos + dst.len()]);
+                self.pos += dst.len();
+                Ok(())
+            }
+        }
     }
 }
