@@ -626,9 +626,10 @@ impl Builder {
 /// one level deeper into the trie in effectively O(1) time, regardless of how many pointers the
 /// trie contains.
 ///
-/// Consider the JSON Pointer `/foo/baz/1` with input text `{"foo":{"bar":true,"baz":[0,{"qux":1}]}`.
+/// Consider the JSON Pointer `/foo/baz/1` with input text
+/// `{"foo":{"bar":true,"baz":[0,{"qux":1}]}}`.
 ///
-/// The data structure for the corresponding `Group` looks a bit like:
+/// The data structure for the `Group` corresponding to the JSON Pointer looks a bit like:
 ///
 /// ```text
 /// ┌─────┐
@@ -643,9 +644,10 @@ impl Builder {
 /// ```
 ///
 /// The diagram below demonstrates how the evaluation state of the trie changes as the opening brace
-/// of the value for `"baz"` is observed by the evaluator. The trie on the left is the state of the
-/// trie before observing the `{`, showing that the `"baz"` node has been matched. The trie on the
-/// right is the state after, showing that the array element `1` has now been matched.
+/// of the second value in the `"baz"` array is observed by the evaluator. The trie on the left is
+/// the state of the trie before observing that `{`, showing that the `"baz"` node has been matched.
+/// The trie on the right is the state after, showing that the array element `1` has now been
+/// matched.
 ///
 /// ```text
 /// ┌─────┐                                   ┌─────┐

@@ -59,10 +59,9 @@ pub enum Event<P> {
     ///
     /// The matching pointer can be obtained from the [`pointer`] method.
     ///
-    /// The difference between the `Matches` and [`Enter`] events is that `Matches` is a one-off
-    /// event triggered by primitive values while `Enter` is triggered by the start of a structured
-    /// value; and it has a corresponding [`Exit`] event that is triggered when the structured value
-    /// ends.
+    /// The difference between the `Match` and [`Enter`] events is that `Match` is a one-off event
+    /// triggered by primitive values while `Enter` is triggered by the start of a structured value;
+    /// and it has a corresponding [`Exit`] event that is triggered when the structured value ends.
     ///
     /// [`pointer`]: method@Self::pointer
     /// [`Enter`]: Self::Enter
@@ -630,7 +629,7 @@ where
 
     /// Fetches the text content for the current non-error token.
     ///
-    /// The current token is the token contained in event most recently returned by [`next`],
+    /// The current token is the token contained in the event most recently returned by [`next`],
     /// [`next_non_white`], or [`next_meaningful`].
     ///
     /// This method does not allocate unless the underlying lexical analyzer's [`try_content`]
@@ -702,7 +701,7 @@ where
 
     /// Returns the position of the current lexical token.
     ///
-    /// The current token is the token contained in event most recently returned by [`next`],
+    /// The current token is the token contained in the event most recently returned by [`next`],
     /// [`next_non_white`], or [`next_meaningful`].
     ///
     /// [`next`]: method@Self::next
