@@ -3,11 +3,11 @@
 readonly -a tools=(clippy doc fmt build test)
 
 readonly -A tool_commands=(
-  [build]='env,RUSTFLAGS=-D warnings,cargo,build'
-  [test]='env,RUSTFLAGS=-D warnings,cargo,test'
+  [clippy]='env,RUSTFLAGS=-D warnings,cargo,clippy'
   [doc]='env,RUSTDOCFLAGS=-D warnings,cargo,doc'
   [fmt]='cargo,fmt,--check'
-  [clippy]='env,RUSTFLAGS=-D warnings,cargo,clippy'
+  [build]='env,RUSTFLAGS=-D warnings,cargo,build'
+  [test]='env,RUSTFLAGS=-D warnings,cargo,test'
 )
 
 readonly -A profile_args=(
@@ -16,11 +16,11 @@ readonly -A profile_args=(
 )
 
 readonly -A tool_profiles=(
-  [build]="default release"
-  [test]="default release"
+  [clippy]="default release"
   [doc]="default"
   [fmt]="default"
-  [clippy]="default release"
+  [build]="default release"
+  [test]="default release"
 )
 
 readonly -A feature_mix_args=(
@@ -29,9 +29,9 @@ readonly -A feature_mix_args=(
 )
 
 readonly -A tool_feature_mixes=(
-    [fmt]="default"
     [clippy]="default all"
     [doc]="default all"
+    [fmt]="default"
     [build]="default all"
     [test]="default all"
 )
