@@ -44,8 +44,8 @@ The remainder of the library builds on the lexical analyzer trait.
 
 - The `syntax` module provides concrete stream-oriented parser types that can wrap any lexical
   analyzer.
-- The `pointer` module, which will support stream-oriented evaluation of JSON Pointer expressions,
-  is planned. (COMING SOON-ISH)
+- The `pointer` module enables fast stream-oriented evaluation of
+  [JSON Pointers](https://www.rfc-editor.org/rfc/rfc6901).
 
 Refer to the [API reference docs](https://docs.rs/bufjson/latest/bufjson/) for more detail.
 
