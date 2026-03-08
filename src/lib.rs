@@ -4,6 +4,7 @@ use std::{cmp::Ordering, fmt, io::Cursor};
 
 pub mod lexical;
 #[cfg(feature = "pointer")]
+#[cfg_attr(docsrs, doc(cfg(feature = "pointer")))]
 pub mod pointer;
 pub mod syntax;
 
