@@ -1,5 +1,4 @@
-- Pre-commit hook:
-    - Reorganize so easy stuff like fmt and clippy run first.
+- Pre-push hook:
     - Run `cargo test --benches` as part of the pre-commit hook.
 - Run `cargo bench` as part of the GitHub Actions.
 - For the `AsyncAnalyzer` release [SEE NEW SWAG DESIGN BELOW], expected commits:

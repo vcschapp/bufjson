@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-readonly -a tools=(build test doc fmt clippy)
+readonly -a tools=(clippy doc fmt build test)
 
 readonly -A tool_commands=(
   [build]='env,RUSTFLAGS=-D warnings,cargo,build'
@@ -29,11 +29,11 @@ readonly -A feature_mix_args=(
 )
 
 readonly -A tool_feature_mixes=(
-    [build]="default all"
-    [test]="default all"
-    [doc]="default all"
     [fmt]="default"
     [clippy]="default all"
+    [doc]="default all"
+    [build]="default all"
+    [test]="default all"
 )
 
 function run_tool_quiet() {
