@@ -21,9 +21,11 @@ debug = true
 ignore_case = ["dep:caseless"]
 pointer = ["dep:smallvec"]
 read = []
+pipe = ["dep:bytes", "read"]  # TODO: Remove `read` after decoupling read/pipe
 
 [dependencies]
 bitvec = { version = "^1.0.1", default-features = false, features = ["alloc"] }
+bytes = { version = "^1.11.1", optional = true }
 caseless = { version = "^0.2.2", optional = true }
 smallvec = { version = "^1.15.1", optional = true }
 

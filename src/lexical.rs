@@ -102,6 +102,10 @@ use std::{
 pub mod fixed;
 pub mod state;
 
+#[cfg(feature = "pipe")]
+#[cfg_attr(docsrs, doc(cfg(feature = "pipe")))]
+pub mod pipe;
+
 #[cfg(feature = "read")]
 #[cfg_attr(docsrs, doc(cfg(feature = "read")))]
 pub mod read;
