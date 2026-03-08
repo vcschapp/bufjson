@@ -7,7 +7,7 @@ readonly -A tool_commands=(
   [doc]='env,RUSTDOCFLAGS=-D warnings,cargo,doc'
   [fmt]='cargo,fmt,--check'
   [build]='env,RUSTFLAGS=-D warnings,cargo,build'
-  [test]='env,RUSTFLAGS=-D warnings,cargo,test'
+  [test]='env,RUSTFLAGS=-D warnings,cargo,test,--benches'
 )
 
 readonly -A profile_args=(
@@ -26,6 +26,7 @@ readonly -A tool_profiles=(
 readonly -A feature_mix_args=(
   [default]=""
   [all]="--all-features"
+  [benches]="--all-features"
 )
 
 readonly -A tool_feature_mixes=(
@@ -59,7 +60,7 @@ function run_tool_quiet() {
   if [[ "$tool" != test ]]; then
     "${cmd[@]}" "${args[@]}" || exit_code=$?
   else
-    "${cmd[@]}" "${args[@]}" >/dev/null || exit_code=$?
+    "${cmd[@]}" "${args[@]}" >/dev/null 2>&1 || exit_code=$?
   fi
 
   if [[ $exit_code == 0 ]]; then
