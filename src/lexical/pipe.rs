@@ -1,5 +1,4 @@
-//! Convert a stream (usually async) of [`bytes::Bytes`] chunks into a stream of JSON lexical
-//! tokens.
+//! Convert a stream (usually async) of [`bytes::Bytes`] chunks into JSON lexical tokens.
 //!
 //! The `Bytes` chunks can be produced either using the asynchronous programming model or using a
 //! multi-threaded programming model.
