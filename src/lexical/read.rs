@@ -691,7 +691,7 @@ impl PartialOrd<Literal> for String {
 /// # Example
 ///
 /// ```
-/// use bufjson::{Buf, IntoBuf, lexical::read::{Literal}};
+/// use bufjson::{Buf, IntoBuf, lexical::read::Literal};
 ///
 /// let lit = Literal::from_static("hello, world!");
 /// let mut buf = lit.into_buf();
@@ -1177,11 +1177,15 @@ impl Bufs {
         let inner =
             Arc::get_mut(&mut buf).expect("buffer must be exclusively owned to use for read");
         debug_assert!(
-            inner.len() == self.buf_size,
-            "allocated buffer must have len buf_size = {}, but its len is {}",
+            inner.capacity() == self.buf_size,
+            "allocated buffer must have capacity (buf_size = {}), but its capacity is {} (len = {})",
             self.buf_size,
-            inner.len()
+            inner.capacity(),
+            inner.len(),
         );
+        unsafe {
+            inner.set_len(self.buf_size);
+        }
 
         match r.read(inner.as_mut_slice()) {
             Ok(0) => {
@@ -2964,6 +2968,33 @@ mod tests {
         assert_eq!(Token::Err, an.next());
     }
 
+    #[test]
+    fn test_analyzer_read_produces_tiny_amounts() {
+        // Regression test for the case when the `Read` implementation produces only tiny amounts of
+        // input, much less than the proffered buffer's size.
+
+        struct ReadOnly1(&'static [u8]);
+
+        impl Read for ReadOnly1 {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let n = self.0.len().min(buf.len()).min(1);
+                buf[..n].copy_from_slice(&self.0[..n]);
+                self.0 = &self.0[n..];
+
+                Ok(n)
+            }
+        }
+
+        let mut an = ReadAnalyzer::with_buf_size(ReadOnly1("false null true".as_bytes()), 100);
+
+        assert_eq!(Token::LitFalse, an.next());
+        assert_eq!(Token::White, an.next());
+        assert_eq!(Token::LitNull, an.next());
+        assert_eq!(Token::White, an.next());
+        assert_eq!(Token::LitTrue, an.next());
+        assert_eq!(Token::Eof, an.next());
+    }
+
     #[rstest]
     #[case(1)]
     #[case(2)]
@@ -2972,8 +3003,8 @@ mod tests {
     #[case(INLINE_LEN + 1)]
     #[case(Bufs::DEFAULT_BUF_SIZE)]
     fn test_analyzer_into_parser(#[case] buf_size: usize) {
-        let input = r#"{"hello":["🌍"]}"#;
-        let mut parser = ReadAnalyzer::with_buf_size(input.as_bytes(), buf_size).into_parser();
+        const INPUT: &str = r#"{"hello":["🌍"]}"#;
+        let mut parser = ReadAnalyzer::with_buf_size(INPUT.as_bytes(), buf_size).into_parser();
 
         assert_eq!(Token::ObjBegin, parser.next());
         assert_eq!("{", parser.content().literal());
