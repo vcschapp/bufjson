@@ -870,6 +870,14 @@ pub enum Expect {
     /// Any decimal digit character, `'0'`..`'9'` (U+0030..U+0039).
     Digit,
 
+    /// Any decimal digit character ([`Digit`]); the dot or period character `'.'` (U+002E); one of
+    /// the two exponent indicator characters 'E' (U+0045) or 'e' (U+0065); or any token boundary
+    /// character ([`Boundary`]).
+    ///
+    /// [`Boundary`]: Expect::Boundary
+    /// [`Digit`]: Expect::Digit
+    DigitDotExpOrBoundary,
+
     /// Any decimal digit character ([`Digit`]); or one of the two exponent indicator characters 'E'
     /// (U+0045) or 'e' (U+0065); or any token boundary character ([`Boundary`]).
     ///
@@ -877,19 +885,19 @@ pub enum Expect {
     /// [`Boundary`]: Expect::Boundary
     DigitExpOrBoundary,
 
-    /// Any decimal digit character ([`Digit`]) or one of the two exponent sign characters `'+'`
-    /// (U+002B) or `'-'` (U+002D).
-    ///
-    /// [`Digit`]: Expect::Digit
-    DigitOrExpSign,
-
     /// Any decimal digit character ([`Digit`]) or token boundary character ([`Boundary`]).
     ///
     /// [`Digit`]: Expect::Digit
     /// [`Boundary`]: Expect::Boundary
     DigitOrBoundary,
 
-    /// The dot or period character `'.'` (U+002E); one of the two exponent indicator characters 'E'
+    /// Any decimal digit character ([`Digit`]) or one of the two exponent sign characters `'+'`
+    /// (U+002B) or `'-'` (U+002D).
+    ///
+    /// [`Digit`]: Expect::Digit
+    DigitOrExpSign,
+
+    // The dot or period character `'.'` (U+002E); one of the two exponent indicator characters 'E'
     /// (U+0045) or 'e' (U+0065); or any token boundary character ([`Boundary`]).
     ///
     /// [`Boundary`]: Expect::Boundary
@@ -948,10 +956,11 @@ impl fmt::Display for Expect {
             Self::Boundary => f.write_str("boundary character or EOF"),
             Self::Char(c) => write!(f, "character '{c}'"),
             Self::Digit => f.write_str("digit character '0'..'9'"),
+            Self::DigitDotExpOrBoundary => f.write_str("digit character '0'..'9', boundary character, or EOF"),
+            Self::DigitExpOrBoundary => f.write_str("digit character '0'..'9', decimal point character '.', exponent character 'E' or 'e', boundary character, or EOF"),
             Self::DigitOrBoundary => f.write_str("digit character '0'..'9', boundary character, or EOF"),
-            Self::DigitExpOrBoundary => f.write_str("digit character '0'..'9', exponent character 'E' or 'e', boundary character, or EOF"),
             Self::DigitOrExpSign => f.write_str("exponent sign character '+' or '-', or exponent digit character '0'..'9'"),
-            Self::DotExpOrBoundary => f.write_str("character '.', 'exponent character 'E' or 'e', boundary character, or EOF"),
+            Self::DotExpOrBoundary => f.write_str("decimal point character '.', 'exponent character 'E' or 'e', boundary character, or EOF"),
             Self::EscChar => f.write_str("escape sequence character '\\', '\"', '/', 'r', 'n', 't', or 'u'"),
             Self::StrChar => f.write_str("string character"),
             Self::TokenStartChar => f.write_str("token start character"),
@@ -978,10 +987,6 @@ pub enum ErrorKind {
         /// This may be a Unicode high surrogate code unit, or it may be a valid Unicode code point,
         /// but will never be a low surrogate code unit.
         second: Option<u16>,
-
-        /// Byte offset from the start of the last Unicode escape sequence (`first` if `second` is
-        /// `None`, otherwise `second`) where the error was detected.
-        offset: u8,
     },
 
     /// A UTF-8 continuation byte within a [string token][Token::Str] has an invalid value.
@@ -1017,6 +1022,10 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
+    pub(crate) fn bad_surrogate(first: u16, second: Option<u16>) -> ErrorKind {
+        ErrorKind::BadSurrogate { first, second }
+    }
+
     pub(crate) fn bad_utf8_cont_byte(seq_len: u8, offset: u8, value: u8) -> ErrorKind {
         ErrorKind::BadUtf8ContByte {
             seq_len,
@@ -1047,6 +1056,16 @@ impl ErrorKind {
 
     pub(crate) fn expect_digit(actual: u8) -> ErrorKind {
         let expect = Expect::Digit;
+
+        ErrorKind::UnexpectedByte {
+            token: Some(Token::Num),
+            expect,
+            actual,
+        }
+    }
+
+    pub(crate) fn expect_digit_dot_exp_or_boundary(actual: u8) -> ErrorKind {
+        let expect = Expect::DigitDotExpOrBoundary;
 
         ErrorKind::UnexpectedByte {
             token: Some(Token::Num),
@@ -1140,18 +1159,16 @@ impl ErrorKind {
             Self::BadSurrogate {
                 first: lo,
                 second: None,
-                offset: _,
             } if (0xdc00..=0xdfff).contains(lo) => {
                 write!(
                     f,
-                    "bad Unicode escape sequence: low surrogate '\\u{lo:04X}' without preceding high surrogate"
+                    "bad Unicode escape sequence: low surrogate '\\u{lo:04X}' does not follow a high surrogate"
                 )?;
             }
 
             Self::BadSurrogate {
                 first: hi,
                 second: None,
-                offset: _,
             } => {
                 write!(
                     f,
@@ -1162,7 +1179,6 @@ impl ErrorKind {
             Self::BadSurrogate {
                 first: hi,
                 second: Some(lo),
-                offset: _,
             } => {
                 write!(
                     f,
@@ -1950,7 +1966,6 @@ mod tests {
     #[case(ErrorKind::BadSurrogate {
         first: 0xD800,
         second: None,
-        offset: 5,
     }, "bad Unicode escape sequence: high surrogate '\\uD800' not followed by low surrogate")]
     #[case(ErrorKind::BadUtf8ContByte {
         seq_len: 3,

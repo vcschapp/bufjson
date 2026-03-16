@@ -76,18 +76,16 @@ Other libraries are more suitable for:
 
 ## Benchmarks
 
-The table below shows JSON text throughput benchmark results.<sup>1</sup> Throughput is a known
-issue due to a very naive byte-for-byte state machine underlying all components, and will be
-improved. It is believed that steady incremental improvements can eventually lead to 1-2 GiB/s.
+The table below shows JSON text throughput benchmark results.<sup>1</sup>
 
 | Component                  | `.content()` fetched | Throughput |
 |----------------------------|----------------------|------------|
-| `FixedAnalyzer`            | Never                | 60 MiB/s   |
-| `FixedAnalyzer`            | Always               | 60 MiB/s   |
-| `ReadAnalyzer`<sup>2</sup> | Never                | 45 MiB/s   |
-| `ReadAnalyzer`<sup>2</sup> | Always               | 45 MiB/s   |
-| `Parser` + `FixedAnalyzer` | Never                | 60 MiB/s   |
-| `Parser` + `FixedAnalyzer` | Always               | 60 MiB/s   |
+| `FixedAnalyzer`            | Never                | 1 GiB/s    |
+| `FixedAnalyzer`            | Always               | 1 GiB/s    |
+| `ReadAnalyzer`<sup>2</sup> | Never                | 880 MiB/s  |
+| `ReadAnalyzer`<sup>2</sup> | Always               | 690 MiB/s  |
+| `Parser` + `FixedAnalyzer` | Never                | 890 MiB/s  |
+| `Parser` + `FixedAnalyzer` | Always               | 850 MiB/s  |
 
 <sub>
 1 Running on Ubuntu 22 with an Intel Core i7 1.8 GHz with four physical cores.

@@ -1067,6 +1067,22 @@ impl Error {
     pub fn pos(&self) -> &Pos {
         &self.pos
     }
+
+    fn lexical(kind: ErrorKind, pos: Pos) -> Self {
+        Self {
+            kind,
+            pos,
+            source: None,
+        }
+    }
+
+    fn io(source: io::Error, pos: Pos) -> Self {
+        Self {
+            kind: ErrorKind::Read,
+            pos,
+            source: Some(Arc::new(source)),
+        }
+    }
 }
 
 impl fmt::Display for Error {
@@ -1136,9 +1152,16 @@ impl Bufs {
     }
 
     #[inline]
-    fn rewind(&mut self) {
-        self.j -= 1;
-        self.k -= 1;
+    fn advance(&mut self, n: usize) {
+        debug_assert!(
+            self.j + n <= self.current.len(),
+            "position in current buffer, j = {}, plus advance n = {n}, should not exceed buffer len {}",
+            self.j,
+            self.current.len()
+        );
+
+        self.j += n;
+        self.k += n;
     }
 
     #[inline]
@@ -1149,19 +1172,6 @@ impl Bufs {
 
         self.i = self.j;
         self.k = self.j;
-    }
-
-    #[inline(always)]
-    fn byte(&mut self) -> Option<u8> {
-        if self.j < self.current.len() {
-            let b = unsafe { self.current.get_unchecked(self.j) };
-            self.j += 1;
-            self.k += 1;
-
-            Some(*b)
-        } else {
-            None
-        }
     }
 
     fn read<R: Read>(&mut self, r: &mut R) -> io::Result<bool> {
@@ -1291,6 +1301,8 @@ impl Default for StoredContent {
     }
 }
 
+type MachineBuf = state::DerefBuf<Vec<u8>, Arc<Vec<u8>>>;
+
 /// A [`lexical::Analyzer`] to tokenize JSON text read from a [`std::io::Read`].
 ///
 /// Use `ReadAnalyzer` for low allocation, low-copy, stream-oriented lexical analysis of any stream
@@ -1383,7 +1395,7 @@ pub struct ReadAnalyzer<R: Read> {
     bufs: Bufs,
     content: StoredContent,
     content_pos: Pos,
-    mach: state::Machine,
+    mach: state::Machine<MachineBuf>,
     read: R,
 }
 
@@ -1440,85 +1452,94 @@ impl<R: Read> ReadAnalyzer<R> {
         self.content_pos = *self.mach.pos();
         self.bufs.reset();
 
-        let mut b = match self.byte() {
-            Ok(b) => b,
-            Err(err) => {
-                self.content = StoredContent::Err(err);
+        macro_rules! done {
+            ($token:ident, $escaped:ident, $n: ident) => {{
+                self.content = match $token {
+                    Token::ObjBegin => self.literal_content("{", 1),
+                    Token::ObjEnd => self.literal_content("}", 1),
+                    Token::ArrBegin => self.literal_content("[", 1),
+                    Token::ArrEnd => self.literal_content("]", 1),
+                    Token::NameSep => self.literal_content(":", 1),
+                    Token::ValueSep => self.literal_content(",", 1),
+                    Token::LitFalse => self.literal_content("false", $n),
+                    Token::LitNull => self.literal_content("null", $n),
+                    Token::LitTrue => self.literal_content("true", $n),
+                    _ => self.range_content($escaped, $n),
+                };
+
+                return $token;
+            }};
+        }
+
+        macro_rules! resume {
+            () => {
+                self.mach
+                    .resume(MachineBuf::new(Arc::clone(&self.bufs.current)))
+            };
+        }
+
+        macro_rules! lexical_err {
+            () => {{
+                let kind = self.mach.err_kind().expect("there should be an error kind");
+                let pos = *self.mach.pos();
+                self.content = StoredContent::Err(Error::lexical(kind, pos));
 
                 return Token::Err;
-            }
-        };
+            }};
+        }
 
+        macro_rules! io_err {
+            ($source:ident) => {{
+                self.content = StoredContent::Err(Error::io($source, *self.mach.pos()));
+
+                return Token::Err;
+            }};
+        }
+
+        let mut next = self.mach.next();
         loop {
-            match self.mach.next(b) {
-                state::State::Mid => match self.byte() {
-                    Ok(v) => b = v,
-                    Err(err) => {
-                        self.content = StoredContent::Err(err);
+            match next {
+                state::Next::Done(token, escaped, n) => done!(token, escaped, n),
+                state::Next::Part(token, n) => {
+                    self.bufs.advance(n);
+                    loop {
+                        match self.bufs.read(&mut self.read) {
+                            Ok(true) => match self.mach.end() {
+                                state::End::Done(false) => {
+                                    self.content = match token {
+                                        Token::LitFalse => self.literal_content("false", 0),
+                                        Token::LitNull => self.literal_content("null", 0),
+                                        Token::LitTrue => self.literal_content("true", 0),
+                                        _ => self.range_content(false, 0),
+                                    };
 
-                        return Token::Err;
+                                    return token;
+                                }
+                                state::End::Done(true) => unreachable!(),
+                                state::End::Err => lexical_err!(),
+                            },
+                            Ok(false) => match resume!() {
+                                state::Next::Done(token, escaped, n) => {
+                                    done!(token, escaped, n)
+                                }
+                                state::Next::Part(_, n) => self.bufs.advance(n),
+                                state::Next::Nil => unreachable!(),
+                                state::Next::Err(_) => lexical_err!(),
+                            },
+                            Err(err) => io_err!(err),
+                        }
                     }
+                }
+                state::Next::Nil => match self.bufs.read(&mut self.read) {
+                    Ok(true) => {
+                        self.content = StoredContent::default();
+
+                        return Token::Eof;
+                    }
+                    Ok(false) => next = resume!(),
+                    Err(err) => io_err!(err),
                 },
-
-                state::State::End {
-                    token,
-                    escaped,
-                    repeat,
-                } => {
-                    if repeat && b.is_some() {
-                        self.bufs.rewind();
-                    }
-
-                    self.content = match token {
-                        Token::ObjBegin => StoredContent::Literal("{"),
-                        Token::ObjEnd => StoredContent::Literal("}"),
-                        Token::ArrBegin => StoredContent::Literal("["),
-                        Token::NameSep => StoredContent::Literal(":"),
-                        Token::ValueSep => StoredContent::Literal(","),
-                        Token::LitFalse => StoredContent::Literal("false"),
-                        Token::LitNull => StoredContent::Literal("null"),
-                        Token::LitTrue => StoredContent::Literal("true"),
-                        _ => StoredContent::Range(self.bufs.i..self.bufs.k, escaped),
-                    };
-
-                    return token;
-                }
-
-                state::State::Err(kind) => {
-                    let mut pos = *self.mach.pos();
-
-                    match &kind {
-                        ErrorKind::BadSurrogate {
-                            first: _,
-                            second: _,
-                            offset,
-                        } => {
-                            pos.offset -= *offset as usize;
-                            pos.col -= *offset as usize;
-                        }
-
-                        ErrorKind::BadUtf8ContByte {
-                            seq_len,
-                            offset: _,
-                            value: _,
-                        } => {
-                            // Current `pos.offset` is at the end of the multibyte UTF-8 sequence.
-                            // Rewind it to the start of the sequence.
-                            let rewind = seq_len - 1;
-                            pos.offset -= rewind as usize;
-                        }
-
-                        _ => (),
-                    }
-
-                    self.content = StoredContent::Err(Error {
-                        kind,
-                        pos,
-                        source: None,
-                    });
-
-                    return Token::Err;
-                }
+                state::Next::Err(_) => lexical_err!(),
             }
         }
     }
@@ -1747,31 +1768,42 @@ impl<R: Read> ReadAnalyzer<R> {
     ///
     /// let _ = lexer.next();
     /// ```
-    pub fn with_buf_size(read: R, buf_size: usize) -> Self {
+    pub fn with_buf_size(mut read: R, buf_size: usize) -> Self {
+        let mut bufs = Bufs::new(buf_size);
+        let content_pos = Pos::default();
+        let (content, mach) = match bufs.read(&mut read) {
+            Ok(_) => (
+                StoredContent::default(),
+                state::Machine::new(MachineBuf::new(Arc::clone(&bufs.current))),
+            ),
+            Err(err) => (
+                StoredContent::Err(Error::io(err, content_pos)),
+                state::Machine::default(),
+            ),
+        };
+
         Self {
-            bufs: Bufs::new(buf_size),
-            content: StoredContent::default(),
-            content_pos: Pos::default(),
-            mach: state::Machine::default(),
+            bufs,
+            content,
+            content_pos,
+            mach,
             read,
         }
     }
 
-    #[inline]
-    fn byte(&mut self) -> Result<Option<u8>, Error> {
-        if let Some(b) = self.bufs.byte() {
-            Ok(Some(b))
-        } else {
-            match self.bufs.read(&mut self.read) {
-                Ok(eof) if eof => Ok(None),
-                Ok(_) => Ok(self.bufs.byte()),
-                Err(err) => Err(Error {
-                    kind: ErrorKind::Read,
-                    pos: *self.mach.pos(),
-                    source: Some(Arc::new(err)),
-                }),
-            }
-        }
+    #[inline(always)]
+    fn literal_content(&mut self, content: &'static str, n: usize) -> StoredContent {
+        debug_assert!(n <= content.len());
+        self.bufs.advance(n);
+
+        StoredContent::Literal(content)
+    }
+
+    #[inline(always)]
+    fn range_content(&mut self, escaped: bool, n: usize) -> StoredContent {
+        self.bufs.advance(n);
+
+        StoredContent::Range(self.bufs.i..self.bufs.k, escaped)
     }
 }
 
@@ -2450,24 +2482,6 @@ mod tests {
         assert!(bufs.maybe_free.is_empty());
         assert_eq!(Bufs::MIN_BUF_SIZE, bufs.buf_size);
         assert!(!bufs.eof);
-
-        assert!(bufs.byte().is_none());
-    }
-
-    #[test]
-    fn test_bufs_new_byte() {
-        let mut bufs = Bufs::new(Bufs::MIN_BUF_SIZE);
-
-        assert!(bufs.byte().is_none());
-
-        assert!(bufs.current.is_empty());
-        assert!(bufs.used.is_empty());
-        assert_eq!(0, bufs.i);
-        assert_eq!(0, bufs.j);
-        assert_eq!(0, bufs.k);
-        assert!(bufs.maybe_free.is_empty());
-        assert_eq!(Bufs::MIN_BUF_SIZE, bufs.buf_size);
-        assert!(!bufs.eof);
     }
 
     #[test]
@@ -2506,12 +2520,8 @@ mod tests {
         loop {
             assert!(bufs.used.len() <= expect_used);
 
-            loop {
-                match bufs.byte() {
-                    Some(b) => dst.push(b),
-                    None => break,
-                }
-            }
+            dst.extend_from_slice(&bufs.current);
+            bufs.advance(bufs.current.len());
 
             match bufs.read(&mut reader) {
                 Ok(true) => break,
@@ -2666,6 +2676,7 @@ mod tests {
     #[case(r#"" ""#, Token::Str, None)]
     #[case(r#""foo""#, Token::Str, None)]
     #[case(r#""The quick brown fox jumped over the lazy dog!""#, Token::Str, None)]
+    #[case(r#""\"""#, Token::Str, Some(r#"""""#))]
     #[case(r#""\\""#, Token::Str, Some(r#""\""#))]
     #[case(r#""\/""#, Token::Str, Some(r#""/""#))]
     #[case(r#""\t""#, Token::Str, Some("\"\t\""))]
@@ -2673,6 +2684,7 @@ mod tests {
     #[case(r#""\n""#, Token::Str, Some("\"\n\""))]
     #[case(r#""\f""#, Token::Str, Some("\"\u{000c}\""))]
     #[case(r#""\b""#, Token::Str, Some("\"\u{0008}\""))]
+    #[case(r#""\r\n""#, Token::Str, Some("\"\r\n\""))]
     #[case(r#""\u0000""#, Token::Str, Some("\"\u{0000}\""))]
     #[case(r#""\u001f""#, Token::Str, Some("\"\u{001f}\""))]
     #[case(r#""\u0020""#, Token::Str, Some(r#"" ""#))]
@@ -2680,6 +2692,7 @@ mod tests {
     #[case(r#""\u007F""#, Token::Str, Some("\"\u{007f}\""))]
     #[case(r#""\u0080""#, Token::Str, Some("\"\u{0080}\""))]
     #[case(r#""\u0100""#, Token::Str, Some("\"\u{0100}\""))]
+    #[case(r#""\ud7FF""#, Token::Str, Some("\"\u{d7ff}\""))]
     #[case(r#""\uE000""#, Token::Str, Some("\"\u{e000}\""))]
     #[case(r#""\ufDCf""#, Token::Str, Some("\"\u{fdcf}\""))]
     #[case(r#""\uFdeF""#, Token::Str, Some("\"\u{fdef}\""))]
@@ -2690,6 +2703,9 @@ mod tests {
     #[case(r#""\uD800\uDFFF""#, Token::Str, Some("\"\u{103ff}\""))] // High surrogate with highest low surrogate → U+103FF
     #[case(r#""\uDBFF\uDC00""#, Token::Str, Some("\"\u{10fc00}\""))] // Highest high surrogate with lowest low surrogate → U+10FC00
     #[case(r#""\udbFf\udfff""#, Token::Str, Some("\"\u{10ffff}\""))] // Highest valid surrogate pair → U+10FFFF (max Unicode scalar value)
+    #[case(r#""\u0061b""#, Token::Str, Some(r#""ab""#))]
+    #[case(r#""\uD800\uDC00a""#, Token::Str, Some("\"\u{10000}a\""))]
+    #[case(r#""hello\nworld""#, Token::Str, Some("\"hello\nworld\""))]
     #[case(" ", Token::White, None)]
     #[case("\t", Token::White, None)]
     #[case("  ", Token::White, None)]
@@ -2834,7 +2850,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case(r#""\uDC00""#, ErrorKind::BadSurrogate { first: 0xdc00, second: None, offset: 5 }, 1)]
+    #[case(r#""\uDC00""#, ErrorKind::BadSurrogate { first: 0xdc00, second: None, }, 3)]
     #[case(&[b'"', 0xc2, 0xc0], ErrorKind::BadUtf8ContByte { seq_len: 2, offset: 1, value: 0xc0 }, 1)]
     #[case(&b"\"\x80", ErrorKind::UnexpectedByte { token: Some(Token::Str), expect: Expect::StrChar, actual: 0x80 }, 1)]
     #[case([b'"'], ErrorKind::UnexpectedEof(Token::Str), 1)]

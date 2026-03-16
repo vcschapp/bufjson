@@ -52,30 +52,6 @@ impl Pos {
     pub const fn new(offset: usize, line: usize, col: usize) -> Self {
         Self { offset, line, col }
     }
-
-    #[inline(always)]
-    pub(crate) fn advance_line(&mut self) {
-        self.offset += 1;
-        self.line += 1;
-        self.col = 1;
-    }
-
-    #[inline(always)]
-    pub(crate) fn advance_line_no_offset(&mut self) {
-        self.line += 1;
-        self.col = 1;
-    }
-
-    #[inline(always)]
-    pub(crate) fn advance_col(&mut self) {
-        self.offset += 1;
-        self.col += 1;
-    }
-
-    #[inline(always)]
-    pub(crate) fn advance_offset(&mut self, by: usize) {
-        self.offset += by;
-    }
 }
 
 impl Default for Pos {

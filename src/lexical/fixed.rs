@@ -60,49 +60,25 @@ impl Content<Vec<u8>> {
     ///
     /// Panics if the string is not a valid JSON token.
     pub fn from_static(s: &'static str) -> Self {
-        let mut i = 0;
-        let b = s.as_bytes();
-        let state = if !s.is_empty() {
-            let mut mach = state::Machine::default();
-            loop {
-                let state = mach.next(Some(b[i]));
-                match state {
-                    state::State::End { repeat: false, .. } => {
-                        i += 1;
-
-                        break state;
-                    }
-
-                    state::State::Mid => {
-                        i += 1;
-                        if i == s.len() {
-                            break mach.next(None);
-                        }
-                    }
-
-                    _ => break state,
-                }
+        let b: &[u8] = s.as_bytes();
+        let escaped = if !s.is_empty() {
+            let mut mach = state::Machine::new(b);
+            match mach.next() {
+                state::Next::Part(_, n) if n == b.len() => mach.end().escaped(),
+                state::Next::Done(_, escaped, n) if n == b.len() => Some(escaped),
+                _ => None,
             }
         } else {
-            state::State::End {
-                token: Token::Eof,
-                escaped: false,
-                repeat: false,
-            }
+            Some(false)
         };
 
-        match state {
-            state::State::End { token, escaped, .. } if i == s.len() && !token.is_err() => {
-                if !escaped {
-                    Self(InnerContent::Static(s))
-                } else {
-                    Self(InnerContent::Escaped(Ref::new(
-                        Arc::new(b.to_vec()),
-                        0..b.len(),
-                    )))
-                }
-            }
-            _ => panic!("invalid JSON token"),
+        match escaped {
+            Some(false) => Self(InnerContent::Static(s)),
+            Some(true) => Self(InnerContent::Escaped(Ref::new(
+                Arc::new(b.to_vec()),
+                0..b.len(),
+            ))),
+            None => panic!("invalid JSON token"),
         }
     }
 }
@@ -366,8 +342,7 @@ pub struct FixedAnalyzer<B: Deref<Target = [u8]> + fmt::Debug> {
     buf: Arc<B>,
     content: StoredContent,
     content_pos: Pos,
-    mach: state::Machine,
-    repeat: Option<u8>,
+    mach: state::Machine<state::DerefBuf<B, Arc<B>>>,
 }
 
 impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
@@ -386,8 +361,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// ```
     pub fn new(buf: B) -> Self {
         let buf = Arc::new(buf);
-        let mach = state::Machine::default();
-        let repeat = None;
+        let mach = state::Machine::new(state::DerefBuf::new(Arc::clone(&buf)));
         let content = StoredContent::default();
         let content_pos = Pos::default();
 
@@ -396,7 +370,6 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
             content,
             content_pos,
             mach,
-            repeat,
         }
     }
 
@@ -422,74 +395,59 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
 
         self.content_pos = *self.mach.pos();
 
-        let mut b = std::mem::take(&mut self.repeat);
+        match self.mach.next() {
+            state::Next::Done(token, escaped, n) => {
+                self.content = match token {
+                    Token::ObjBegin => StoredContent::Literal("{"),
+                    Token::ObjEnd => StoredContent::Literal("}"),
+                    Token::ArrBegin => StoredContent::Literal("["),
+                    Token::NameSep => StoredContent::Literal(":"),
+                    Token::ValueSep => StoredContent::Literal(","),
+                    Token::LitFalse => StoredContent::Literal("false"),
+                    Token::LitNull => StoredContent::Literal("null"),
+                    Token::LitTrue => StoredContent::Literal("true"),
+                    _ => StoredContent::Range(
+                        self.content_pos.offset..self.content_pos.offset + n,
+                        escaped,
+                    ),
+                };
 
-        if b.is_none() {
-            b = self.byte()
-        }
-
-        loop {
-            match self.mach.next(b) {
-                state::State::Mid => b = self.byte(),
-
-                state::State::End {
-                    token,
-                    escaped,
-                    repeat,
-                } => {
+                token
+            }
+            state::Next::Part(token, n) => match self.mach.end() {
+                state::End::Done(false) => {
                     self.content = match token {
-                        Token::ObjBegin => StoredContent::Literal("{"),
-                        Token::ObjEnd => StoredContent::Literal("}"),
-                        Token::ArrBegin => StoredContent::Literal("["),
-                        Token::NameSep => StoredContent::Literal(":"),
-                        Token::ValueSep => StoredContent::Literal(","),
                         Token::LitFalse => StoredContent::Literal("false"),
                         Token::LitNull => StoredContent::Literal("null"),
                         Token::LitTrue => StoredContent::Literal("true"),
                         _ => StoredContent::Range(
-                            self.content_pos.offset..self.mach.pos().offset,
-                            escaped,
+                            self.content_pos.offset..self.content_pos.offset + n,
+                            false,
                         ),
                     };
 
-                    if repeat {
-                        self.repeat = b;
-                    }
-
-                    return token;
+                    token
                 }
-
-                state::State::Err(kind) => {
-                    let mut pos = *self.mach.pos();
-
-                    match &kind {
-                        ErrorKind::BadSurrogate {
-                            first: _,
-                            second: _,
-                            offset,
-                        } => {
-                            pos.offset -= *offset as usize;
-                            pos.col -= *offset as usize;
-                        }
-
-                        ErrorKind::BadUtf8ContByte {
-                            seq_len,
-                            offset: _,
-                            value: _,
-                        } => {
-                            // Current `pos.offset` is at the end of the multibyte UTF-8 sequence.
-                            // Rewind it to the start of the sequence.
-                            let rewind = seq_len - 1;
-                            pos.offset -= rewind as usize;
-                        }
-
-                        _ => (),
-                    }
-
+                state::End::Done(true) => unreachable!(),
+                state::End::Err => {
+                    let kind = self.mach.err_kind().expect("there should be an error kind");
+                    let pos = *self.mach.pos();
                     self.content = StoredContent::Err(Error { kind, pos });
 
-                    return Token::Err;
+                    Token::Err
                 }
+            },
+            state::Next::Nil => {
+                self.content = StoredContent::Literal("");
+
+                Token::Eof
+            }
+            state::Next::Err(_) => {
+                let kind = self.mach.err_kind().expect("there should be an error kind");
+                let pos = *self.mach.pos();
+                self.content = StoredContent::Err(Error { kind, pos });
+
+                Token::Err
             }
         }
     }
@@ -679,17 +637,6 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     pub fn into_parser(self) -> syntax::Parser<FixedAnalyzer<B>> {
         syntax::Parser::new(self)
     }
-
-    #[inline(always)]
-    fn byte(&self) -> Option<u8> {
-        let offset = self.mach.pos().offset;
-
-        if offset < self.buf.len() {
-            Some(self.buf[offset])
-        } else {
-            None
-        }
-    }
 }
 
 impl<B: Deref<Target = [u8]> + fmt::Debug> Analyzer for FixedAnalyzer<B> {
@@ -748,7 +695,9 @@ mod tests {
     #[case::str_trailing_space(r#""a" "#)]
     #[should_panic(expected = "invalid JSON token")]
     fn test_content_from_static_panic(#[case] s: &'static str) {
-        let _ = Content::from_static(s);
+        let c = Content::from_static(s);
+
+        panic!("content unexpectedly created: {c:?}");
     }
 
     #[rstest]
@@ -796,7 +745,7 @@ mod tests {
 
     #[rstest]
     #[case(
-        ErrorKind::BadSurrogate { first: 0xd800, second: Some(0xd800), offset: 3 },
+        ErrorKind::BadSurrogate { first: 0xd800, second: Some(0xd800), },
         "bad Unicode escape sequence surrogate pair: high surrogate '\\uD800' followed by invalid low surrogate '\\uD800' at line",
     )]
     #[case(
@@ -914,6 +863,7 @@ mod tests {
     #[case(r#"" ""#, Token::Str, None)]
     #[case(r#""foo""#, Token::Str, None)]
     #[case(r#""The quick brown fox jumped over the lazy dog!""#, Token::Str, None)]
+    #[case(r#""\"""#, Token::Str, Some(r#"""""#))]
     #[case(r#""\\""#, Token::Str, Some(r#""\""#))]
     #[case(r#""\/""#, Token::Str, Some(r#""/""#))]
     #[case(r#""\t""#, Token::Str, Some("\"\t\""))]
@@ -921,6 +871,7 @@ mod tests {
     #[case(r#""\n""#, Token::Str, Some("\"\n\""))]
     #[case(r#""\f""#, Token::Str, Some("\"\u{000c}\""))]
     #[case(r#""\b""#, Token::Str, Some("\"\u{0008}\""))]
+    #[case(r#""\r\n""#, Token::Str, Some("\"\r\n\""))]
     #[case(r#""\u0000""#, Token::Str, Some("\"\u{0000}\""))]
     #[case(r#""\u001f""#, Token::Str, Some("\"\u{001f}\""))]
     #[case(r#""\u0020""#, Token::Str, Some(r#"" ""#))]
@@ -928,6 +879,7 @@ mod tests {
     #[case(r#""\u007F""#, Token::Str, Some("\"\u{007f}\""))]
     #[case(r#""\u0080""#, Token::Str, Some("\"\u{0080}\""))]
     #[case(r#""\u0100""#, Token::Str, Some("\"\u{0100}\""))]
+    #[case(r#""\ud7FF""#, Token::Str, Some("\"\u{d7ff}\""))]
     #[case(r#""\uE000""#, Token::Str, Some("\"\u{e000}\""))]
     #[case(r#""\ufDCf""#, Token::Str, Some("\"\u{fdcf}\""))]
     #[case(r#""\uFdeF""#, Token::Str, Some("\"\u{fdef}\""))]
@@ -938,6 +890,9 @@ mod tests {
     #[case(r#""\uD800\uDFFF""#, Token::Str, Some("\"\u{103ff}\""))] // High surrogate with highest low surrogate → U+103FF
     #[case(r#""\uDBFF\uDC00""#, Token::Str, Some("\"\u{10fc00}\""))] // Highest high surrogate with lowest low surrogate → U+10FC00
     #[case(r#""\udbFf\udfff""#, Token::Str, Some("\"\u{10ffff}\""))] // Highest valid surrogate pair → U+10FFFF (max Unicode scalar value)
+    #[case(r#""\u0061b""#, Token::Str, Some(r#""ab""#))]
+    #[case(r#""\uD800\uDC00a""#, Token::Str, Some("\"\u{10000}a\""))]
+    #[case(r#""hello\nworld""#, Token::Str, Some("\"hello\nworld\""))]
     #[case(" ", Token::White, None)]
     #[case("\t", Token::White, None)]
     #[case("  ", Token::White, None)]
@@ -1106,7 +1061,7 @@ mod tests {
     #[case("\"\u{10000}\"")] // Lowest four-byte UTF-8 character
     #[case("\"\u{10ffff}\"")] // Highest valid Unicode scalar value
     #[case("\"\u{3f086}\"")] // Regression test: 2026-02-14 🌹
-    fn test_analyzer_utf8_seq(#[case] input: &str) {
+    fn test_analyzer_utf8_char_1(#[case] input: &str) {
         // With content fetch.
         {
             let mut an = FixedAnalyzer::new(input.as_bytes());
@@ -1165,6 +1120,87 @@ mod tests {
                     offset: input.len(),
                     line: 1,
                     col: 4,
+                },
+                *an.pos()
+            );
+        }
+    }
+
+    #[rstest]
+    // 2-byte followed by 1, 2, 3, 4-byte
+    #[case::two_1("\"\u{00e4}a\"")]
+    #[case::two_2("\"\u{00e4}\u{00e4}\"")]
+    #[case::two_3("\"\u{00e4}\u{3042}\"")]
+    #[case::two_4("\"\u{00e4}\u{10000}\"")]
+    // 3-byte followed by 1, 2, 3, 4-byte
+    #[case::three_1("\"\u{3042}a\"")]
+    #[case::three_2("\"\u{3042}\u{00e4}\"")]
+    #[case::three_3("\"\u{3042}\u{3042}\"")]
+    #[case::three_4("\"\u{3042}\u{10000}\"")]
+    // 4-byte followed by 1, 2, 3, 4-byte
+    #[case::four_1("\"\u{10000}a\"")]
+    #[case::four_2("\"\u{10000}\u{00e4}\"")]
+    #[case::four_3("\"\u{10000}\u{3042}\"")]
+    #[case::four_4("\"\u{10000}\u{10000}\"")]
+    fn test_analyzer_utf8_char_2(#[case] input: &str) {
+        // With content fetch.
+        {
+            let mut an = FixedAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Str, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            let content = an.content();
+            assert_eq!(input, content.literal());
+            assert!(!content.is_escaped());
+            assert_eq!(input, content.unescaped());
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: 5,
+                },
+                *an.pos()
+            );
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: 5,
+                },
+                *an.pos()
+            );
+        }
+
+        // Without content fetch.
+        {
+            let mut an = FixedAnalyzer::new(input.as_bytes());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Str, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: 5,
+                },
+                *an.pos()
+            );
+
+            assert_eq!(Token::Eof, an.next());
+            assert_eq!(
+                Pos {
+                    offset: input.len(),
+                    line: 1,
+                    col: 5,
                 },
                 *an.pos()
             );
@@ -1375,6 +1411,11 @@ mod tests {
     #[case("false\n", T::t(Token::LitFalse, "false"), T::t(Token::White, "\n").pos(5, 1, 6), 2, 1)]
     #[case("false\r\n", T::t(Token::LitFalse, "false"), T::t(Token::White, "\r\n").pos(5, 1, 6), 2, 1)]
     #[case("false\n\r", T::t(Token::LitFalse, "false"), T::t(Token::White, "\n\r").pos(5, 1, 6), 3, 1)]
+    #[case("false\r\n ", T::t(Token::LitFalse, "false"), T::t(Token::White, "\r\n ").pos(5, 1, 6), 2, 2)]
+    #[case("false\n\r ", T::t(Token::LitFalse, "false"), T::t(Token::White, "\n\r ").pos(5, 1, 6), 3, 2)]
+    #[case("false \r\n", T::t(Token::LitFalse, "false"), T::t(Token::White, " \r\n").pos(5, 1, 6), 2, 1)]
+    #[case("false \n\r", T::t(Token::LitFalse, "false"), T::t(Token::White, " \n\r").pos(5, 1, 6), 3, 1)]
+    #[case(r#"false"""#, T::t(Token::LitFalse, "false"), T::t(Token::Str, r#""""#).pos(5, 1, 6), 1, 8)]
     // =============================================================================================
     // Literal `null` followed by something...
     // =============================================================================================
@@ -1388,6 +1429,7 @@ mod tests {
     #[case("null\t", T::t(Token::LitNull, "null"), T::t(Token::White, "\t").pos(4, 1, 5), 1, 6)]
     #[case("null\r", T::t(Token::LitNull, "null"), T::t(Token::White, "\r").pos(4, 1, 5), 2, 1)]
     #[case("null\n", T::t(Token::LitNull, "null"), T::t(Token::White, "\n").pos(4, 1, 5), 2, 1)]
+    #[case(r#"null"x""#, T::t(Token::LitNull, "null"), T::t(Token::Str, r#""x""#).pos(4, 1, 5), 1, 8)]
     // =============================================================================================
     // Literal `true` followed by something...
     // =============================================================================================
@@ -1401,6 +1443,7 @@ mod tests {
     #[case("true\t", T::t(Token::LitTrue, "true"), T::t(Token::White, "\t").pos(4, 1, 5), 1, 6)]
     #[case("true\r", T::t(Token::LitTrue, "true"), T::t(Token::White, "\r").pos(4, 1, 5), 2, 1)]
     #[case("true\n", T::t(Token::LitTrue, "true"), T::t(Token::White, "\n").pos(4, 1, 5), 2, 1)]
+    #[case(r#"true"🧶""#, T::t(Token::LitTrue, "true"), T::t(Token::Str, r#""🧶""#).pos(4, 1, 5), 1, 8)]
     // =============================================================================================
     // Number followed by something...
     // =============================================================================================
@@ -1414,16 +1457,21 @@ mod tests {
     #[case("0\t", T::t(Token::Num, "0"), T::t(Token::White, "\t").pos(1, 1, 2), 1, 3)]
     #[case("0\r", T::t(Token::Num, "0"), T::t(Token::White, "\r").pos(1, 1, 2), 2, 1)]
     #[case("0\n", T::t(Token::Num, "0"), T::t(Token::White, "\n").pos(1, 1, 2), 2, 1)]
+    #[case(r#"0"""#, T::t(Token::Num, "0"), T::t(Token::Str, r#""""#).pos(1, 1, 2), 1, 4)]
     #[case("1{", T::t(Token::Num, "1"), T::t(Token::ObjBegin, "{").pos(1, 1, 2), 1, 3)]
     #[case("-9}", T::t(Token::Num, "-9"), T::t(Token::ObjEnd, "}").pos(2, 1, 3), 1, 4)]
     #[case("0.0[", T::t(Token::Num, "0.0"), T::t(Token::ArrBegin, "[").pos(3, 1, 4), 1, 5)]
     #[case("-0]", T::t(Token::Num, "-0"), T::t(Token::ArrEnd, "]").pos(2, 1, 3), 1, 4)]
+    #[case(r#"-0"a""#, T::t(Token::Num, "-0"), T::t(Token::Str, r#""a""#).pos(2, 1, 3), 1, 6)]
     #[case("-0.0123456789:", T::t(Token::Num, "-0.0123456789"), T::t(Token::NameSep, ":").pos(13, 1, 14), 1, 15)]
     #[case("123456789e10,", T::t(Token::Num, "123456789e10"), T::t(Token::ValueSep, ",").pos(12, 1, 13), 1, 14)]
     #[case("0e-1 ", T::t(Token::Num, "0e-1"), T::t(Token::White, " ").pos(4, 1, 5), 1, 6)]
     #[case("2e+3\t", T::t(Token::Num, "2e+3"), T::t(Token::White, "\t").pos(4, 1, 5), 1, 6)]
     #[case("-5e6\r", T::t(Token::Num, "-5e6"), T::t(Token::White, "\r").pos(4, 1, 5), 2, 1)]
     #[case("6.7e89\n", T::t(Token::Num, "6.7e89"), T::t(Token::White, "\n").pos(6, 1, 7), 2, 1)]
+    #[case(r#"1"a""#, T::t(Token::Num, "1"), T::t(Token::Str, r#""a""#).pos(1, 1, 2), 1, 5)]
+    #[case(r#"2.5"a""#, T::t(Token::Num, "2.5"), T::t(Token::Str, r#""a""#).pos(3, 1, 4), 1, 7)]
+    #[case(r#"3e4"a""#, T::t(Token::Num, "3e4"), T::t(Token::Str, r#""a""#).pos(3, 1, 4), 1, 7)]
     // =============================================================================================
     // String followed by something...
     // =============================================================================================
@@ -1441,8 +1489,14 @@ mod tests {
     #[case(r#""foo bar"]"#, T::t(Token::Str, r#""foo bar""#), T::t(Token::ArrEnd, "]").pos(9, 1, 10), 1, 11)]
     #[case(r#""🧶":"#, T::t(Token::Str, r#""🧶""#), T::t(Token::NameSep, ":").pos(6, 1, 4), 1, 5)]
     #[case(r#""\"\t\r\n\\\/\u0020\"","#, T::t(Token::Str, r#""\"\t\r\n\\\/\u0020\"""#).unescaped("\"\"\t\r\n\\/ \"\""), T::t(Token::ValueSep, ",").pos(22, 1, 23), 1, 24)]
+    #[case(r#""treble \uD834\uDD1E""clef""#, T::t(Token::Str, r#""treble \uD834\uDD1E""#).unescaped("\"treble 𝄞\""), T::t(Token::Str, r#""clef""#).pos(21, 1, 22), 1, 28)]
+    #[case(r#""a"0e+12"#, T::t(Token::Str, r#""a""#), T::t(Token::Num, "0e+12").pos(3, 1, 4), 1, 9)]
     #[case(r#""❤😊"-0"#, T::t(Token::Str, r#""❤😊""#), T::t(Token::Num, "-0").pos(9, 1, 5), 1, 7)]
     #[case(r#""❤️😊"1"#, T::t(Token::Str, r#""❤️😊""#), T::t(Token::Num, "1").pos(12, 1, 6), 1, 7)]
+    #[case(r#""""a""#, T::t(Token::Str, r#""""#), T::t(Token::Str, r#""a""#).pos(2, 1, 3), 1, 6)]
+    #[case(r#""""café""#, T::t(Token::Str, r#""""#), T::t(Token::Str, r#""café""#).pos(2, 1, 3), 1, 9)]
+    #[case(r#""a""""#, T::t(Token::Str, r#""a""#), T::t(Token::Str, r#""""#).pos(3, 1, 4), 1, 6)]
+    #[case(r#""€10""""#, T::t(Token::Str, r#""€10""#), T::t(Token::Str, r#""""#).pos(7, 1, 6), 1, 8)]
     // =============================================================================================
     // Whitespace followed by something...
     // =============================================================================================
@@ -1456,6 +1510,7 @@ mod tests {
     #[case(" null", T::t(Token::White, " "), T::t(Token::LitNull, "null").pos(1, 1, 2), 1, 6)]
     #[case(" true", T::t(Token::White, " "), T::t(Token::LitTrue, "true").pos(1, 1, 2), 1, 6)]
     #[case(" 0", T::t(Token::White, " "), T::t(Token::Num, "0").pos(1, 1, 2), 1, 3)]
+    #[case(" -0", T::t(Token::White, " "), T::t(Token::Num, "-0").pos(1, 1, 2), 1, 4)]
     #[case(r#" """#, T::t(Token::White, " "), T::t(Token::Str, r#""""#).pos(1, 1, 2), 1, 4)]
     #[case("\t{", T::t(Token::White, "\t"), T::t(Token::ObjBegin, "{").pos(1, 1, 2), 1, 3)]
     #[case("  {", T::t(Token::White, "  "), T::t(Token::ObjBegin, "{").pos(2, 1, 3), 1, 4)]
@@ -1561,35 +1616,34 @@ mod tests {
     }
 
     #[rstest]
-    #[case(r#""\uDC00""#, 0xdc00, None, 5, 1)]
-    #[case(r#""\udc00""#, 0xdc00, None, 5, 1)]
-    #[case(r#""\uDFFF""#, 0xdfff, None, 5, 1)]
-    #[case(r#""\udfff""#, 0xdfff, None, 5, 1)]
-    #[case(r#""\uD800""#, 0xd800, None, 6, 1)]
-    #[case(r#""\ud800""#, 0xd800, None, 6, 1)]
-    #[case(r#""\uDBFF""#, 0xdbff, None, 6, 1)]
-    #[case(r#""\udbff""#, 0xdbff, None, 6, 1)]
-    #[case(r#""\uD800x""#, 0xd800, None, 6, 1)]
-    #[case(r#""\ud800x""#, 0xd800, None, 6, 1)]
-    #[case(r#""\uDBFFx""#, 0xdbff, None, 6, 1)]
-    #[case(r#""\udbffx""#, 0xdbff, None, 6, 1)]
-    #[case(r#""\uD800\""#, 0xd800, None, 7, 1)]
-    #[case(r#""\ud800\""#, 0xd800, None, 7, 1)]
-    #[case(r#""\uDBFF\""#, 0xdbff, None, 7, 1)]
-    #[case(r#""\udbff\""#, 0xdbff, None, 7, 1)]
-    #[case(r#""\uD800\/""#, 0xd800, None, 7, 1)]
-    #[case(r#""\ud800\t""#, 0xd800, None, 7, 1)]
-    #[case(r#""\uDBFF\r""#, 0xdbff, None, 7, 1)]
-    #[case(r#""\udbff\n""#, 0xdbff, None, 7, 1)]
-    #[case(r#""\uD800\ud800""#, 0xd800, Some(0xd800), 5, 7)]
-    #[case(r#""\uD800\uDBFF""#, 0xd800, Some(0xdbff), 5, 7)]
-    #[case(r#""\udbff\ue000""#, 0xdbff, Some(0xe000), 5, 7)]
-    #[case(r#""\udbff\u0000""#, 0xdbff, Some(0x0000), 5, 7)]
+    #[case(r#""\uDC00""#, 0xdc00, None, 3)]
+    #[case(r#""\udc00""#, 0xdc00, None, 3)]
+    #[case(r#""\uDFFF""#, 0xdfff, None, 3)]
+    #[case(r#""\udfff""#, 0xdfff, None, 3)]
+    #[case(r#""\uD800""#, 0xd800, None, 3)]
+    #[case(r#""\ud800""#, 0xd800, None, 3)]
+    #[case(r#""\uDBFF""#, 0xdbff, None, 3)]
+    #[case(r#""\udbff""#, 0xdbff, None, 3)]
+    #[case(r#""\uD800x""#, 0xd800, None, 3)]
+    #[case(r#""\ud800x""#, 0xd800, None, 3)]
+    #[case(r#""\uDBFFx""#, 0xdbff, None, 3)]
+    #[case(r#""\udbffx""#, 0xdbff, None, 3)]
+    #[case(r#""\uD800\""#, 0xd800, None, 3)]
+    #[case(r#""\ud800\""#, 0xd800, None, 3)]
+    #[case(r#""\uDBFF\""#, 0xdbff, None, 3)]
+    #[case(r#""\udbff\""#, 0xdbff, None, 3)]
+    #[case(r#""\uD800\/""#, 0xd800, None, 3)]
+    #[case(r#""\ud800\t""#, 0xd800, None, 3)]
+    #[case(r#""\uDBFF\r""#, 0xdbff, None, 3)]
+    #[case(r#""\udbff\n""#, 0xdbff, None, 3)]
+    #[case(r#""\uD800\ud800""#, 0xd800, Some(0xd800), 9)]
+    #[case(r#""\uD800\uDBFF""#, 0xd800, Some(0xdbff), 9)]
+    #[case(r#""\udbff\ue000""#, 0xdbff, Some(0xe000), 9)]
+    #[case(r#""\udbff\u0000""#, 0xdbff, Some(0x0000), 9)]
     fn test_analyzer_single_error_bad_surrogate(
         #[case] input: &str,
         #[case] first: u16,
         #[case] second: Option<u16>,
-        #[case] kind_offset: u8,
         #[case] pos_offset: usize,
     ) {
         // With error fetch.
@@ -1601,14 +1655,7 @@ mod tests {
             assert_eq!(Pos::default(), *an.pos());
 
             let err = an.err();
-            assert_eq!(
-                ErrorKind::BadSurrogate {
-                    first,
-                    second,
-                    offset: kind_offset
-                },
-                err.kind()
-            );
+            assert_eq!(ErrorKind::BadSurrogate { first, second }, err.kind());
             assert_eq!(
                 Pos {
                     offset: pos_offset,
@@ -1885,9 +1932,9 @@ mod tests {
     // Integer part followed by a bad character
     // =============================================================================================
     #[case("0x", Expect::DotExpOrBoundary)]
-    #[case("1x", Expect::DotExpOrBoundary)]
-    #[case("9/", Expect::DotExpOrBoundary)]
-    #[case("13456789000a", Expect::DotExpOrBoundary)]
+    #[case("1x", Expect::DigitDotExpOrBoundary)]
+    #[case("9/", Expect::DigitDotExpOrBoundary)]
+    #[case("13456789000a", Expect::DigitDotExpOrBoundary)]
     // =============================================================================================
     // Integer part followed by a bad character
     // =============================================================================================
@@ -2083,6 +2130,10 @@ mod tests {
     #[case(r#"\uf_"#, Expect::UnicodeEscHexDigit)]
     #[case(r#"\u1a_"#, Expect::UnicodeEscHexDigit)]
     #[case(r#"\ub2C_"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ud800\ug"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ud800\u0:"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ud800\u00:"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"\ud800\u000:"#, Expect::UnicodeEscHexDigit)]
     fn test_analyzer_single_error_bad_escape(#[case] input: &str, #[case] expect: Expect) {
         let mut s = String::with_capacity(1 + input.len());
         s.push('"');
@@ -2115,6 +2166,76 @@ mod tests {
 
         assert_eq!(Token::Err, an.next(), "input={input:?}");
         assert_eq!(Pos::default(), *an.pos(), "input={input:?}");
+    }
+
+    #[rstest]
+    #[case::nul(0x00)]
+    #[case::soh(0x01)]
+    #[case::stx(0x02)]
+    #[case::etx(0x03)]
+    #[case::eot(0x04)]
+    #[case::enq(0x05)]
+    #[case::ack(0x06)]
+    #[case::bel(0x07)]
+    #[case::bs(0x08)]
+    #[case::ht(0x09)]
+    #[case::lf(0x0A)]
+    #[case::vt(0x0B)]
+    #[case::ff(0x0C)]
+    #[case::cr(0x0D)]
+    #[case::so(0x0E)]
+    #[case::si(0x0F)]
+    #[case::dle(0x10)]
+    #[case::dc1(0x11)]
+    #[case::dc2(0x12)]
+    #[case::dc3(0x13)]
+    #[case::dc4(0x14)]
+    #[case::nak(0x15)]
+    #[case::syn(0x16)]
+    #[case::etb(0x17)]
+    #[case::can(0x18)]
+    #[case::em(0x19)]
+    #[case::sub(0x1A)]
+    #[case::esc(0x1B)]
+    #[case::fs(0x1C)]
+    #[case::gs(0x1D)]
+    #[case::rs(0x1E)]
+    #[case::us(0x1F)]
+    fn test_analyzer_single_error_control_char(#[case] ctrl: u8) {
+        static PREFIXES: [&str; 6] = ["", "a", r#"\u1234"#, "café", "𝄞", "🧶"];
+        static COLS: [usize; 6] = [0, 1, 6, 4, 1, 1];
+        let mut s: String = '"'.into();
+
+        for (prefix, cols) in PREFIXES.iter().zip(COLS.iter().copied()) {
+            s.truncate(1);
+            s.push_str(prefix);
+            s.push(ctrl as char);
+
+            let mut an = FixedAnalyzer::new(s.as_bytes());
+
+            assert_eq!(Token::Err, an.next());
+            assert_eq!(Pos::default(), *an.pos());
+
+            let err = an.err();
+            assert_eq!(
+                ErrorKind::UnexpectedByte {
+                    token: Some(Token::Str),
+                    expect: Expect::StrChar,
+                    actual: ctrl,
+                },
+                err.kind(),
+                "s={s:?}"
+            );
+            assert_eq!(
+                Pos {
+                    offset: s.len() - 1,
+                    line: 1,
+                    col: 2 + cols,
+                },
+                *err.pos(),
+                "s={s:?}"
+            );
+        }
     }
 
     #[rstest]
@@ -2180,6 +2301,39 @@ mod tests {
                 "input={input:?}, i={i}, actual={actual:02x}"
             );
         }
+    }
+
+    #[rstest]
+    #[case("falsep", Token::LitFalse)]
+    #[case("nullE", Token::LitNull)]
+    #[case("true0", Token::LitTrue)]
+    fn test_analyzer_single_error_expect_boundary(
+        #[case] input: &str,
+        #[case] expect_token: Token,
+    ) {
+        let actual = input.as_bytes().last().copied().unwrap();
+        let mut an = FixedAnalyzer::new(input.as_bytes());
+
+        assert_eq!(Token::Err, an.next());
+        assert_eq!(Pos::default(), *an.pos());
+
+        let err = an.err();
+        assert_eq!(
+            ErrorKind::UnexpectedByte {
+                token: Some(expect_token),
+                expect: Expect::Boundary,
+                actual,
+            },
+            err.kind(),
+        );
+        assert_eq!(
+            Pos {
+                offset: input.len() - 1,
+                line: 1,
+                col: input.len(),
+            },
+            *err.pos(),
+        );
     }
 
     #[rstest]

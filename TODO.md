@@ -67,6 +67,11 @@ The plan to optimize this seems to be:
 REVERSE ENGINEERING SIMD-JSON
 =============================
 
+**DECISION ON PERFORMANCE**: I don't have the time/energy to understand and
+                             write SIMD right now. Let's use a naive table
+                             approach and SIMD can be done later if someone
+                             wants to.
+
 This section summarizees how `simd-json` works to try to surface things that will work and won't
 work for performance improvement.
 
@@ -287,12 +292,13 @@ Deferred to stage 2: collapsing escape sequences in strings, parsing numbers and
 
 If we adopted the same general approach in `bufjson`, we would want to:
 
-1. Detect newline characters. The simplest approach for Stage 2 would be to detect `\r` and `\n`
-   separately in stage 1 and then do some bit shifts and clever bitwise arithmetic to combine
-   `\r\n` into one character. Then in Stage 2, every time you hit either a strucrual `\r` or `\n`,
-   you increment the line number and set the column number back to 1. Inline whitespace would be
-   skipped, and in general column counts would just be incremented based on distance from the
-   previous structural.
+1. Provide the first whitespace character in a run (regardless of type), plus an
+   adjusted version of every CR and LF, created with bit shifts and clever
+   bitwise arithmetic to combine `\r\n` into one key frame instead of two, thus
+   ensuring you only count them once. Then in Stage 2, the first whitespace
+   character you hit indicates a whitespace run, and every CR or LF you hit,
+   regardless of whether first or not, increments the line number and resets the
+   column number.
 2. Drop the control character check and just move it into the string parser. This seems simplest if
    we want to use a similar approach to `simd-json`, since for us we have to classify strings anyway
    to determine if they're "simple" (all ASCII no escape) or "complicated" (non-ASCII, or escapes).
@@ -310,18 +316,26 @@ time it hands back a token; and when it runs out of buffer.
 
 Pseudo-code for what we want to achieve:
 
+I'm going to use the term "key frame" for what simd-json calls structural.
+
 - `fn next()`
    1. If my structural array is exhausted, do the next structural scan.
       - From a performance standpoint, do we want to buffer some finite amount here?
          - 1-2 KiB would be best but would require a heap buffer.
-         - 256 bytes would be 4 x 64 byte buffers. That would technically require 1 KiB (256 x 4 bytes)
-           in structural positions, but we could just store 1-byte offsets of the structural
-           positions, resulting in 256 bytes for that, so 512 total directly in the state machine.
+         - ~~If we processed 4 x 64 byte buffers at a time, that'd give us up to 256 key frames, which
+           if we use 1 byte to store them is only 256 bytes inline in the state machine.~~
+         - The previous note was flawed because it assumed one structural character per every
+           input byte, but that's only true for reductive input like `[[[[[[[[`. Otherwise, you
+           are can maybe fit a lot more and, at a non-structural to structural ratio of 1:8, you
+           can actually fit about 2KiB of JSON text into 256 positions. However, NOTE, that you
+           would always want to have 64 spaces full for a worst case scenario in the next buffer,
+           so if you have filled up 192 + 1 = 193 indices, you would stop scanning blocks to avoid
+           overrunning.
       - May need to run this on a loop if there's a huge amount of inline whitespace, which is
         getting skipped by assumption.
       - If not SIMD register aligned, use scalar mode.
       - If nothing scanned because out of bytes, return `Paused`.
-   2. Jump to next structural character.
+   2. Jump to next key frame character.
       - If the token is fully within the scanned window, recognize and return it.
           - Increment `col` and `offset` by the distance from the previous structural.
           - Special case: newlines: increment `line`, reset `col`, and jump ahead since you're in

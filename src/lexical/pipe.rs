@@ -65,7 +65,7 @@ impl Literal {
     /// ```
     /// use bufjson::lexical::{Token, pipe::{Literal, PipeAnalyzer}};
     /// use bytes::Bytes;
-    /// use std::{collections::HashSet, sync::mpsc::channel};
+    /// use std::{collections::HashSet, sync::mpsc::channel, thread};
     ///
     /// // Populate the set of allowed JSON object keys.
     /// let mut allowed = HashSet::with_capacity(3);
@@ -74,9 +74,9 @@ impl Literal {
     ///
     /// // Parse some JSON.
     /// let (tx, rx) = channel();
-    /// let mut parser = PipeAnalyzer::new(rx).into_parser();
     /// tx.send(r#"{"foo":"bar","baz":"qux"}"#.into()).unwrap();
     /// drop(tx);
+    /// let mut parser = PipeAnalyzer::new(rx).into_parser();
     ///
     /// // Verify that the literal value of every object key is allowed.
     /// assert_eq!(Token::ObjBegin, parser.next());
@@ -632,10 +632,10 @@ where
 /// use std::{sync::mpsc::channel, thread};
 ///
 /// let (tx, rx) = channel();
-/// let mut lexer = PipeAnalyzer::new(rx);
 /// thread::spawn(move || {
 ///     tx.send("[123]".into());
 /// });
+/// let mut lexer = PipeAnalyzer::new(rx);
 ///
 /// assert_eq!(Token::ArrBegin, lexer.next());
 /// assert_eq!(Token::Num, lexer.next());
@@ -777,9 +777,9 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// use std::sync::mpsc::channel;
     ///
     /// let (tx, rx) = channel();
-    /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("99.9e-1".into());
     /// drop(tx);
+    /// let mut lexer = PipeAnalyzer::new(rx);
     ///
     /// assert_eq!(Token::Num, lexer.next());
     /// assert_eq!(Token::Eof, lexer.next());
@@ -806,9 +806,9 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// use std::sync::mpsc::channel;
     ///
     /// let (tx, rx) = channel();
-    /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("  null".into());
     /// drop(tx);
+    /// let mut lexer = PipeAnalyzer::new(rx);
     ///
     /// assert_eq!(Token::White, lexer.next());
     /// assert_eq!("  ", lexer.content().literal());
@@ -843,8 +843,9 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// use std::sync::mpsc::channel;
     ///
     /// let (tx, rx) = channel();
-    /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("garbage!".into());
+    /// drop(tx);
+    /// let mut lexer = PipeAnalyzer::new(rx);
     ///
     /// assert_eq!(Token::Err, lexer.next());
     /// assert!(matches!(
@@ -888,9 +889,9 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// use std::sync::mpsc::channel;
     ///
     /// let (tx, rx) = channel();
-    /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send(" \n".into());
     /// drop(tx);
+    /// let mut lexer = PipeAnalyzer::new(rx);
     ///
     /// // Read the two-byte whitespace token that starts at offset 0.
     /// assert_eq!(Token::White, lexer.next());
@@ -910,9 +911,9 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// use std::sync::mpsc::channel;
     ///
     /// let (tx, rx) = channel();
-    /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("123_".into());
     /// drop(tx);
+    /// let mut lexer = PipeAnalyzer::new(rx);
     ///
     /// assert_eq!(Token::Err, lexer.next());
     /// // `pos` is at the start of the number token that has the problem...
@@ -942,9 +943,9 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// use std::sync::mpsc::channel;
     ///
     /// let (tx, rx) = channel();
-    /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("99.9e-1".into());
     /// drop(tx);
+    /// let mut lexer = PipeAnalyzer::new(rx);
     ///
     /// assert_eq!(Token::Num, lexer.next());
     /// assert!(matches!(lexer.try_content(), Ok(c) if c.literal() == "99.9e-1"));
@@ -958,9 +959,9 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// use std::sync::mpsc::channel;
     ///
     /// let (tx, rx) = channel();
-    /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("[unquoted]".into());
     /// drop(tx);
+    /// let mut lexer = PipeAnalyzer::new(rx);
     ///
     /// assert_eq!(Token::ArrBegin, lexer.next());
     /// assert_eq!(Token::Err, lexer.next());
@@ -990,9 +991,9 @@ impl<P: Pipe> PipeAnalyzer<P> {
     ///
     /// // Create a lexical analyzer to analyze the JSON text `true false`.
     /// let (tx, rx) = channel();
-    /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("true false".into());
     /// drop(tx);
+    /// let mut lexer = PipeAnalyzer::new(rx);
     ///
     /// // Consume the first lexical token, `true`.
     /// assert_eq!(Token::LitTrue, lexer.next());
@@ -1383,8 +1384,8 @@ mod tests {
     #[test]
     fn test_analyzer_empty() {
         let (tx, rx) = channel();
-        let mut an = PipeAnalyzer::new(rx);
         drop(tx);
+        let mut an = PipeAnalyzer::new(rx);
 
         assert_eq!(an.next(), Token::Eof);
         assert_eq!("", an.content().literal().into_string());
@@ -1647,7 +1648,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case(r#""\uDC00""#, ErrorKind::BadSurrogate { first: 0xdc00, second: None, offset: 5 }, 1)]
+    #[case(r#""\uDC00""#, ErrorKind::BadSurrogate { first: 0xdc00, second: None, }, 3)]
     #[case(&[b'"', 0xc2, 0xc0], ErrorKind::BadUtf8ContByte { seq_len: 2, offset: 1, value: 0xc0 }, 1)]
     #[case(&b"\"\x80", ErrorKind::UnexpectedByte { token: Some(Token::Str), expect: Expect::StrChar, actual: 0x80 }, 1)]
     #[case([b'"'], ErrorKind::UnexpectedEof(Token::Str), 1)]
