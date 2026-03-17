@@ -1,3 +1,4 @@
+- Iterative `bench` loop on remote desktop for lexer speed micro-improvements.
 - Run `cargo bench` as part of the GitHub Actions.
 - Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
   strings without allocating to unescape. This should be a provided method on the trait.
