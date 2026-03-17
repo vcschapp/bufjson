@@ -76,6 +76,7 @@ impl Literal {
     /// let (tx, rx) = channel();
     /// let mut parser = PipeAnalyzer::new(rx).into_parser();
     /// tx.send(r#"{"foo":"bar","baz":"qux"}"#.into()).unwrap();
+    /// drop(tx);
     ///
     /// // Verify that the literal value of every object key is allowed.
     /// assert_eq!(Token::ObjBegin, parser.next());
@@ -700,6 +701,7 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// let (tx, rx) = channel();
     /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("99.9e-1".into());
+    /// drop(tx);
     ///
     /// assert_eq!(Token::Num, lexer.next());
     /// assert_eq!(Token::Eof, lexer.next());
@@ -728,6 +730,7 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// let (tx, rx) = channel();
     /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("  null".into());
+    /// drop(tx);
     ///
     /// assert_eq!(Token::White, lexer.next());
     /// assert_eq!("  ", lexer.content().literal());
@@ -809,6 +812,7 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// let (tx, rx) = channel();
     /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send(" \n".into());
+    /// drop(tx);
     ///
     /// // Read the two-byte whitespace token that starts at offset 0.
     /// assert_eq!(Token::White, lexer.next());
@@ -830,6 +834,7 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// let (tx, rx) = channel();
     /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("123_".into());
+    /// drop(tx);
     ///
     /// assert_eq!(Token::Err, lexer.next());
     /// // `pos` is at the start of the number token that has the problem...
@@ -861,6 +866,7 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// let (tx, rx) = channel();
     /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("99.9e-1".into());
+    /// drop(tx);
     ///
     /// assert_eq!(Token::Num, lexer.next());
     /// assert!(matches!(lexer.try_content(), Ok(c) if c.literal() == "99.9e-1"));
@@ -876,6 +882,7 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// let (tx, rx) = channel();
     /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("[unquoted]".into());
+    /// drop(tx);
     ///
     /// assert_eq!(Token::ArrBegin, lexer.next());
     /// assert_eq!(Token::Err, lexer.next());
@@ -907,6 +914,7 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// let (tx, rx) = channel();
     /// let mut lexer = PipeAnalyzer::new(rx);
     /// tx.send("true false".into());
+    /// drop(tx);
     ///
     /// // Consume the first lexical token, `true`.
     /// assert_eq!(Token::LitTrue, lexer.next());
