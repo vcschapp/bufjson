@@ -905,7 +905,7 @@ impl Content {
         )
     }
 
-    /// Returns a normalized version of literal with all escape sequences in the JSON text fully
+    /// Returns a normalized version of [`literal`] with all escape sequences in the JSON text fully
     /// expanded.
     ///
     /// This is an inherent implementation of [`lexical::Content::unescaped`] for convenience, so

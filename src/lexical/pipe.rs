@@ -95,7 +95,7 @@ impl Literal {
     /// ```
     ///
     /// [`from_ref`]: method@Self::from_ref
-    /// [`from_string`]: method@Self::from_str
+    /// [`from_string`]: method@Self::from_string
     pub const fn from_static(s: &'static str) -> Self {
         Self(read::Literal::from_static(s))
     }
@@ -383,8 +383,8 @@ impl LiteralBuf {
     /// Returns a slice of bytes starting at the current position, with length between 0 and
     /// [`remaining`].
     ///
-    /// The returned slice may be shorter than [`remaining`] to if the internal representation is
-    /// not contiguous. An empty slice is returned only when [`remaining`] returns 0, and is always
+    /// The returned slice may be shorter than [`remaining`] if the internal representation is not
+    /// contiguous. An empty slice is returned only when [`remaining`] returns 0, and is always
     /// returned in this case since this method never panics.
     ///
     /// Calling `chunk` does not advance the internal cursor.
@@ -450,13 +450,13 @@ impl Buf for LiteralBuf {
 ///
 /// # Memory considerations
 ///
-/// A `Content` value may hold references one or more [`Bytes`] value that was piped into the
+/// A `Content` value may hold references to one or more [`Bytes`] values that were piped into the
 /// `PipeAnalyzer`. Consequently, holding on to a `Content` value may prevent the `PipeAnalyzer`
 /// from dropping `Bytes` buffers it has finished scanning. This can lead to increased memory usage.
 /// If all `Content` values produced by a `PipeAnalyzer` are retained, it will potentially keep all
 /// inputted `Bytes` buffers alive. This undermines a key value proposition of a streaming analyzer
 /// and, for large enough JSON texts, may lead to out-of-memory conditions. Therefore, it is advised
-/// that you drop `Content` once you have finished examining them.
+/// that you drop `Content` values once you have finished examining them.
 #[derive(Debug)]
 pub struct Content(read::Content);
 
@@ -479,8 +479,8 @@ impl Content {
         self.0.is_escaped()
     }
 
-    /// Returns a normalized version of literal with all escape sequences in the JSON text fully
-    /// expanded.
+    /// Returns a normalized version of [`literal`] with all escape sequences in the JSON text
+    /// fully expanded.
     ///
     /// This is an inherent implementation of [`lexical::Content::unescaped`] for convenience, so
     /// it is available even when you don't have the trait imported. Refer to the trait
@@ -613,10 +613,88 @@ where
     }
 }
 
-// TODO: Docs
+/// Provides JSON text to a [`PipeAnalyzer`] as a stream of [`bytes::Bytes`] buffers.
+///
+/// A pipe connects a provider of `Bytes` into a `PipeAnalyzer`. It allows a concurrent provider of
+/// JSON text, such as an `async` task or a worker thread, to push the text into the lexical
+/// analyzer as a stream of `Bytes` buffers.
+///
+/// `Pipe` is a synchronous trait, *i.e.*, the [`recv`][method@Self::recv] function is an ordinary
+/// synchronous `fn`. Therefore, implementations of `Pipe` for `async` tasks need to bridge between
+/// sync and async contexts. Examples are provided below.
+///
+/// # Examples
+///
+/// An implementation of `Pipe` for standard library channels is provided out of the box.
+///
+/// ```
+/// # use bufjson::lexical::{Token, pipe::PipeAnalyzer};
+/// use std::{sync::mpsc::channel, thread};
+///
+/// let (tx, rx) = channel();
+/// let mut lexer = PipeAnalyzer::new(rx);
+/// thread::spawn(move || {
+///     tx.send("[123]".into());
+/// });
+///
+/// assert_eq!(Token::ArrBegin, lexer.next());
+/// assert_eq!(Token::Num, lexer.next());
+/// assert_eq!(Token::ArrEnd, lexer.next());
+/// assert_eq!(Token::Eof, lexer.next());
+/// ```
+///
+/// Implementing `Pipe` for synchronization constructs that have built-in sync/async bridging, such
+/// as `tokio` channels, is straightforward.
+///
+/// ```
+/// # use bufjson::lexical::{Token, pipe::{Pipe, PipeAnalyzer}};
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() {
+/// use bytes::Bytes;
+/// use std::convert::Infallible;
+/// use tokio::sync::mpsc::{Receiver, channel};
+///
+/// struct PipeReceiver(Receiver<Bytes>); // Newtype for Receiver<Bytes>
+///
+/// impl Pipe for PipeReceiver {
+///     type Error = Infallible;
+///
+///     fn recv(&mut self) -> Option<Result<Bytes, Self::Error>> {
+///         self.0.blocking_recv().map(Ok)
+///     }
+/// }
+///
+/// let (tx, rx) = channel(1);
+///
+/// tokio::spawn(async move {
+///     tx.send(Bytes::from("null")).await.unwrap();
+/// });
+///
+/// let result = tokio::task::spawn_blocking(move || {
+///     let mut lexer = PipeAnalyzer::new(PipeReceiver(rx));
+///     let first = lexer.next();
+///     let second = lexer.next();
+///
+///     (first, second)
+/// }).await.unwrap();
+///
+/// assert_eq!(Token::LitNull, result.0);
+/// assert_eq!(Token::Eof, result.1);
+/// # }
+/// ```
 pub trait Pipe {
+    /// Error type returned when [`recv`][method@Self::recv] fails.
     type Error: std::error::Error + Send + Sync + 'static;
 
+    /// Attempts to wait for the next chunk from this pipe, returning an error if the pipe's data
+    /// source is in a failure state.
+    ///
+    /// This function blocks the current thread if the next chunk isn't yet available, provided it
+    /// is possible that a next chunk will become available. Once a chunk, or the end of the chunk
+    /// stream, becomes available, this pipe will wake up and return it.
+    ///
+    /// The return value is `Some` if a chunk is available, or if the pipe's data source is in a
+    /// failure state; and `None` if the end of the stream of JSON text chunks has been reached.
     fn recv(&mut self) -> Option<Result<Bytes, Self::Error>>;
 }
 
