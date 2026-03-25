@@ -1650,9 +1650,9 @@ impl<R: Read> ReadAnalyzer<R> {
     /// assert_eq!(Pos { offset: 2, line: 2, col: 1}, *lexer.pos());
     /// ```
     ///
-    /// On errors, the position reported by `pos` may be different than the position reported by
-    /// the error returned from [`content`]. This is because the `pos` indicates the start of the
-    /// token where the error occurred, and the error position is the exact position of the error.
+    /// On errors, the position reported by `pos` may be different from the position reported by the
+    /// error returned from [`err`]. This is because the `pos` indicates the start of the token
+    /// where the error occurred, and the error position is the exact position of the error.
     ///
     /// ```
     /// use bufjson::{Pos, lexical::{Token, read::ReadAnalyzer}};
@@ -1667,7 +1667,7 @@ impl<R: Read> ReadAnalyzer<R> {
     /// ```
     ///
     /// [`next`]: method@Self::next
-    /// [`content`]: method@Self::content
+    /// [`err`]: method@Self::content
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
         &self.content_pos

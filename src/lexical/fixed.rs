@@ -293,7 +293,7 @@ impl Default for StoredContent {
 /// knowable (literals and punctuation) or not required (*e.g.*, whitespace in some applications).
 ///
 /// [Unescaping][`lexical::Content::unescaped`] a [`Content`] value that contains an escaped string
-/// token always allocates; but calling `unescape` on a `Content` value that does not contain any
+/// token always allocates; but calling `unescaped` on a `Content` value that does not contain any
 /// escape sequences is a no-op that neither allocates nor does any other work.
 ///
 /// # Memory considerations
@@ -552,9 +552,9 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// assert_eq!(Pos { offset: 2, line: 2, col: 1}, *lexer.pos());
     /// ```
     ///
-    /// On errors, the position reported by `pos` may be different than the position reported by
-    /// the error returned from [`content`]. This is because the `pos` indicates the start of the
-    /// token where the error occurred, and the error position is the exact position of the error.
+    /// On errors, the position reported by `pos` may be different from the position reported by the
+    /// error returned from [`err`]. This is because the `pos` indicates the start of the token
+    /// where the error occurred, and the error position is the exact position of the error.
     ///
     /// ```
     /// use bufjson::{Pos, lexical::{Token, fixed::FixedAnalyzer}};
@@ -569,7 +569,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// ```
     ///
     /// [`next`]: method@Self::next
-    /// [`content`]: method@Self::content
+    /// [`err`]: method@Self::content
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
         &self.content_pos

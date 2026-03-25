@@ -2,6 +2,23 @@
 //!
 //! The `Bytes` chunks can be produced either using the asynchronous programming model or using a
 //! multi-threaded programming model.
+//!
+//! # Difference between `pipe` and `read`
+//!
+//! Both this module and the `read` module provide lexical analyzers that scan JSON read from an
+//! external source.
+//!
+//! For the `read` module, that external source is a [`std::io::Read`]. A consequence of its design
+//! is that `read::ReadAnalyzer` has to read *from* the `Read` *into* its internal buffers, so every
+//! byte of input has to be copied or moved in order to be scanned by the lexical analyzer.
+//!
+//! In contrast, the external source for this module is a [`Pipe`] that provides input chunks to the
+//! [`PipeAnalyzer`] as [`Bytes`] buffers. `Bytes` buffers are reference-counted, immutable values
+//! that support shared ownership. Because of these features, input bytes already resident in memory
+//! can be sent to a [`PipeAnalyzer`] without any copying or allocation. These properties make
+//! [`PipeAnalyzer`] an excellent fit for some use cases, like web programming, where chunks of the
+//! JSON text are already in memory because they were read by some other subsystem, such as the
+//! network stack.
 
 use crate::{
     Buf, EqStr, IntoBuf, OrdStr, Pos,
@@ -23,11 +40,10 @@ use std::{
 ///
 /// To prevent allocation and minimize copying, a `Literal` may contain one or more [`Bytes`]
 /// buffers that share memory with the `Bytes` values that were piped into the [`PipeAnalyzer`].
-/// Since these buffers have a uniform size, but JSON tokens can have arbitrary lengths, the text
-/// content of a token may be split across two or more buffers. In other words, the full text of the
-/// content may be non-contiguous in memory. To make this data structure usable in the widest range
-/// of use cases, `Literal` implements the [`Buf`] trait, which provides a uniform interface for
-/// reading data from potentially non-contiguous sources.
+/// Since a token's text content can span the boundary between two or more of these buffers, the
+/// full text of the token may be non-contiguous in memory. To make this data structure usable in
+/// the widest range of use cases, `Literal` implements the [`Buf`] trait, which provides a uniform
+/// interface for reading data from potentially non-contiguous sources.
 ///
 /// # Performance considerations
 ///
@@ -535,6 +551,9 @@ const _: [(); 24] = [(); std::mem::size_of::<Literal>()];
 // Assert that `Content` does not grow beyond 24 bytes (three 64-bit words).
 const _: [(); 24] = [(); std::mem::size_of::<Content>()];
 
+/// Lexical analysis error detected by a [`PipeAnalyzer`].
+///
+/// See the [`lexical::Error`] trait, implemented by this struct, for further documentation.
 #[derive(Clone, Debug)]
 pub struct Error<E> {
     kind: ErrorKind,
@@ -712,6 +731,7 @@ impl Pipe for std::sync::mpsc::Receiver<Bytes> {
 // before doing the big performance refactor of lexical::state::Machine, then we'll drop this and
 // integrate directly with the new state machine. It's a temporary time-saving expedient, to avoid
 // integrating with the old state machine when it's just about to be replaced.
+#[derive(Debug)]
 struct TempReader<P> {
     pipe: P,
     chunk: Option<Bytes>,
@@ -755,6 +775,93 @@ impl<P: Pipe> std::io::Read for TempReader<P> {
     }
 }
 
+/// A [`lexical::Analyzer`] to tokenize JSON text from a stream of [`Bytes`] buffers.
+///
+/// Use `PipeAnalyzer` for zero allocation, low-copy, stream-oriented lexical analysis of JSON text
+/// from any input source that can provide the input JSON in one or more `Bytes` chunks.
+///
+/// As with any [`lexical::Analyzer`] implementation, you can construct a [`syntax::Parser`] from a
+/// `PipeAnalyzer` to unlock richer stream-oriented syntactic analysis while retaining low overhead
+/// guarantees of the underlying lexical analyzer.
+///
+/// # Performance considerations
+///
+/// ## Method performance
+///
+/// The [`next`] method never allocates or copies and has very low overhead, above and beyond just
+/// examining the bytes of the next token in the buffer, for doing state transitions and remembering
+/// state.
+///
+/// The [`content`] method never allocates. For punctuation and literal tokens, it never copies. For
+/// number and string tokens, it may copy if the token is very short; otherwise, it just returns a
+/// reference-counted slice of the input chunk or chunks from which the token was scanned.
+///
+/// It should be noted that the `Content` structure returned by [`content`] is somewhat "fat", at 24
+/// bytes; it is preferable not to fetch it for tokens where the content is either statically
+/// knowable (literals and punctuation) or not required (*e.g.*, whitespace in some applications).
+///
+/// [Unescaping][`lexical::Content::unescaped`] a [`Content`] value that contains an escaped string
+/// token always allocates; but calling `unescaped` on a `Content` value that does not contain any
+/// escape sequences is a no-op that neither allocates nor does any other work.
+///
+/// # Memory considerations
+///
+/// Because [`Content`] can refer directly to slices within the input `Bytes` buffers, a live
+/// `Content` value may keep the reference count of an input chunk above zero. In the most extreme
+/// case, if every content value in the JSON text is fetched and kept alive, this can keep input
+/// chunks that would otherwise have been freed alive in memory. If this behavior isn't desirable,
+/// it is recommended that you drop `Content` values soon after inspecting them; and, when a longer
+/// lifetime is required, convert them into some other convenient owned value.
+///
+/// # Examples
+///
+/// Scan a JSON text contained in a sequence of chunks.
+///
+/// ```
+/// use bufjson::lexical::{Token, pipe::{Pipe, PipeAnalyzer}};
+/// use std::{sync::mpsc::channel, thread};
+///
+/// // Create a channel, because there's a provided implementation of the `Pipe` for a channel
+/// // receiver. You can also create your own arbitrary implementations of `Pipe`.
+/// let (tx, rx) = channel();
+///
+/// // Use a separate thread to send chunks of JSON to the channel.
+/// thread::spawn(move || {
+///     [
+///         r#"{"user":"alice","#,
+///         r#""score":95,"#,
+///         r#""tags":["admin"]}"#,
+///     ]
+///         .into_iter()
+///         .map(Into::into)                                    // Convert static string to `Bytes`.
+///         .for_each(|chunk| { tx.send(chunk).unwrap(); });    // Send `Bytes` chunk to the lexer.
+/// });
+///
+/// // Create a `PipeAnalyzer` reading chunks from the channel.
+/// let mut lexer = PipeAnalyzer::new(rx);
+///
+/// // Scan the tokens.
+/// assert_eq!(Token::ObjBegin, lexer.next());
+/// assert_eq!(Token::Str, lexer.next());
+/// assert_eq!(Token::NameSep, lexer.next());
+/// assert_eq!(Token::Str, lexer.next());
+/// assert_eq!(Token::ValueSep, lexer.next());
+/// assert_eq!(Token::Str, lexer.next());
+/// assert_eq!(Token::NameSep, lexer.next());
+/// assert_eq!(Token::Num, lexer.next());
+/// assert_eq!(Token::ValueSep, lexer.next());
+/// assert_eq!(Token::Str, lexer.next());
+/// assert_eq!(Token::NameSep, lexer.next());
+/// assert_eq!(Token::ArrBegin, lexer.next());
+/// assert_eq!(Token::Str, lexer.next());
+/// assert_eq!(Token::ArrEnd, lexer.next());
+/// assert_eq!(Token::ObjEnd, lexer.next());
+/// assert_eq!(Token::Eof, lexer.next());
+/// ```
+///
+/// [`content`]: method@Self::content
+/// [`next`]: method@Self::next
+#[derive(Debug)]
 pub struct PipeAnalyzer<
     P: Pipe, /* TODO: maybe remove this constraint after state machine refactor */
 > {
@@ -905,9 +1012,9 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// assert_eq!(Pos { offset: 2, line: 2, col: 1}, *lexer.pos());
     /// ```
     ///
-    /// On errors, the position reported by `pos` may be different than the position reported by
-    /// the error returned from [`content`]. This is because the `pos` indicates the start of the
-    /// token where the error occurred, and the error position is the exact position of the error.
+    /// On errors, the position reported by `pos` may be different from the position reported by the
+    /// error returned from [`err`]. This is because the `pos` indicates the start of the token
+    /// where the error occurred, and the error position is the exact position of the error.
     ///
     /// ```
     /// use bufjson::{Pos, lexical::{Token, pipe::PipeAnalyzer}};
@@ -926,7 +1033,7 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// ```
     ///
     /// [`next`]: method@Self::next
-    /// [`content`]: method@Self::content
+    /// [`err`]: method@Self::err
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
         self.temp_inner.pos()
