@@ -64,7 +64,9 @@ impl Content<Vec<u8>> {
         let escaped = if !s.is_empty() {
             let mut mach = state::Machine::new(b);
             match mach.next() {
-                state::Next::Part(_, n) if n == b.len() => mach.end().escaped(),
+                state::Next::Part(_, n) if n == b.len() && mach.end() == state::End::Done => {
+                    Some(false)
+                }
                 state::Next::Done(_, escaped, n) if n == b.len() => Some(escaped),
                 _ => None,
             }
@@ -415,7 +417,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
                 token
             }
             state::Next::Part(token, n) => match self.mach.end() {
-                state::End::Done(false) => {
+                state::End::Done => {
                     self.content = match token {
                         Token::LitFalse => StoredContent::Literal("false"),
                         Token::LitNull => StoredContent::Literal("null"),
@@ -428,7 +430,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
 
                     token
                 }
-                state::End::Done(true) => unreachable!(),
+                state::End::Nil => unreachable!(),
                 state::End::Err => {
                     let kind = self.mach.err_kind().expect("there should be an error kind");
                     let pos = *self.mach.pos();

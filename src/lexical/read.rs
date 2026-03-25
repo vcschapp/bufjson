@@ -1505,7 +1505,7 @@ impl<R: Read> ReadAnalyzer<R> {
                     loop {
                         match self.bufs.read(&mut self.read) {
                             Ok(true) => match self.mach.end() {
-                                state::End::Done(false) => {
+                                state::End::Done => {
                                     self.content = match token {
                                         Token::LitFalse => self.literal_content("false", 0),
                                         Token::LitNull => self.literal_content("null", 0),
@@ -1515,7 +1515,7 @@ impl<R: Read> ReadAnalyzer<R> {
 
                                     return token;
                                 }
-                                state::End::Done(true) => unreachable!(),
+                                state::End::Nil => unreachable!(),
                                 state::End::Err => lexical_err!(),
                             },
                             Ok(false) => match resume!() {

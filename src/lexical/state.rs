@@ -1,3 +1,12 @@
+//! Simple state machine for lexical analysis of JSON text.
+//!
+//! This module contains the reusable finite state machine that underlies all implementations of
+//! [`lexical::Analyzer`] within the crate. You likely do not need to interact with this module
+//! directly unless you have a need to create either a custom [`lexical::Analyzer`] implementation
+//! or some other custom JSON parser and you want to reuse the state machine logic.
+//!
+//! [`lexical::Analyzer`]: crate::lexical::Analyzer
+
 use crate::{
     Pos,
     lexical::{ErrorKind, Token},
@@ -88,27 +97,61 @@ enum State {
     },
 }
 
+/// Represents progress made by the last scan step, either [`Machine::next`] or [`Machine::resume`].
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Next {
+    /// Finished recognizing a JSON lexical token.
+    ///
+    /// This variant's data are a triple:
+    ///
+    /// 1. The [`Token`] that was finished.
+    /// 2. Whether the token text contained one or more escape sequences. This may be `true` for
+    ///    string tokens, and will always be `false` for any other kind of token.
+    /// 3. The number of bytes of the token recognized in the last scan step, noting that additional
+    ///    bytes may have been recognized in a previous step that returned [`Part`][Next::Part].
     Done(Token, bool, usize),
+
+    /// Recognized a part of a JSON lexical token, but the full token is not finished yet.
+    ///
+    /// To finish recognizing the token, either more data must be provided, via [`Machine::resume`];
+    /// or the end of input must be signalled via [`Machine::end`].
+    ///
+    /// This variant's data are a pair:
+    ///
+    /// 1. The [`Token`] that is in the process of being recognized.
+    /// 2. The number of bytes of the token recognized in the last scan step, noting that additional
+    ///    bytes may have been recognized in a previous step that returned `Part`; and more may be
+    ///    recognized in the next step if it returns [`Done`][Next::Done] or `Part`.
     Part(Token, usize),
+
+    /// No token can be started because the current buffer is out of input.
+    ///
+    /// To start recognizing a new token, either more data must be provided, via
+    /// [`Machine::resume`]; or the end of input must be signalled via [`Machine::end`].
     Nil,
+
+    /// A lexical error was detected.
+    ///
+    /// This variant contains a single tuple field indicating the signed byte offset from the
+    /// previous scan position to the best position to report as the error position.
+    ///
+    /// The specific error kind can be fetched via [`Machine::err_kind`].
     Err(i64),
 }
 
+/// Represents the end state achieved by [`Machine::end`].
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum End {
-    Done(bool),
-    Err,
-}
+    /// Finished recognizing the last in-progress JSON lexical token in the input.
+    Done,
 
-impl End {
-    pub fn escaped(&self) -> Option<bool> {
-        match self {
-            Self::Done(escaped) => Some(*escaped),
-            Self::Err => None,
-        }
-    }
+    /// There was no in-progress JSON token to finish.
+    Nil,
+
+    /// A lexical error was detected.
+    ///
+    /// The specific error kind can be fetched via [`Machine::err_kind`].
+    Err,
 }
 
 // Assert that `Next` does not grow beyond 16 bytes (two 64-bit words).
@@ -167,6 +210,12 @@ pub struct Machine<B> {
 }
 
 impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
+    /// Creates a new state machine wrapping the given buffer.
+    ///
+    /// After a buffer has been consumed, a new buffer can be added via [`resume`]. This enables a
+    /// machine to recognize JSON text that is split across multiple buffers or chunks.
+    ///
+    /// [`resume`]: method@Self::resume
     pub fn new(buf: B) -> Self {
         Self {
             buf,
@@ -177,6 +226,70 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
         }
     }
 
+    /// Returns the next increment of progress scanning the current buffer.
+    ///
+    /// This function must only be called after a previous call to `next` or [`resume`] has returned
+    /// [`Next::Done`] or [`Next::Nil`].
+    ///
+    /// # Examples
+    ///
+    /// A complete token within a buffer will result in [`Next::Done`] being returned.
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, state::{Machine, Next}};
+    /// let mut mach = Machine::new(&b"[ null ]"[..]);
+    ///
+    /// assert_eq!(Next::Done(Token::ArrBegin, false, 1), mach.next());
+    /// ```
+    ///
+    /// A partial token at the end of the buffer will result in [`Next::Part`] being returned.
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, state::{Machine, Next}};
+    /// let mut mach = Machine::new(&br#""foo"#[..]);    // No ending quote.
+    ///
+    /// assert_eq!(Next::Part(Token::Str, 4), mach.next());
+    ///
+    /// // Need to call `mach.resume(...)` in order to finish recognizing the string token.
+    /// ```
+    ///
+    /// Some tokens require an explicit boundary to complete. If the buffer ends without seeing that
+    /// boundary, then [`Next::Part`] is returned and the explicit boundary must be provided either
+    /// by [`resume`], if more input is available; or [`end`], if there is no more input.
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, state::{Machine, Next}};
+    /// let mut mach = Machine::new(&b"123"[..]);   // Number could continue after 123...
+    ///
+    /// // `Next::Part` is returned because the machine doesn't know if there's another buffer that
+    /// // continues the number token.
+    /// assert_eq!(Next::Part(Token::Num, 3), mach.next());
+    /// ```
+    ///
+    /// A lexical error produces [`Next::Err`].
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, state::{Machine, Next}};
+    /// let mut mach = Machine::new(&b"truffle"[..]);
+    ///
+    /// assert_eq!(Next::Err(3), mach.next()); // `tru` is OK, but `ffle` is bad input.
+    ///
+    /// // Need to call `mach.err_kind()` in order to get the specific error kind.
+    /// ```
+    ///
+    /// If the buffer ends when there is no in-progress token and no error, [`Next::Nil`] is
+    /// returned.
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, state::{Machine, Next}};
+    /// let mut mach = Machine::new(&br#""foo""#[..]);
+    ///
+    /// assert_eq!(Next::Done(Token::Str, false, 5), mach.next());
+    /// assert_eq!(Next::Nil, mach.next());
+    /// ```
+    ///
+    /// [`end`]: method@Self::end
+    /// [`resume`]: method@Self::resume
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Next {
         if self.buf_pos < self.buf.len() {
@@ -217,6 +330,45 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
         }
     }
 
+    /// Replaces a fully-consumed buffer with a new one and returns first increment of progress
+    /// scanning the new buffer.
+    ///
+    /// This function must only be called after a previous call to [`next`] or `resume` has returned
+    /// [`Next::Part`] or [`Next::Nil`].
+    ///
+    /// # Examples
+    ///
+    /// Resume scanning after the previous buffer ended in a partial token.
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, state::{Machine, Next}};
+    /// let mut mach = Machine::new(&br#""hello,"#[..]);                // No ending quote.
+    ///
+    /// assert_eq!(Next::Part(Token::Str, 7), mach.next());             // Start unfinished string.
+    /// assert_eq!(                                                     // Resume and finish it.
+    ///     Next::Done(Token::Str, false, 7),
+    ///     mach.resume(&br#" world""#[..]),
+    /// );
+    /// ```
+    ///
+    /// Resume scanning after the previous buffer ended cleanly with a finished token but there is
+    /// more input to scan.
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, state::{Machine, Next}};
+    /// let mut mach = Machine::new(&b"false ,"[..]);
+    ///
+    /// assert_eq!(Next::Done(Token::LitFalse, false, 5), mach.next());
+    /// assert_eq!(Next::Done(Token::White, false, 1), mach.next());
+    /// assert_eq!(Next::Done(Token::ValueSep, false, 1), mach.next());
+    /// assert_eq!(Next::Nil, mach.next());
+    /// assert_eq!(
+    ///     Next::Done(Token::Str, true, 10),
+    ///     mach.resume(&br#""foo\nbar""#[..]),
+    /// );
+    /// ```
+    ///
+    /// [`next`]: method@Self::next
     pub fn resume(&mut self, buf: B) -> Next {
         self.buf_must_be_consumed();
 
@@ -269,19 +421,36 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
         }
     }
 
+    /// Finishes scanning and returns the final state.
+    ///
+    /// This function must only be called after a previous call to [`next`] or [`resume`] has
+    /// returned [`Next::Part`] or [`Next::Nil`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, state::{End, Machine, Next}};
+    /// let mut mach = Machine::new(&b"true"[..]);
+    ///
+    /// assert_eq!(Next::Part(Token::LitTrue, 4), mach.next());
+    /// assert_eq!(End::Done,  mach.end());
+    /// ```
+    ///
+    /// [`next`]: method@Self::next
+    /// [`resume`]: method@Self::resume
     pub fn end(&mut self) -> End {
         self.buf_must_be_consumed();
 
         let result = match self.state {
-            State::Start
-            | State::False(5)
+            State::Start => Ok(End::Nil),
+            State::False(5)
             | State::Null(4)
             | State::Num(Num::Zero)
             | State::Num(Num::Int)
             | State::Num(Num::Frac)
             | State::Num(Num::ExpInt)
             | State::True(4)
-            | State::White { .. } => Ok(false),
+            | State::White { .. } => Ok(End::Done),
             State::False(_) => Err(Token::LitFalse),
             State::Null(_) => Err(Token::LitNull),
             State::Num(_) => Err(Token::Num),
@@ -291,10 +460,10 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
         };
 
         match result {
-            Ok(escaped) => {
+            Ok(end) => {
                 self.state = State::End;
 
-                End::Done(escaped)
+                end
             }
             Err(token) => {
                 self.state = State::Err;
@@ -1274,7 +1443,24 @@ impl<B: Deref<Target = [u8]> + Default + fmt::Debug> Default for Machine<B> {
     }
 }
 
-// todo: docs
+/// Makes a smart pointer around any byte-slice type look like a byte-slice.
+///
+/// Wraps any smart pointer containing a value that dereferences to a byte slice so that it can be
+/// scanned by a [`Machine`].
+///
+/// # Example
+///
+/// Wrap an `Rc<Vec<u8>>` to make it `Deref<Target = [u8]>`.
+///
+/// ```
+/// use bufjson::lexical::{Token, state::{DerefBuf, Machine, Next}};
+/// use std::rc::Rc;
+///
+/// let buf = DerefBuf::new(Rc::new("{}".as_bytes().to_vec()));
+/// let mut mach = Machine::new(buf);
+///
+/// assert_eq!(Next::Done(Token::ObjBegin, false, 1), mach.next());
+/// ```
 #[derive(Debug)]
 pub struct DerefBuf<B, T>(T)
 where
@@ -1286,8 +1472,9 @@ where
     B: Deref<Target = [u8]>,
     T: Deref<Target = B>,
 {
-    pub fn new(buf: T) -> Self {
-        Self(buf)
+    /// Returns a new `DerefBuf` wrapping the given value.
+    pub fn new(val: T) -> Self {
+        Self(val)
     }
 }
 
@@ -1325,7 +1512,7 @@ mod tests {
         let mut mach = Machine::<DerefBuf<Vec<u8>, Arc<Vec<u8>>>>::default();
 
         assert_eq!(Next::Nil, mach.next());
-        assert_eq!(End::Done(false), mach.end());
+        assert_eq!(End::Nil, mach.end());
     }
 
     #[test]
@@ -1405,7 +1592,7 @@ mod tests {
     fn test_machine_end_from_start_state() {
         let mut mach = Machine::new(&b""[..]);
 
-        assert_eq!(End::Done(false), mach.end());
+        assert_eq!(End::Nil, mach.end());
     }
 
     #[rstest]
@@ -2888,15 +3075,16 @@ mod tests {
                     loop {
                         if rem.is_empty() {
                             match mach.end() {
-                                End::Done(escaped) => {
+                                End::Done => {
                                     items.push(Item::ok(
                                         token,
                                         pos,
                                         &bytes[pos.offset..pos.offset + len],
-                                        escaped,
+                                        false,
                                     ));
                                     items.push(Item::ok(Token::Eof, *mach.pos(), &[], false));
                                 }
+                                End::Nil => unreachable!(),
                                 End::Err => items.push(Item::err(
                                     pos,
                                     *mach.pos(),
