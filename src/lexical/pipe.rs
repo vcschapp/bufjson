@@ -728,14 +728,17 @@ impl<P: Pipe> std::io::Read for TempReader<P> {
         let chunk = if let Some(c) = self.chunk.as_mut() {
             c
         } else {
-            match self.pipe.recv() {
-                None => return Ok(0),
-                Some(Ok(b)) => {
-                    self.chunk = Some(b);
+            loop {
+                match self.pipe.recv() {
+                    None => return Ok(0),
+                    Some(Ok(b)) if !b.is_empty() => {
+                        self.chunk = Some(b);
 
-                    self.chunk.as_mut().unwrap()
+                        break self.chunk.as_mut().unwrap();
+                    }
+                    Some(Ok(_)) => continue,
+                    Some(Err(err)) => return Err(std::io::Error::other(err)),
                 }
-                Some(Err(err)) => return Err(std::io::Error::other(err)),
             }
         };
 
@@ -1041,6 +1044,21 @@ mod tests {
         error::Error as _,
         sync::mpsc::channel,
     };
+
+    #[test]
+    fn temp_test_empty_chunk() {
+        // Temporary unit test relating to bug that comes from the temp hack using `ReadAnalyzer`.
+        let (tx, rx) = channel();
+        tx.send("tru".into()).unwrap();
+        tx.send("".into()).unwrap();
+        tx.send("e".into()).unwrap();
+        drop(tx);
+
+        let mut an = PipeAnalyzer::new(rx);
+
+        assert_eq!(Token::LitTrue, an.next());
+        assert_eq!(Token::Eof, an.next());
+    }
 
     // TODO: FIXME: Uncomment below when after the refactor.
     // #[rstest]

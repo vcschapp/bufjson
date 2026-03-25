@@ -1,4 +1,7 @@
 - Iterative `bench` loop on remote desktop for lexer speed micro-improvements.
+   - Things tried and not persisted that might have promise: `fixed::StoredContent` can be a single
+     `usize`, not a range. This might buy a percent, `FixedAnalyzer::next()` can be split into an
+     inlined fast part and a non-inlined slow part.
 - Run `cargo bench` as part of the GitHub Actions.
 - Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
   strings without allocating to unescape. This should be a provided method on the trait.
