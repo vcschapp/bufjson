@@ -248,13 +248,19 @@ impl StructContext {
         }
     }
 
-    fn pop(&mut self) {
+    fn pop(&mut self) -> Option<StructKind> {
         match self {
-            StructContext::Inline(len, _) => *len -= 1,
-            StructContext::Heap(v) => {
-                v.pop().unwrap();
+            StructContext::Inline(len, array) => {
+                *len -= 1;
+
+                if *len > 0 {
+                    Some(array[*len - 1].into())
+                } else {
+                    None
+                }
             }
-        };
+            StructContext::Heap(v) => v.pop().map(Into::into),
+        }
     }
 
     fn peek(&self) -> Option<StructKind> {
@@ -1422,11 +1428,13 @@ where
     }
 
     fn got_value(&mut self, pop: bool) {
-        if pop {
-            self.context.inner.pop();
-        }
+        let top = if pop {
+            self.context.inner.pop()
+        } else {
+            self.context.inner.peek()
+        };
 
-        match self.context.inner.peek() {
+        match top {
             Some(StructKind::Arr) => self.context.expect = Expect::ArrElementSepOrEnd,
             Some(StructKind::Obj) => self.context.expect = Expect::ObjValueSepOrEnd,
             None => self.context.expect = Expect::Eof,
