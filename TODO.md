@@ -62,7 +62,13 @@ from extreme inlining moved the needle, and the tiny benefit there doesn't outwe
 
 Expecting a total improvement of 11-19%.
 
-1. Refactor `next` into `next` and `next_slow`.
-2. Drop `Content::Static`, simplify `SharedContent::Range` to just contain `usize` + `bool`, extract
-   error into a separate boxed field, defer range creation until `try_content`.
-3. Selectively apply `#[inline...] and `#[cold] attributes.
+1. ❌ ~~Refactor `next` into `next` and `next_slow`.~~ Observed signs of a 3.5% improvement on one
+   host, but actually significant degradation on my laptop regardless of the presence or
+   absence of `#[inline(*)]` attributes.
+2. ✅ ~~Drop `Content::Static`, simplify `SharedContent::Range` to just contain `usize` + `bool`,
+   extract error into a separate boxed field, defer range creation until `try_content`.~~ I didn't
+   actually drop `Content::Static` - it still exists - but just using `Content::Inline` instead to
+   drop the `match` expression in `next` and shrinking the size of `StoreContent` by pulling out
+   `Error` results in 3%-7% speed improvements, depending on which machine.
+3. ❌ ~~Selectively apply `#[inline...] and `#[cold] attributes.~~ I'm not going to bother.
+   Experience with `state` suggests the benefits will be low.

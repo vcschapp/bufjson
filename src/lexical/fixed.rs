@@ -145,10 +145,6 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
 }
 
 impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
-    fn from_static_internal(s: &'static str) -> Self {
-        Self(InnerContent::Static(s))
-    }
-
     fn from_buf(buf: &Arc<B>, r: Range<usize>, escaped: bool) -> Self {
         debug_assert!(r.start <= r.end);
         debug_assert!(r.end <= buf.len());
@@ -259,15 +255,21 @@ impl lexical::Error for Error {
 }
 
 #[derive(Debug)]
-enum StoredContent {
-    Literal(&'static str),
-    Range(Range<usize>, bool),
-    Err(Error),
+struct StoredContent {
+    len: usize,
+    escaped: bool,
+}
+
+impl StoredContent {
+    #[inline(always)]
+    fn new(len: usize, escaped: bool) -> Self {
+        Self { len, escaped }
+    }
 }
 
 impl Default for StoredContent {
     fn default() -> Self {
-        Self::Literal("")
+        Self::new(0, false)
     }
 }
 
@@ -343,8 +345,9 @@ impl Default for StoredContent {
 pub struct FixedAnalyzer<B: Deref<Target = [u8]> + fmt::Debug> {
     buf: Arc<B>,
     content: StoredContent,
-    content_pos: Pos,
+    err: Option<Error>,
     mach: state::Machine<state::DerefBuf<B, Arc<B>>>,
+    pos: Pos,
 }
 
 impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
@@ -365,12 +368,14 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
         let buf = Arc::new(buf);
         let mach = state::Machine::new(state::DerefBuf::new(Arc::clone(&buf)));
         let content = StoredContent::default();
-        let content_pos = Pos::default();
+        let err = None;
+        let pos = Pos::default();
 
         Self {
             buf,
             content,
-            content_pos,
+            err,
+            pos,
             mach,
         }
     }
@@ -391,42 +396,21 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// ```
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Token {
-        if matches!(self.content, StoredContent::Err(_)) {
+        if self.err.is_some() {
             return Token::Err;
         }
 
-        self.content_pos = *self.mach.pos();
+        self.pos = *self.mach.pos();
 
         match self.mach.next() {
             state::Next::Done(token, escaped, n) => {
-                self.content = match token {
-                    Token::ObjBegin => StoredContent::Literal("{"),
-                    Token::ObjEnd => StoredContent::Literal("}"),
-                    Token::ArrBegin => StoredContent::Literal("["),
-                    Token::NameSep => StoredContent::Literal(":"),
-                    Token::ValueSep => StoredContent::Literal(","),
-                    Token::LitFalse => StoredContent::Literal("false"),
-                    Token::LitNull => StoredContent::Literal("null"),
-                    Token::LitTrue => StoredContent::Literal("true"),
-                    _ => StoredContent::Range(
-                        self.content_pos.offset..self.content_pos.offset + n,
-                        escaped,
-                    ),
-                };
+                self.content = StoredContent::new(n, escaped);
 
                 token
             }
             state::Next::Part(token, n) => match self.mach.end() {
                 state::End::Done => {
-                    self.content = match token {
-                        Token::LitFalse => StoredContent::Literal("false"),
-                        Token::LitNull => StoredContent::Literal("null"),
-                        Token::LitTrue => StoredContent::Literal("true"),
-                        _ => StoredContent::Range(
-                            self.content_pos.offset..self.content_pos.offset + n,
-                            false,
-                        ),
-                    };
+                    self.content = StoredContent::new(n, false);
 
                     token
                 }
@@ -434,20 +418,20 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
                 state::End::Err => {
                     let kind = self.mach.err_kind().expect("there should be an error kind");
                     let pos = *self.mach.pos();
-                    self.content = StoredContent::Err(Error { kind, pos });
+                    self.err = Some(Error { kind, pos });
 
                     Token::Err
                 }
             },
             state::Next::Nil => {
-                self.content = StoredContent::Literal("");
+                self.content = StoredContent::default();
 
                 Token::Eof
             }
             state::Next::Err(_) => {
                 let kind = self.mach.err_kind().expect("there should be an error kind");
                 let pos = *self.mach.pos();
-                self.content = StoredContent::Err(Error { kind, pos });
+                self.err = Some(Error { kind, pos });
 
                 Token::Err
             }
@@ -574,7 +558,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// [`err`]: method@Self::content
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
-        &self.content_pos
+        &self.pos
     }
 
     /// Fetches the content or error associated with the most recent token, without allocating.
@@ -605,12 +589,17 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// assert_eq!(Pos { offset: 1, line: 1, col: 2}, *lexer.try_content().unwrap_err().pos());
     /// ```
     pub fn try_content(&self) -> Result<Content<B>, Error> {
-        match &self.content {
-            StoredContent::Literal(s) => Ok(Content::from_static_internal(s)),
-            StoredContent::Range(r, escaped) => {
-                Ok(Content::from_buf(&self.buf, r.clone(), *escaped))
+        match self.err {
+            None => {
+                let offset = self.pos.offset;
+
+                Ok(Content::from_buf(
+                    &self.buf,
+                    offset..offset + self.content.len,
+                    self.content.escaped,
+                ))
             }
-            StoredContent::Err(err) => Err(*err),
+            Some(err) => Err(err),
         }
     }
 
