@@ -544,11 +544,6 @@ where
     }
 }
 
-enum Content {
-    Lazy,
-    Err(Error),
-}
-
 /// Category of parsing error that can occur while parsing a JSON text.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorKind {
@@ -661,6 +656,23 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Error::source(self)
     }
+}
+
+#[repr(u8)]
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
+enum State {
+    // Parser is operating normally.
+    //
+    // The assigned value of zero means that when bitwise OR'd with a `u8` lookup table key, the key
+    // is unchanged.
+    #[default]
+    Ok = 0x00,
+
+    // Parser is in the permanent error state.
+    //
+    // The assigned value of `0xff` means that when bitwise OR'd with a `u8` lookup table key, the
+    // key changes to `Err`.
+    Err = 0xff,
 }
 
 /// Parses JSON text at a syntax level.
@@ -815,8 +827,9 @@ impl std::error::Error for Error {
 pub struct Parser<L> {
     lexer: L,
     context: Context,
-    content: Content,
+    err: Option<Error>,
     max_level: usize,
+    state: State,
 }
 
 impl<L> Parser<L>
@@ -846,8 +859,9 @@ where
         Self {
             lexer,
             context: Context::default(),
-            content: Content::Lazy,
+            err: None,
             max_level: NUM_INLINED_LEVELS,
+            state: State::default(),
         }
     }
 
@@ -872,124 +886,258 @@ where
     /// ```
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Token {
-        if matches!(self.content, Content::Err(_)) {
-            return Token::Err;
+        #[repr(u8)]
+        #[rustfmt::skip]
+        #[derive(Clone, Copy, Debug)]
+        enum Action {
+            ArrBegin, ArrValueSep, Ignore, Name, NameSep, ObjBegin, ObjValueSep, StructEnd, Value,
+            ErrLexical, ErrSyntax, ErrCached,
         }
 
-        let mut token = self.lexer.next();
+        macro_rules! key {
+            ($state:expr, $expect:expr, $token:expr) => {
+                ($state as usize) | (($expect as usize) << 4) | ($token as usize)
+            };
+        }
 
-        match (self.context.expect, token) {
-            (e, Token::ObjBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
-                let level = self.level();
-                if level < self.max_level {
-                    self.context.inner.push(StructKind::Obj);
-                    self.context.expect = Expect::ObjNameOrEnd;
-                } else {
-                    self.content = Content::Err(Error {
-                        kind: ErrorKind::Level { level, token },
-                        pos: *self.pos(),
-                        source: None,
-                    });
-                    token = Token::Err;
-                }
+        static ACTION: [Action; 256] = {
+            let mut t = [Action::ErrSyntax; 256];
+
+            // If we're already in an error state, stay there.
+            t[key!(State::Err, 0, 0)] = Action::ErrCached;
+
+            macro_rules! set_inner {
+                ($expect:ident, [$($token:ident),+], $action:ident) => {
+                    $(
+                        t[key!(State::Ok, Expect::$expect, Token::$token)] = Action::$action;
+                    )+
+                };
             }
 
-            (e, Token::ArrBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
+            macro_rules! set {
+                ([$($expect:ident),+], $tokens:tt, $action:ident) => {
+                    $(
+                        set_inner!($expect, $tokens, $action);
+                    )+
+                };
+            }
+
+            set!([ArrElementOrEnd, Value], [ObjBegin], ObjBegin);
+            set!([ArrElementOrEnd, Value], [ArrBegin], ArrBegin);
+            set!(
+                [ArrElementOrEnd, Value],
+                [LitFalse, LitNull, LitTrue, Num, Str],
+                Value
+            );
+            set!([ObjName], [Str], Name);
+            set!([ObjNameOrEnd], [ObjEnd], StructEnd);
+            set!([ObjNameOrEnd], [Str], Name);
+            set!([ObjNameSep], [NameSep], NameSep);
+            set!([ObjValueSepOrEnd], [ValueSep], ObjValueSep);
+            set!([ObjValueSepOrEnd], [ObjEnd], StructEnd);
+            set!([ArrElementOrEnd], [ArrEnd], StructEnd);
+            set!([ArrElementSepOrEnd], [ArrEnd], StructEnd);
+            set!([ArrElementSepOrEnd], [ValueSep], ArrValueSep);
+            set!([Eof], [Eof], Ignore);
+            set!(
+                [
+                    ArrElementOrEnd,
+                    ArrElementSepOrEnd,
+                    Eof,
+                    ObjName,
+                    ObjNameOrEnd,
+                    ObjNameSep,
+                    ObjValueSepOrEnd,
+                    Value
+                ],
+                [White],
+                Ignore
+            );
+            set!(
+                [
+                    ArrElementOrEnd,
+                    ArrElementSepOrEnd,
+                    Eof,
+                    ObjName,
+                    ObjNameOrEnd,
+                    ObjNameSep,
+                    ObjValueSepOrEnd,
+                    Value
+                ],
+                [Err],
+                ErrLexical
+            );
+
+            t
+        };
+
+        let token = self.lexer.next();
+        let key = key!(self.state, self.context.expect, token);
+        match ACTION[key] {
+            Action::ArrBegin => {
                 let level = self.level();
                 if level < self.max_level {
                     self.context.inner.push(StructKind::Arr);
                     self.context.expect = Expect::ArrElementOrEnd;
+                    return token;
                 } else {
-                    self.content = Content::Err(Error {
-                        kind: ErrorKind::Level { level, token },
-                        pos: *self.pos(),
-                        source: None,
-                    });
-                    token = Token::Err;
+                    self.err_level(level, token);
+                    return Token::Err;
                 }
             }
-
-            (Expect::Value, t) | (Expect::ArrElementOrEnd, t)
-                if t == Token::LitFalse
-                    || t == Token::LitNull
-                    || t == Token::LitTrue
-                    || t == Token::Num
-                    || t == Token::Str =>
-            {
-                self.got_value(false);
+            Action::ArrValueSep => self.context.expect = Expect::Value,
+            Action::Ignore => (),
+            Action::Name => self.context.expect = Expect::ObjNameSep,
+            Action::NameSep => self.context.expect = Expect::Value,
+            Action::ObjBegin => {
+                let level = self.level();
+                if level < self.max_level {
+                    self.context.inner.push(StructKind::Obj);
+                    self.context.expect = Expect::ObjNameOrEnd;
+                    return token;
+                } else {
+                    self.err_level(level, token);
+                    return Token::Err;
+                }
             }
-
-            (Expect::ObjName, Token::Str) => {
-                self.context.expect = Expect::ObjNameSep;
+            Action::ObjValueSep => self.context.expect = Expect::ObjName,
+            Action::StructEnd => self.got_value(true),
+            Action::Value => self.got_value(false),
+            Action::ErrCached => return Token::Err,
+            Action::ErrLexical => {
+                self.err_lexical();
+                return Token::Err;
             }
-
-            (Expect::ObjNameOrEnd, Token::ObjEnd) => {
-                self.got_value(true);
+            Action::ErrSyntax => {
+                self.err_syntax(token);
+                return Token::Err;
             }
-
-            (Expect::ObjNameOrEnd, Token::Str) => {
-                self.context.expect = Expect::ObjNameSep;
-            }
-
-            (Expect::ObjNameSep, Token::NameSep) => {
-                self.context.expect = Expect::Value;
-            }
-
-            (Expect::ObjValueSepOrEnd, Token::ValueSep) => {
-                self.context.expect = Expect::ObjName;
-            }
-
-            (Expect::ObjValueSepOrEnd, Token::ObjEnd) => {
-                self.got_value(true);
-            }
-
-            (Expect::ArrElementOrEnd, Token::ArrEnd) => {
-                self.got_value(true);
-            }
-
-            (Expect::ArrElementSepOrEnd, Token::ArrEnd) => {
-                self.got_value(true);
-            }
-
-            (Expect::ArrElementSepOrEnd, Token::ValueSep) => {
-                self.context.expect = Expect::Value;
-            }
-
-            (Expect::Eof, Token::Eof) => (),
-
-            (_, Token::White) => (),
-
-            (_, Token::Err) => {
-                let err = self
-                    .lexer
-                    .try_content()
-                    .expect_err("lexer returned error token, must contain error value");
-                let kind = ErrorKind::Lexical(err.kind());
-                let source =
-                    Some(Arc::new(err) as Arc<dyn std::error::Error + Send + Sync + 'static>);
-
-                self.content = Content::Err(Error {
-                    kind,
-                    pos: *self.lexer.pos(),
-                    source,
-                })
-            }
-
-            (_, _) => {
-                self.content = Content::Err(Error {
-                    kind: ErrorKind::Syntax {
-                        context: self.context.clone(),
-                        token,
-                    },
-                    pos: *self.lexer.pos(),
-                    source: None,
-                });
-
-                token = Token::Err;
-            }
-        }
+        };
 
         token
+
+        // if self.state == State::Err {
+        //     return Token::Err;
+        // }
+
+        // let mut token = self.lexer.next();
+
+        // match (self.context.expect, token) {
+        //     (e, Token::ObjBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
+        //         let level = self.level();
+        //         if level < self.max_level {
+        //             self.context.inner.push(StructKind::Obj);
+        //             self.context.expect = Expect::ObjNameOrEnd;
+        //         } else {
+        //             self.state = State::Err;
+        //             self.err = Some(Error {
+        //                 kind: ErrorKind::Level { level, token },
+        //                 pos: *self.pos(),
+        //                 source: None,
+        //             });
+        //             token = Token::Err;
+        //         }
+        //     }
+
+        //     (e, Token::ArrBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
+        //         let level = self.level();
+        //         if level < self.max_level {
+        //             self.context.inner.push(StructKind::Arr);
+        //             self.context.expect = Expect::ArrElementOrEnd;
+        //         } else {
+        //             self.state = State::Err;
+        //             self.err = Some(Error {
+        //                 kind: ErrorKind::Level { level, token },
+        //                 pos: *self.pos(),
+        //                 source: None,
+        //             });
+        //             token = Token::Err;
+        //         }
+        //     }
+
+        //     (Expect::Value, t) | (Expect::ArrElementOrEnd, t)
+        //         if t == Token::LitFalse
+        //             || t == Token::LitNull
+        //             || t == Token::LitTrue
+        //             || t == Token::Num
+        //             || t == Token::Str =>
+        //     {
+        //         self.got_value(false);
+        //     }
+
+        //     (Expect::ObjName, Token::Str) => {
+        //         self.context.expect = Expect::ObjNameSep;
+        //     }
+
+        //     (Expect::ObjNameOrEnd, Token::ObjEnd) => {
+        //         self.got_value(true);
+        //     }
+
+        //     (Expect::ObjNameOrEnd, Token::Str) => {
+        //         self.context.expect = Expect::ObjNameSep;
+        //     }
+
+        //     (Expect::ObjNameSep, Token::NameSep) => {
+        //         self.context.expect = Expect::Value;
+        //     }
+
+        //     (Expect::ObjValueSepOrEnd, Token::ValueSep) => {
+        //         self.context.expect = Expect::ObjName;
+        //     }
+
+        //     (Expect::ObjValueSepOrEnd, Token::ObjEnd) => {
+        //         self.got_value(true);
+        //     }
+
+        //     (Expect::ArrElementOrEnd, Token::ArrEnd) => {
+        //         self.got_value(true);
+        //     }
+
+        //     (Expect::ArrElementSepOrEnd, Token::ArrEnd) => {
+        //         self.got_value(true);
+        //     }
+
+        //     (Expect::ArrElementSepOrEnd, Token::ValueSep) => {
+        //         self.context.expect = Expect::Value;
+        //     }
+
+        //     (Expect::Eof, Token::Eof) => (),
+
+        //     (_, Token::White) => (),
+
+        //     (_, Token::Err) => {
+        //         let err = self
+        //             .lexer
+        //             .try_content()
+        //             .expect_err("lexer returned error token, must contain error value");
+        //         let kind = ErrorKind::Lexical(err.kind());
+        //         let source =
+        //             Some(Arc::new(err) as Arc<dyn std::error::Error + Send + Sync + 'static>);
+
+        //         self.state = State::Err;
+        //         self.err = Some(Error {
+        //             kind,
+        //             pos: *self.lexer.pos(),
+        //             source,
+        //         })
+        //     }
+
+        //     (_, _) => {
+        //         self.state = State::Err;
+        //         self.err = Some(Error {
+        //             kind: ErrorKind::Syntax {
+        //                 context: self.context.clone(),
+        //                 token,
+        //             },
+        //             pos: *self.lexer.pos(),
+        //             source: None,
+        //         });
+
+        //         token = Token::Err;
+        //     }
+        // }
+
+        // token
     }
 
     /// Returns the next syntactically-valid non-whitespace token, *i.e.* [`next`] but skips
@@ -1231,12 +1379,15 @@ where
     /// [`next_meaningful`]: method@Self::next_meaningful
     /// [`try_content`]: lexical::Analyzer::try_content
     pub fn try_content(&self) -> Result<L::Content, Error> {
-        match &self.content {
-            Content::Lazy => match self.lexer.try_content() {
-                Ok(v) => Ok(v),
-                Err(_) => panic!("lexer must not be in an error state"),
-            },
-            Content::Err(err) => Err(err.clone()),
+        match self.state {
+            State::Ok => Ok(self
+                .lexer
+                .try_content()
+                .expect("lexer must not be in an error state")),
+            State::Err => Err(self
+                .err
+                .clone()
+                .expect("error value must be available in error state")),
         }
     }
 
@@ -1436,6 +1587,42 @@ where
             Some(StructKind::Obj) => self.context.expect = Expect::ObjValueSepOrEnd,
             None => self.context.expect = Expect::Eof,
         }
+    }
+
+    fn err_level(&mut self, level: usize, token: Token) {
+        self.state = State::Err;
+        self.err = Some(Error {
+            kind: ErrorKind::Level { level, token },
+            pos: *self.pos(),
+            source: None,
+        });
+    }
+
+    fn err_lexical(&mut self) {
+        let err = self
+            .lexer
+            .try_content()
+            .expect_err("lexer should have error");
+        let kind = ErrorKind::Lexical(err.kind());
+        let source = Some(Arc::new(err) as Arc<dyn std::error::Error + Send + Sync + 'static>);
+        self.state = State::Err;
+        self.err = Some(Error {
+            kind,
+            pos: *self.lexer.pos(),
+            source,
+        })
+    }
+
+    fn err_syntax(&mut self, token: Token) {
+        self.state = State::Err;
+        self.err = Some(Error {
+            kind: ErrorKind::Syntax {
+                context: self.context.clone(),
+                token,
+            },
+            pos: *self.lexer.pos(),
+            source: None,
+        });
     }
 }
 

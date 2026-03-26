@@ -37,9 +37,9 @@ PERFORMANCE
 1. ❌ ~~Cache top `Struct` value so peek doesn't have to look into the array.~~ This regressed
    performance. However, a most refactor to make `StructContent::pop` return the value to avoid a
    peek did produce a modest but consistenet 0.5-1% performance gain.
-2. Refactor `next` to avoid writing `self.content` unless there's an error. Otherwise it never
+2. ✅ ~~Refactor `next` to avoid writing `self.content` unless there's an error. Otherwise it never
    changes. This eliminates a bunch of boilerplate `drop` glue from the compiler and shrinks the
-   method about 50% (831 instructions down to 439).
+   method about 50% (831 instructions down to 439).~~
 3. Migrate error paths into cold error path functions. (Try to use `#[cold] and
    `#[inline(never)]`) on them despite this having failed completely for the `state` and `fixed`
    performance projects.
@@ -58,6 +58,12 @@ PERFORMANCE
    content fetch path, which is about 180 MiB/s and 20% slower than the no-fetch path.~~ This had a
    surprising negative effect both on laptop and server, with roughly a 6% throughput decline
    observed on the server box.
+9. In the lookup table version of the state machine, we could separate `Expect::Value` into three:
+   `Expect::Value`, `Expect::ArrValue`, and `Expect::ObjValue`. This would allow the state machine
+   to return back to states like `Expect::ArrElementSepOrEnd` without having to peek the stack. It
+   would cause `Expect` to take up another bit, but the "permanent error" state OR should still
+   work, either directly or with some twiddling.
+
 
 I'm curious what'd happen with a `next()` like this:
 
@@ -76,6 +82,24 @@ fn next() {
   token
 }
 ```
+
+Lookup table structure:
+
+[Error Bit, Token, Expect] => Action
+
+   Token: 14 members => 4 bits   .... 0x00 -> 0xd | 00000000 (0) -> 1101
+   Expect: 8 members => 3 bits
+
+   One option is to have the error marker be either 00000000 (of) or 11111111 (on).
+   Then when you OR it in, you get a unique value of 11111111 that can't otherwise
+   be produced because the highest available value is:
+
+      0     111    1101
+      ^      ^      ^
+     no    expect  token
+   error
+
+
 
 
 ## `fixed`
