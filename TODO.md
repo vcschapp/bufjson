@@ -37,26 +37,26 @@ high as 1.2 GiB/s.
 
 ## `state`
 
-Expecting a total improvement around 8-9%.
+❌ ~~Expecting a total improvement around 8-9%.~~ Got zero improvement. None of the changes apart
+from extreme inlining moved the needle, and the tiny benefit there doesn't outweigh the cost.
 
-1. Test a lookup table instead of a jump table at the root of next.
-2. Test whitespace rewrite in `8e15a31c1276caf4c682f7ad5f4256e7ab8fb05e` to see if it does
-   improve performance.
-3. Selective inlining of key hot path functions.
-4. Selectively apply `#[cold]` attribute to cold path function. (LLVM treats any branch leading
-   to a call to this function as unlikely.)
+1. ❌ ~~Test a lookup table instead of a jump table at the root of next.~~ This appeared to give a
+   very modest throughput increase of something like 0.5%, and of course that's within the margin of
+   measurement error, though it was pretty consistent when measured on a server machine without any
+   external CPU loading. That being said, 0.5% doesn't feel like enough to justify the change ATM.
+   Can come back to this if we really need to squeeze another half a percent out.
+2. ❌ ~~Test whitespace rewrite in `8e15a31c1276caf4c682f7ad5f4256e7ab8fb05e` to see if it does
+   improve performance.~~ I've tried 3 variations and none of them seem to be better. Dropping this,
+   the whitespace processing feels pretty optimal.
+3. ❌ ~~Selective inlining of key hot path functions.~~ On the times when I got it just right, I was
+   seeing improvements of 10 MiB/s-20 MiB/s, not enough to justify overruling optimizer and bloating
+   code.
+4. ❌ ~~Selectively apply `#[cold]` attribute to cold path function. (LLVM treats any branch leading
+   to a call to this function as unlikely.)~~ I was shocked by how badly this hurt. Even when I put
+   it on true blue cold paths (errors that never happen in the benchmark), it sometimes caused
+   performance to DROP 18%. Dead end.
     - https://doc.rust-lang.org/reference/attributes/codegen.html#the-cold-attribute
-5. Selectively apply `#[inline(never)] to appropriate functions.
-
-| Situation                                                    | Use                           |
-|--------------------------------------------------------------|-------------------------------|
-| Unlikely error/panic path                                    | #[cold] + #[inline(never)]    |
-| Rarely called but you don't care about inlining              | #[cold] alone                 |
-| Frequently called but must not be inlined (code size, ABI…)  | #[inline(never)] alone        |
-| Rarely called and small enough that inlining is fine         | #[cold] alone                 |
-
-
-The key insight: #[cold] is about call frequency and affects callers. #[inline(never)] is about code placement and affects the callee. They're complementary, not alternatives.
+5. ❌ ~~Selectively apply `#[inline(never)] to appropriate functions.~~
 
 ## `fixed`
 
