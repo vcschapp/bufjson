@@ -877,7 +877,6 @@ where
         }
 
         let mut token = self.lexer.next();
-        let mut content = Content::Lazy;
 
         match (self.context.expect, token) {
             (e, Token::ObjBegin) if e == Expect::Value || e == Expect::ArrElementOrEnd => {
@@ -886,7 +885,7 @@ where
                     self.context.inner.push(StructKind::Obj);
                     self.context.expect = Expect::ObjNameOrEnd;
                 } else {
-                    content = Content::Err(Error {
+                    self.content = Content::Err(Error {
                         kind: ErrorKind::Level { level, token },
                         pos: *self.pos(),
                         source: None,
@@ -901,7 +900,7 @@ where
                     self.context.inner.push(StructKind::Arr);
                     self.context.expect = Expect::ArrElementOrEnd;
                 } else {
-                    content = Content::Err(Error {
+                    self.content = Content::Err(Error {
                         kind: ErrorKind::Level { level, token },
                         pos: *self.pos(),
                         source: None,
@@ -969,7 +968,7 @@ where
                 let source =
                     Some(Arc::new(err) as Arc<dyn std::error::Error + Send + Sync + 'static>);
 
-                content = Content::Err(Error {
+                self.content = Content::Err(Error {
                     kind,
                     pos: *self.lexer.pos(),
                     source,
@@ -977,7 +976,7 @@ where
             }
 
             (_, _) => {
-                content = Content::Err(Error {
+                self.content = Content::Err(Error {
                     kind: ErrorKind::Syntax {
                         context: self.context.clone(),
                         token,
@@ -989,8 +988,6 @@ where
                 token = Token::Err;
             }
         }
-
-        self.content = content;
 
         token
     }
