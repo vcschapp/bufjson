@@ -109,6 +109,11 @@ impl From<BitRef<'_>> for StructKind {
 /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Expect {
+    /// While parsing an array value, the parser expects any lexical token that indicates a valid
+    /// JSON value. This can be a literal value, a number or string value, or the start of a
+    /// structured value via `[` or `{`.
+    ArrElement,
+
     /// While parsing an array value, the parser expects one of:
     /// - the `]` character indicating the end of the array ([`Token::ArrEnd`]); or
     /// - any lexical token that indicates an array element (this can be a literal value, a number
@@ -138,6 +143,11 @@ pub enum Expect {
     /// the member name from the member value ([`Token::NameSep`]).
     ObjNameSep,
 
+    /// While parsing an object value member, the parser expects any lexical token that indicates a
+    /// valid JSON value. This can be a literal value, a number or string value, or the start of a
+    /// structured value via `[` or `{`.
+    ObjValue,
+
     /// While parsing an object value, the parser expects one of:
     /// - the `,` character which separates object members ([`Token::ValueSep`]); or
     /// - the `}` character indicating the end of the object ([`Token::ObjEnd`]).
@@ -160,7 +170,7 @@ impl Expect {
     /// ```
     pub const fn allowed_tokens(&self) -> &'static [Token] {
         match self {
-            Expect::Value => &[
+            Expect::ArrElement | Expect::ObjValue | Expect::Value => &[
                 Token::ArrBegin,
                 Token::LitFalse,
                 Token::LitNull,
@@ -199,12 +209,14 @@ impl Expect {
 impl fmt::Display for Expect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
+            Self::ArrElement => "array element",
             Self::ArrElementOrEnd => "array element or ]",
             Self::ArrElementSepOrEnd => ", or ]",
             Self::Eof => "EOF",
             Self::ObjName => "object member name",
             Self::ObjNameOrEnd => "object member name or }",
             Self::ObjNameSep => ":",
+            Self::ObjValue => "object member value",
             Self::ObjValueSepOrEnd => ", or }",
             Self::Value => "value",
         };
@@ -890,8 +902,8 @@ where
         #[rustfmt::skip]
         #[derive(Clone, Copy, Debug)]
         enum Action {
-            ArrBegin, ArrValueSep, Ignore, Name, NameSep, ObjBegin, ObjValueSep, StructEnd, Value,
-            ErrLexical, ErrSyntax, ErrCached,
+            ArrBegin, ArrElement, ArrElementSep, Ignore, Name, NameSep, ObjBegin, ObjValue,
+            ObjValueSep, StructEnd, Value, ErrLexical, ErrSyntax, ErrCached,
         }
 
         macro_rules! key {
@@ -923,30 +935,42 @@ where
             }
 
             set!([ArrElementOrEnd], [ArrEnd], StructEnd);
-            set!([ArrElementOrEnd, Value], [ObjBegin], ObjBegin);
-            set!([ArrElementOrEnd, Value], [ArrBegin], ArrBegin);
             set!(
-                [ArrElementOrEnd, Value],
+                [ArrElement, ArrElementOrEnd, ObjValue, Value],
+                [ObjBegin],
+                ObjBegin
+            );
+            set!(
+                [ArrElement, ArrElementOrEnd, ObjValue, Value],
+                [ArrBegin],
+                ArrBegin
+            );
+            set!(
+                [ArrElement, ArrElementOrEnd],
                 [LitFalse, LitNull, LitTrue, Num, Str],
-                Value
+                ArrElement
             );
             set!([ArrElementSepOrEnd], [ArrEnd], StructEnd);
-            set!([ArrElementSepOrEnd], [ValueSep], ArrValueSep);
+            set!([ArrElementSepOrEnd], [ValueSep], ArrElementSep);
             set!([ObjName], [Str], Name);
             set!([ObjNameOrEnd], [ObjEnd], StructEnd);
             set!([ObjNameOrEnd], [Str], Name);
             set!([ObjNameSep], [NameSep], NameSep);
             set!([ObjValueSepOrEnd], [ValueSep], ObjValueSep);
             set!([ObjValueSepOrEnd], [ObjEnd], StructEnd);
+            set!([ObjValue], [LitFalse, LitNull, LitTrue, Num, Str], ObjValue);
+            set!([Value], [LitFalse, LitNull, LitTrue, Num, Str], Value);
             set!([Eof], [Eof], Ignore);
             set!(
                 [
+                    ArrElement,
                     ArrElementOrEnd,
                     ArrElementSepOrEnd,
                     Eof,
                     ObjName,
                     ObjNameOrEnd,
                     ObjNameSep,
+                    ObjValue,
                     ObjValueSepOrEnd,
                     Value
                 ],
@@ -955,6 +979,7 @@ where
             );
             set!(
                 [
+                    ArrElement,
                     ArrElementOrEnd,
                     ArrElementSepOrEnd,
                     Eof,
@@ -985,7 +1010,8 @@ where
                     return Token::Err;
                 }
             }
-            Action::ArrValueSep => self.context.expect = Expect::Value,
+            Action::ArrElement => self.context.expect = Expect::ArrElementSepOrEnd,
+            Action::ArrElementSep => self.context.expect = Expect::Value,
             Action::Ignore => (),
             Action::Name => self.context.expect = Expect::ObjNameSep,
             Action::NameSep => self.context.expect = Expect::Value,
@@ -1000,6 +1026,7 @@ where
                     return Token::Err;
                 }
             }
+            Action::ObjValue => self.context.expect = Expect::ObjValueSepOrEnd,
             Action::ObjValueSep => self.context.expect = Expect::ObjName,
             Action::StructEnd => self.got_value(true),
             Action::Value => self.got_value(false),
