@@ -1192,9 +1192,15 @@ where
     /// [`next_non_white`]: method@Self::next_non_white
     /// [`next_meaningful`]: method@Self::next_meaningful
     /// [`try_content`]: lexical::Analyzer::try_content
-    #[inline]
+    #[inline(always)]
     pub fn content(&self) -> L::Content {
-        self.try_content().unwrap()
+        match self.state {
+            State::Ok => match self.lexer.try_content() {
+                Ok(c) => c,
+                Err(_) => unreachable!("lexer can't be in error state when parser isn't"),
+            },
+            State::Err => panic!("no content: parser is in error state (use `err()` instead)"),
+        }
     }
 
     /// Fetches the error value associated with the current error token.
