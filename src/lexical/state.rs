@@ -1443,6 +1443,21 @@ impl<B: Deref<Target = [u8]> + Default + fmt::Debug> Default for Machine<B> {
     }
 }
 
+impl Machine<&[u8]> {
+    pub(crate) fn verify_static(b: &'static [u8]) -> bool {
+        if !b.is_empty() {
+            let mut mach = Self::new(b);
+            match mach.next() {
+                Next::Part(_, n) if n == b.len() && mach.end() == End::Done => false,
+                Next::Done(_, escaped, n) if n == b.len() => escaped,
+                _ => panic!("invalid JSON content"),
+            }
+        } else {
+            false
+        }
+    }
+}
+
 /// Makes a smart pointer around any byte-slice type look like a byte-slice.
 ///
 /// Wraps any smart pointer containing a value that dereferences to a byte slice so that it can be

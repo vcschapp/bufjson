@@ -625,7 +625,7 @@ macro_rules! stringify_known_utf8 {
 // This is crate-internal, because it's not functionality we particularly need to export, as we
 // don't want to acquire responsibility for supporting every aspect of someone else's `Buf`
 // implementation.
-#[cfg(feature = "read")]
+#[cfg(any(feature = "pipe", feature = "read"))]
 pub(crate) fn buf_to_string<T: IntoBuf>(t: T) -> String {
     let mut b = t.into_buf();
     let mut v = Vec::with_capacity(b.remaining());
@@ -647,7 +647,7 @@ pub(crate) fn buf_to_string<T: IntoBuf>(t: T) -> String {
 // This is crate-internal, because it's not functionality we particularly need to export, as we
 // don't want to acquire responsibility for supporting every aspect of someone else's `Buf`
 // implementation.
-#[cfg(feature = "read")]
+#[cfg(any(feature = "pipe", feature = "read"))]
 pub(crate) fn buf_display<T: IntoBuf>(t: T, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     let mut b = t.into_buf();
 

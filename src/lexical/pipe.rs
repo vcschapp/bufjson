@@ -21,20 +21,386 @@
 //! network stack.
 
 use crate::{
-    Buf, EqStr, IntoBuf, OrdStr, Pos,
-    lexical::{self, ErrorKind, Token, Unescaped, read},
+    Buf, BufUnderflow, EqStr, IntoBuf, OrdStr, Pos,
+    lexical::{self, ErrorKind, Token, Unescaped, state},
     syntax,
 };
 use bytes::{Buf as _, Bytes};
+use smallvec::{SmallVec, smallvec};
 use std::{
     borrow::Cow,
     cmp::Ordering,
     convert::Infallible,
     fmt,
     hash::{Hash, Hasher},
+    mem::MaybeUninit,
     str::FromStr,
     sync::Arc,
 };
+
+// Use a smaller inline buffer size in tests to push more test cases out of the inline
+// representation and into the more complex representations that contain references into the actual
+// read buffers.
+#[cfg(test)]
+const INLINE_LEN: usize = 4;
+#[cfg(not(test))]
+const INLINE_LEN: usize = 36;
+
+type InlineBuf = [u8; INLINE_LEN];
+
+// A value that has most of the range of a `usize`, minus one bit, which is used to store a `bool`
+// flag.
+//
+// Used to combine the vector index position and the escaped flag into one `usize` value, which
+// helps keep the size of `InnerLiteral` to not more than 40 bytes on a 64-bit machine.
+#[derive(Clone, Debug)]
+struct USizeBool(usize);
+
+impl USizeBool {
+    const FLAG_BIT: usize = 1 << (usize::BITS - 1);
+    const VALUE_MASK: usize = !Self::FLAG_BIT;
+
+    fn new(value: usize, flag: bool) -> Self {
+        debug_assert!(value <= Self::VALUE_MASK);
+        Self(value | if flag { Self::FLAG_BIT } else { 0 })
+    }
+
+    #[inline(always)]
+    fn get_usize(&self) -> usize {
+        self.0 & Self::VALUE_MASK
+    }
+
+    #[inline(always)]
+    fn set_usize(&mut self, value: usize) {
+        debug_assert!(value <= Self::VALUE_MASK);
+        self.0 = (self.0 & Self::FLAG_BIT) | value;
+    }
+
+    #[inline(always)]
+    fn get_bool(&self) -> bool {
+        self.0 & Self::FLAG_BIT != 0
+    }
+}
+
+#[derive(Clone, Debug)]
+struct MultiBytes {
+    arr: Box<[Bytes]>,
+    rem: usize,
+    pos_escaped: USizeBool,
+}
+
+impl MultiBytes {
+    fn new(mut arr: Box<[Bytes]>, start_pos: usize, len: usize, escaped: bool) -> Self {
+        debug_assert!(
+            start_pos < arr[0].len(),
+            "start_pos ({start_pos}) < arr[0].len ({})",
+            arr[0].len()
+        );
+        debug_assert!(
+            arr[0].len() < start_pos + len,
+            "arr[0].len() ({}) < start_pos ({start_pos}) + len ({len})",
+            arr[0].len()
+        );
+
+        // Slice away the unneeded prefix bytes from the first buffer.
+        arr[0].advance(start_pos);
+
+        // Slice away the unneeded suffix bytes from the last buffer.
+        let n = arr.len();
+        let contrib: usize = arr.iter().take(n - 1).map(Bytes::len).sum();
+        debug_assert!(
+            contrib <= len,
+            "contrib ({contrib}) <= len ({len}) for arr = {arr:?}"
+        );
+        arr[n - 1].truncate(len - contrib);
+
+        // Return the new multi-bytes.
+        Self {
+            arr,
+            rem: len,
+            pos_escaped: USizeBool::new(0, escaped),
+        }
+    }
+}
+
+impl Buf for MultiBytes {
+    fn advance(&mut self, mut n: usize) {
+        if self.remaining() < n {
+            panic!(
+                "{}",
+                &BufUnderflow {
+                    requested: n,
+                    remaining: self.remaining(),
+                }
+            );
+        } else {
+            self.rem -= n;
+            let mut pos = self.pos_escaped.get_usize();
+            while pos < self.arr.len() && self.arr[pos].len() <= n {
+                n -= self.arr[pos].len();
+                pos += 1;
+            }
+            if n > 0 {
+                debug_assert!((pos) < self.arr.len());
+                debug_assert!(self.arr[pos].len() < n);
+                self.arr[pos] = self.arr[pos].slice(n..);
+            }
+            self.pos_escaped.set_usize(pos);
+        }
+    }
+
+    #[inline]
+    fn chunk(&self) -> &[u8] {
+        let pos = self.pos_escaped.get_usize();
+        if pos < self.arr.len() {
+            &self.arr[pos]
+        } else {
+            &[]
+        }
+    }
+
+    #[inline(always)]
+    fn remaining(&self) -> usize {
+        self.rem
+    }
+
+    fn try_copy_to_slice(&mut self, mut dst: &mut [u8]) -> Result<(), crate::BufUnderflow> {
+        if self.remaining() < dst.len() {
+            Err(BufUnderflow {
+                requested: dst.len(),
+                remaining: self.remaining(),
+            })
+        } else {
+            self.rem -= dst.len();
+            let mut pos = self.pos_escaped.get_usize();
+            while self.arr[pos].len() <= dst.len() {
+                let b = &self.arr[pos];
+                let m = b.len();
+                dst[0..m].copy_from_slice(b);
+                dst = &mut dst[m..];
+                pos += 1;
+            }
+            if !dst.is_empty() {
+                debug_assert!(pos < self.arr.len());
+                debug_assert!(self.arr[pos].len() < dst.len());
+                dst.copy_from_slice(&self.arr[pos]);
+                self.arr[pos] = self.arr[pos].slice(dst.len()..);
+            }
+            self.pos_escaped.set_usize(pos);
+
+            Ok(())
+        }
+    }
+}
+
+impl IntoBuf for MultiBytes {
+    type Buf = Self;
+
+    fn into_buf(self) -> Self::Buf {
+        self
+    }
+}
+
+#[derive(Debug)]
+enum Repr<'a> {
+    Together(&'a str),
+    Split(&'a MultiBytes),
+}
+
+#[derive(Clone, Debug)]
+enum InnerLiteral {
+    Static(&'static str, bool),
+    Inline(u8, u8, InlineBuf, bool),
+    Bytes(Bytes, bool),
+    Multi(MultiBytes),
+}
+
+impl InnerLiteral {
+    fn inline(src: &[u8]) -> Self {
+        let mut dst: InlineBuf = [0; INLINE_LEN];
+        dst[0..src.len()].copy_from_slice(src);
+
+        Self::Inline(0, src.len() as u8, dst, false)
+    }
+
+    #[inline(always)]
+    fn len(&self) -> usize {
+        match self {
+            Self::Static(s, _) => s.len(),
+            Self::Inline(i, j, _, _) => (*j - *i) as usize,
+            Self::Bytes(b, _) => b.len(),
+            Self::Multi(v) => v.rem,
+        }
+    }
+
+    #[inline]
+    fn repr(&self) -> Repr<'_> {
+        match self {
+            Self::Static(s, _) => Repr::Together(s),
+            Self::Inline(i, j, b, _) => {
+                Repr::Together(unsafe { str::from_utf8_unchecked(&b[*i as usize..*j as usize]) })
+            }
+            Self::Bytes(b, _) => Repr::Together(unsafe { str::from_utf8_unchecked(b) }),
+            Self::Multi(v) => Repr::Split(v),
+        }
+    }
+
+    #[inline]
+    fn is_escaped(&self) -> bool {
+        match self {
+            Self::Static(_, escaped) | Self::Inline(_, _, _, escaped) | Self::Bytes(_, escaped) => {
+                *escaped
+            }
+            Self::Multi(m) => m.pos_escaped.get_bool(),
+        }
+    }
+
+    fn unescaped(&self) -> Unescaped<Literal> {
+        match self {
+            Self::Static(_, false) | Self::Inline(_, _, _, false) | Self::Bytes(_, false) => {
+                Unescaped::Literal(Literal(self.clone()))
+            }
+            Self::Multi(m) if !m.pos_escaped.get_bool() => {
+                Unescaped::Literal(Literal(self.clone()))
+            }
+            _ => {
+                let mut buf = Vec::new();
+                lexical::unescape(self.clone(), &mut buf);
+
+                // SAFETY: `self` was valid UTF-8 before it was de-escaped, and the de-escaping
+                //         process maintains UTF-8 safety.
+                let s = unsafe { String::from_utf8_unchecked(buf) };
+
+                Unescaped::Expanded(s)
+            }
+        }
+    }
+}
+
+impl Buf for InnerLiteral {
+    fn advance(&mut self, n: usize) {
+        match self {
+            Self::Static(s, _) => {
+                if s.len() < n {
+                    panic!(
+                        "{}",
+                        &BufUnderflow {
+                            requested: n,
+                            remaining: s.len(),
+                        }
+                    );
+                } else {
+                    *self = Self::Static(&s[n..], false)
+                }
+            }
+
+            Self::Inline(i, j, b, _) => {
+                let len = (*j - *i) as usize;
+                if len < n {
+                    panic!(
+                        "{}",
+                        &BufUnderflow {
+                            requested: n,
+                            remaining: len,
+                        }
+                    );
+                } else {
+                    *self = Self::Inline(*i + n as u8, *j, *b, false);
+                }
+            }
+
+            Self::Bytes(b, _) => {
+                if b.len() < n {
+                    panic!(
+                        "{}",
+                        &BufUnderflow {
+                            requested: n,
+                            remaining: b.len(),
+                        }
+                    );
+                } else {
+                    *self = Self::Bytes(b.slice(n..), false);
+                }
+            }
+
+            Self::Multi(m) => m.advance(n),
+        }
+    }
+
+    fn chunk(&self) -> &[u8] {
+        match &self {
+            Self::Static(s, _) => s.as_bytes(),
+            Self::Inline(i, j, b, _) => &b[*i as usize..*j as usize],
+            Self::Bytes(b, _) => b,
+            Self::Multi(r) => r.chunk(),
+        }
+    }
+
+    #[inline]
+    fn remaining(&self) -> usize {
+        self.len()
+    }
+
+    fn try_copy_to_slice(&mut self, dst: &mut [u8]) -> Result<(), crate::BufUnderflow> {
+        match self {
+            Self::Static(s, _) => {
+                if s.len() < dst.len() {
+                    Err(BufUnderflow {
+                        requested: dst.len(),
+                        remaining: s.len(),
+                    })
+                } else {
+                    dst.copy_from_slice(&s.as_bytes()[..dst.len()]);
+                    *self = Self::Static(&s[dst.len()..], false);
+
+                    Ok(())
+                }
+            }
+
+            InnerLiteral::Inline(i, j, b, _) => {
+                let len = (*j - *i) as usize;
+                if len < dst.len() {
+                    Err(BufUnderflow {
+                        requested: dst.len(),
+                        remaining: len,
+                    })
+                } else {
+                    dst.copy_from_slice(&b[*i as usize..*i as usize + dst.len()]);
+                    *i += dst.len() as u8;
+
+                    Ok(())
+                }
+            }
+
+            InnerLiteral::Bytes(b, _) => {
+                if b.len() < dst.len() {
+                    panic!(
+                        "{}",
+                        &BufUnderflow {
+                            requested: dst.len(),
+                            remaining: b.len(),
+                        }
+                    );
+                } else {
+                    dst.copy_from_slice(&b[..dst.len()]);
+                    *self = Self::Bytes(b.slice(dst.len()..), false);
+
+                    Ok(())
+                }
+            }
+
+            InnerLiteral::Multi(m) => m.try_copy_to_slice(dst),
+        }
+    }
+}
+
+impl IntoBuf for InnerLiteral {
+    type Buf = Self;
+
+    fn into_buf(self) -> Self::Buf {
+        self
+    }
+}
 
 /// Zero allocation view of the literal text content of a JSON token.
 ///
@@ -62,7 +428,7 @@ use std::{
 /// is advised that you retain `Literal` instances only as long as necessary to process them,
 /// extracting owned copies of their data if you need long-lived access to the token text.
 #[derive(Clone, Debug)]
-pub struct Literal(read::Literal);
+pub struct Literal(InnerLiteral);
 
 impl Literal {
     /// Converts a static lifetime string slice to a literal value.
@@ -113,7 +479,7 @@ impl Literal {
     /// [`from_ref`]: method@Self::from_ref
     /// [`from_string`]: method@Self::from_string
     pub const fn from_static(s: &'static str) -> Self {
-        Self(read::Literal::from_static(s))
+        Self(InnerLiteral::Static(s, false))
     }
 
     /// Creates a literal value from anything that cheaply converts to a string slice reference.
@@ -127,7 +493,14 @@ impl Literal {
     /// [`from_static`]: method@Self::from_static
     /// [`from_string`]: method@Self::from_string
     pub fn from_ref<T: AsRef<str> + ?Sized>(s: &T) -> Self {
-        Self(read::Literal::from_ref(s))
+        let t = s.as_ref();
+        let b = t.as_bytes();
+
+        if b.len() <= INLINE_LEN {
+            Self(InnerLiteral::inline(b))
+        } else {
+            Self(InnerLiteral::Bytes(Bytes::copy_from_slice(b), false))
+        }
     }
 
     /// Creates a literal value by consuming an owned string value.
@@ -152,7 +525,14 @@ impl Literal {
     /// assert_eq!("bar", lit);
     /// ```
     pub fn from_string(s: String) -> Self {
-        Self(read::Literal::from_string(s))
+        if s.len() <= INLINE_LEN {
+            Self(InnerLiteral::inline(s.as_bytes()))
+        } else {
+            Self(InnerLiteral::Bytes(
+                Bytes::from_owner(s.into_bytes()),
+                false,
+            ))
+        }
     }
 
     /// Returns the length of `self`.
@@ -188,23 +568,26 @@ impl Literal {
         self.len() == 0
     }
 
-    // TODO: FIXME: delete the below code or uncomment it
-    // fn repr(&self) -> Repr<'_> {
-    //     self.0.repr()
-    // }
+    #[inline(always)]
+    fn repr(&self) -> Repr<'_> {
+        self.0.repr()
+    }
 }
 
 impl IntoBuf for Literal {
     type Buf = LiteralBuf;
 
     fn into_buf(self) -> Self::Buf {
-        LiteralBuf(self.0.into_buf())
+        LiteralBuf(self.0)
     }
 }
 
 impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        match self.repr() {
+            Repr::Together(s) => f.write_str(s),
+            Repr::Split(r) => crate::buf_display(r.clone(), f),
+        }
     }
 }
 
@@ -214,7 +597,10 @@ impl Eq for Literal {}
 
 impl From<Literal> for String {
     fn from(value: Literal) -> Self {
-        value.0.into()
+        match value.repr() {
+            Repr::Together(s) => s.to_string(),
+            Repr::Split(r) => crate::buf_to_string(r.clone()),
+        }
     }
 }
 
@@ -249,19 +635,37 @@ impl FromStr for Literal {
 
 impl Hash for Literal {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state)
+        match self.repr() {
+            Repr::Together(s) => state.write(s.as_bytes()),
+            Repr::Split(m) => {
+                let mut x = m.clone();
+                while x.remaining() > 0 {
+                    let b = x.chunk();
+                    state.write(b);
+                    x.advance(b.len());
+                }
+            }
+        }
     }
 }
 
 impl Ord for Literal {
     fn cmp(&self, other: &Self) -> Ordering {
-        Ord::cmp(&self.0, &other.0)
+        match (self.repr(), other.repr()) {
+            (Repr::Together(a), Repr::Together(b)) => Ord::cmp(a, b),
+            (Repr::Together(a), Repr::Split(b)) => crate::buf_cmp(a, b.clone()),
+            (Repr::Split(a), Repr::Together(b)) => crate::buf_cmp(a.clone(), b),
+            (Repr::Split(a), Repr::Split(b)) => crate::buf_cmp(a.clone(), b.clone()),
+        }
     }
 }
 
 impl OrdStr for Literal {
     fn cmp(&self, other: &str) -> Ordering {
-        OrdStr::cmp(&self.0, other)
+        match self.repr() {
+            Repr::Together(s) => Ord::cmp(s, other),
+            Repr::Split(m) => crate::buf_cmp(m.clone(), other),
+        }
     }
 }
 
@@ -270,8 +674,18 @@ impl PartialEq for Literal {
         if self.len() != other.len() {
             false
         } else {
-            // TODO: Real eq test
-            self.0 == other.0
+            match (self.repr(), other.repr()) {
+                (Repr::Together(a), Repr::Together(b)) => a == b,
+                (Repr::Together(a), Repr::Split(b)) => {
+                    crate::buf_cmp(a, b.clone()) == Ordering::Equal
+                }
+                (Repr::Split(a), Repr::Together(b)) => {
+                    crate::buf_cmp(a.clone(), b) == Ordering::Equal
+                }
+                (Repr::Split(a), Repr::Split(b)) => {
+                    crate::buf_cmp(a.clone(), b.clone()) == Ordering::Equal
+                }
+            }
         }
     }
 }
@@ -281,8 +695,10 @@ impl PartialEq<str> for Literal {
         if self.len() != other.len() {
             false
         } else {
-            // TODO: Real eq test
-            self.0 == other
+            match self.repr() {
+                Repr::Together(s) => s == other,
+                Repr::Split(r) => crate::buf_cmp(r.clone(), other) == Ordering::Equal,
+            }
         }
     }
 }
@@ -377,7 +793,7 @@ impl PartialOrd<Literal> for String {
 /// assert_eq!(b"hello", &dst);
 /// assert_eq!(8, buf.remaining());
 /// ```
-pub struct LiteralBuf(read::LiteralBuf);
+pub struct LiteralBuf(InnerLiteral);
 
 impl LiteralBuf {
     /// Advances the internal cursor.
@@ -392,6 +808,7 @@ impl LiteralBuf {
     /// Panics if `n > self.remaining()`.
     ///
     /// [`chunk`]: method@Self::chunk
+    #[inline(always)]
     pub fn advance(&mut self, n: usize) {
         self.0.advance(n)
     }
@@ -409,6 +826,7 @@ impl LiteralBuf {
     /// even when you don't have the trait imported.
     ///
     /// [`remaining`]: method@Self::remaining
+    #[inline(always)]
     pub fn chunk(&self) -> &[u8] {
         self.0.chunk()
     }
@@ -421,6 +839,7 @@ impl LiteralBuf {
     /// even when you don't have the trait imported.
     ///
     /// [`chunk`]: method@Self::chunk
+    #[inline(always)]
     pub fn remaining(&self) -> usize {
         self.0.remaining()
     }
@@ -436,24 +855,29 @@ impl LiteralBuf {
     /// available even when you don't have the trait imported.
     ///
     /// [`remaining`]: method@Self::remaining
+    #[inline(always)]
     pub fn try_copy_to_slice(&mut self, dst: &mut [u8]) -> Result<(), crate::BufUnderflow> {
         self.0.try_copy_to_slice(dst)
     }
 }
 
 impl Buf for LiteralBuf {
+    #[inline(always)]
     fn advance(&mut self, n: usize) {
         LiteralBuf::advance(self, n);
     }
 
+    #[inline(always)]
     fn chunk(&self) -> &[u8] {
         LiteralBuf::chunk(self)
     }
 
+    #[inline(always)]
     fn remaining(&self) -> usize {
         LiteralBuf::remaining(self)
     }
 
+    #[inline(always)]
     fn try_copy_to_slice(&mut self, dst: &mut [u8]) -> Result<(), crate::BufUnderflow> {
         LiteralBuf::try_copy_to_slice(self, dst)
     }
@@ -474,7 +898,7 @@ impl Buf for LiteralBuf {
 /// and, for large enough JSON texts, may lead to out-of-memory conditions. Therefore, it is advised
 /// that you drop `Content` values once you have finished examining them.
 #[derive(Debug)]
-pub struct Content(read::Content);
+pub struct Content(InnerLiteral);
 
 impl Content {
     /// Returns the literal content of the token exactly as it appears in the JSON text.
@@ -482,8 +906,9 @@ impl Content {
     /// This is an inherent implementation of [`lexical::Content::literal`] for convenience, so it
     /// is available even when you don't have the trait imported. Refer to the trait documentation
     /// for conceptual details.
+    #[inline(always)]
     pub fn literal(&self) -> Literal {
-        Literal(self.0.literal().clone())
+        Literal(self.0.clone())
     }
 
     /// Indicates whether the token content contains escape sequences.
@@ -491,6 +916,7 @@ impl Content {
     /// This is an inherent implementation of [`lexical::Content::is_escaped`] for convenience, so
     /// it is available even when you don't have the trait imported. Refer to the trait
     /// documentation for conceptual details.
+    #[inline(always)]
     pub fn is_escaped(&self) -> bool {
         self.0.is_escaped()
     }
@@ -512,11 +938,9 @@ impl Content {
     ///   wrapped in [`Unescaped::Expanded`].
     ///
     /// [`literal`]: method@Self::literal
+    #[inline(always)]
     pub fn unescaped(&self) -> Unescaped<Literal> {
-        match self.0.unescaped() {
-            Unescaped::Literal(l) => Unescaped::Literal(Literal(l)),
-            Unescaped::Expanded(x) => Unescaped::Expanded(x),
-        }
+        self.0.unescaped()
     }
 }
 
@@ -545,18 +969,18 @@ impl super::Content for Content {
     }
 }
 
-// Assert that `Literal` does not grow beyond 24 bytes (three 64-bit words).
+// Assert that `Literal` does not grow beyond 40 bytes (five 64-bit words).
 #[cfg(target_pointer_width = "64")]
-const _: [(); 24] = [(); std::mem::size_of::<Literal>()];
+const _: [(); 40] = [(); std::mem::size_of::<Literal>()];
 
-// Assert that `Content` does not grow beyond 24 bytes (three 64-bit words).
+// Assert that `Content` does not grow beyond 40 bytes (five 64-bit words).
 #[cfg(target_pointer_width = "64")]
-const _: [(); 24] = [(); std::mem::size_of::<Content>()];
+const _: [(); 40] = [(); std::mem::size_of::<Content>()];
 
 /// Lexical analysis error detected by a [`PipeAnalyzer`].
 ///
 /// See the [`lexical::Error`] trait, implemented by this struct, for further documentation.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Error<E> {
     kind: ErrorKind,
     pos: Pos,
@@ -579,29 +1003,30 @@ impl<E> Error<E> {
     pub fn pos(&self) -> &Pos {
         &self.pos
     }
-}
 
-impl<E> Error<E>
-where
-    E: std::error::Error,
-{
-    fn new_lexical(kind: ErrorKind, pos: &Pos) -> Self {
+    fn new_lexical(kind: ErrorKind, pos: Pos) -> Self {
         Self {
             kind,
-            pos: *pos,
+            pos,
             source: None,
         }
     }
 
-    fn new_read(
-        pos: &Pos, /*, source: E 👈 TODO: FIXME: uncomment this after refactoring onto new state machine*/
-    ) -> Self {
+    fn new_read(source: E, pos: Pos) -> Self {
         Self {
             kind: ErrorKind::Read,
-            pos: *pos,
-            // TODO: FIXME: uncomment the below after refactoring onto new state machine
-            // source: Some(Arc::new(source)),
-            source: None,
+            pos,
+            source: Some(Arc::new(source)),
+        }
+    }
+}
+
+impl<E> Clone for Error<E> {
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind,
+            pos: self.pos,
+            source: self.source.clone(),
         }
     }
 }
@@ -710,13 +1135,25 @@ pub trait Pipe {
     /// Attempts to wait for the next chunk from this pipe, returning an error if the pipe's data
     /// source is in a failure state.
     ///
-    /// This function blocks the current thread if the next chunk isn't yet available, provided it
-    /// is possible that a next chunk will become available. Once a chunk, or the end of the chunk
+    /// This function blocks the caller if the next chunk isn't yet available, provided it is
+    /// possible that a next chunk will become available. Once a chunk, or the end of the chunk
     /// stream, becomes available, this pipe will wake up and return it.
     ///
     /// The return value is `Some` if a chunk is available, or if the pipe's data source is in a
     /// failure state; and `None` if the end of the stream of JSON text chunks has been reached.
     fn recv(&mut self) -> Option<Result<Bytes, Self::Error>>;
+
+    /// Attempts to return the next chunk pending in this pipe without blocking.
+    ///
+    /// This function will never block the caller in order to wait for a chunk to become available.
+    ///
+    /// The return value can not represent an error state. If the pipe is in an error state, it
+    /// should return `None` and wait for a call to [`recv`][method@Self::recv] to return the error.
+    ///
+    /// The provided implementation simply returns `None`.
+    fn try_recv(&mut self) -> Option<Bytes> {
+        None
+    }
 }
 
 impl Pipe for std::sync::mpsc::Receiver<Bytes> {
@@ -725,55 +1162,29 @@ impl Pipe for std::sync::mpsc::Receiver<Bytes> {
     fn recv(&mut self) -> Option<Result<Bytes, Self::Error>> {
         std::sync::mpsc::Receiver::recv(self).ok().map(Ok)
     }
-}
 
-// TODO: Remove this temporary hack.
-//
-// The idea here is just to get PipeReader bootstrapped with *something* so it can be released,
-// before doing the big performance refactor of lexical::state::Machine, then we'll drop this and
-// integrate directly with the new state machine. It's a temporary time-saving expedient, to avoid
-// integrating with the old state machine when it's just about to be replaced.
-#[derive(Debug)]
-struct TempReader<P> {
-    pipe: P,
-    chunk: Option<Bytes>,
-}
-
-impl<P> TempReader<P> {
-    fn new(pipe: P) -> Self {
-        Self { pipe, chunk: None }
+    fn try_recv(&mut self) -> Option<Bytes> {
+        std::sync::mpsc::Receiver::try_recv(self).ok()
     }
 }
 
-impl<P: Pipe> std::io::Read for TempReader<P> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let chunk = if let Some(c) = self.chunk.as_mut() {
-            c
-        } else {
-            loop {
-                match self.pipe.recv() {
-                    None => return Ok(0),
-                    Some(Ok(b)) if !b.is_empty() => {
-                        self.chunk = Some(b);
+#[derive(Debug)]
+enum StoredContent<E> {
+    Ok {
+        start_pos: usize,
+        len: usize,
+        escaped: bool,
+    },
+    Err(Error<E>),
+}
 
-                        break self.chunk.as_mut().unwrap();
-                    }
-                    Some(Ok(_)) => continue,
-                    Some(Err(err)) => return Err(std::io::Error::other(err)),
-                }
-            }
-        };
-
-        let n = chunk.len().min(buf.len());
-        buf[..n].copy_from_slice(&chunk[..n]);
-
-        if n == chunk.len() {
-            self.chunk = None;
-        } else {
-            chunk.advance(n);
+impl<E> Default for StoredContent<E> {
+    fn default() -> Self {
+        StoredContent::Ok {
+            start_pos: 0,
+            len: 0,
+            escaped: false,
         }
-
-        Ok(n)
     }
 }
 
@@ -864,16 +1275,49 @@ impl<P: Pipe> std::io::Read for TempReader<P> {
 /// [`content`]: method@Self::content
 /// [`next`]: method@Self::next
 #[derive(Debug)]
-pub struct PipeAnalyzer<
-    P: Pipe, /* TODO: maybe remove this constraint after state machine refactor */
-> {
-    temp_inner: read::ReadAnalyzer<TempReader<P>>,
+pub struct PipeAnalyzer<P: Pipe> {
+    bufs: SmallVec<[Bytes; 4]>,
+    content: StoredContent<P::Error>,
+    content_pos: Pos,
+    mach: state::Machine<Bytes>,
+    pipe: P,
+    start_pos: usize,
 }
 
 impl<P: Pipe> PipeAnalyzer<P> {
-    pub fn new(pipe: P) -> Self {
+    /// Constructs a new lexer to tokenize JSON text in a stream of `Bytes` buffers.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, pipe::PipeAnalyzer};
+    /// use std::{sync::mpsc::channel, thread};
+    ///
+    /// let (tx, rx) = channel();
+    /// thread::spawn(move || {
+    ///     tx.send("[123]".into());
+    /// });
+    /// let mut lexer = PipeAnalyzer::new(rx);
+    /// ```
+    pub fn new(mut pipe: P) -> Self {
+        let first = match pipe.try_recv() {
+            Some(chunk) => chunk,
+            None => Bytes::new(),
+        };
+
+        let bufs = smallvec![first.clone()];
+        let content = StoredContent::default();
+        let content_pos = Pos::default();
+        let mach = state::Machine::new(first);
+        let start_pos = 0;
+
         Self {
-            temp_inner: read::ReadAnalyzer::new(TempReader::new(pipe)),
+            bufs,
+            content,
+            content_pos,
+            mach,
+            pipe,
+            start_pos,
         }
     }
 
@@ -899,7 +1343,87 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// ```
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Token {
-        self.temp_inner.next()
+        if matches!(self.content, StoredContent::Err(_)) {
+            return Token::Err;
+        }
+
+        self.content_pos = *self.mach.pos();
+        let n = self.bufs.len();
+        if n > 1 {
+            let contrib: usize = self.bufs.iter().take(n - 1).map(Bytes::len).sum();
+            self.start_pos -= contrib;
+            self.bufs.swap(0, n - 1);
+            self.bufs.truncate(1);
+        }
+
+        macro_rules! done {
+            ($token:ident, $escaped:ident, $n: expr, $len:ident) => {{
+                $len += $n;
+                self.content = StoredContent::Ok {
+                    start_pos: self.start_pos,
+                    len: $len,
+                    escaped: $escaped,
+                };
+                self.start_pos += $len;
+
+                return $token;
+            }};
+        }
+
+        macro_rules! lexical_err {
+            () => {{
+                let kind = self.mach.err_kind().expect("there should be an error kind");
+                let pos = *self.mach.pos();
+                self.content = StoredContent::Err(Error::new_lexical(kind, pos));
+
+                return Token::Err;
+            }};
+        }
+
+        macro_rules! io_err {
+            ($source:ident) => {{
+                self.content = StoredContent::Err(Error::new_read($source, *self.mach.pos()));
+
+                return Token::Err;
+            }};
+        }
+
+        let mut next = self.mach.next();
+        let mut len = 0;
+        loop {
+            match next {
+                state::Next::Done(token, escaped, n) => done!(token, escaped, n, len),
+                state::Next::Part(token, n) => {
+                    len += n;
+                    match self.pipe.recv() {
+                        None => match self.mach.end() {
+                            state::End::Done => done!(token, false, 0, len),
+                            state::End::Nil => unreachable!(),
+                            state::End::Err => lexical_err!(),
+                        },
+                        Some(Ok(buf)) => {
+                            self.bufs.push(buf.clone());
+                            next = self.mach.resume(buf);
+                        }
+                        Some(Err(err)) => io_err!(err),
+                    }
+                }
+                state::Next::Nil => match self.pipe.recv() {
+                    None => {
+                        self.content = StoredContent::default();
+                        return Token::Eof;
+                    }
+                    Some(Ok(buf)) => {
+                        debug_assert!(self.bufs.len() == 1);
+                        self.start_pos = 0;
+                        self.bufs[0] = buf.clone();
+                        next = self.mach.resume(buf);
+                    }
+                    Some(Err(err)) => io_err!(err),
+                },
+                state::Next::Err(_) => lexical_err!(),
+            }
+        }
     }
 
     /// Fetches the text content of the most recent non-error token.
@@ -1038,7 +1562,7 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// [`err`]: method@Self::err
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
-        self.temp_inner.pos()
+        &self.content_pos
     }
 
     /// Fetches the content or error associated with the most recent token.
@@ -1080,12 +1604,53 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// assert_eq!(Pos { offset: 1, line: 1, col: 2}, *lexer.try_content().unwrap_err().pos());
     /// ```
     pub fn try_content(&self) -> Result<Content, Error<P::Error>> {
-        match self.temp_inner.try_content() {
-            Ok(c) => Ok(Content(c)),
-            Err(err) if err.kind() != ErrorKind::Read => {
-                Err(Error::new_lexical(err.kind(), err.pos()))
+        match &self.content {
+            StoredContent::Ok {
+                start_pos,
+                len,
+                escaped,
+            } if *start_pos + *len <= self.bufs[0].len() => {
+                let src = &self.bufs[0];
+                debug_assert!(*start_pos <= src.len());
+                debug_assert!(
+                    *start_pos + *len <= src.len(),
+                    "start_pos ({start_pos}) + len ({len}) <= src.len() ({})",
+                    src.len()
+                );
+                if *len <= INLINE_LEN {
+                    // SAFETY: We have length checked ☝️, the heap-based `src` can't overlap our new
+                    //         stack-based `InlineBuf`, and the range [start_pos..start_ops + len]
+                    //         is within `src`.
+                    unsafe {
+                        let mut dst: MaybeUninit<InlineBuf> = MaybeUninit::uninit();
+                        std::ptr::copy_nonoverlapping(
+                            src.as_ptr().add(*start_pos),
+                            dst.as_mut_ptr() as *mut u8,
+                            *len,
+                        );
+
+                        Ok(Content(InnerLiteral::Inline(
+                            0,
+                            *len as u8,
+                            dst.assume_init(),
+                            *escaped,
+                        )))
+                    }
+                } else {
+                    Ok(Content(InnerLiteral::Bytes(
+                        src.slice(*start_pos..*start_pos + *len),
+                        *escaped,
+                    )))
+                }
             }
-            Err(err) => Err(Error::new_read(err.pos())),
+
+            StoredContent::Ok {
+                start_pos,
+                len,
+                escaped,
+            } => self.multi_content(*start_pos, *len, *escaped),
+
+            StoredContent::Err(err) => Err(err.clone()),
         }
     }
 
@@ -1119,6 +1684,21 @@ impl<P: Pipe> PipeAnalyzer<P> {
     /// [`Parser::into_inner`]: syntax::Parser::into_inner
     pub fn into_parser(self) -> syntax::Parser<PipeAnalyzer<P>> {
         syntax::Parser::new(self)
+    }
+
+    fn multi_content(
+        &self,
+        start_pos: usize,
+        len: usize,
+        escaped: bool,
+    ) -> Result<Content, Error<P::Error>> {
+        debug_assert!(self.bufs.len() > 1);
+
+        let arr: Box<[Bytes]> = self.bufs.iter().cloned().collect(); // Only one allocation.
+        let multi_bytes = MultiBytes::new(arr, start_pos, len, escaped);
+        let content = Content(InnerLiteral::Multi(multi_bytes));
+
+        Ok(content)
     }
 }
 
@@ -1487,8 +2067,18 @@ mod tests {
     // }
 
     #[rstest]
-    #[case(Error::new_lexical(ErrorKind::UnexpectedEof(Token::LitTrue), &Pos::new(3, 2, 1)), ErrorKind::UnexpectedEof(Token::LitTrue), "unexpected EOF in true token at line 2, column 1 (offset: 3)", None)]
-    #[case(Error::new_read(&Pos::new(3, 2, 1)), ErrorKind::Read, "read error at line 2, column 1 (offset: 3)", None)] // TODO: FIXME: Should be Some(ToyError(...)) after refactor
+    #[case(
+        Error::new_lexical(ErrorKind::UnexpectedEof(Token::LitTrue), Pos::new(3, 2, 1)),
+        ErrorKind::UnexpectedEof(Token::LitTrue),
+        "unexpected EOF in true token at line 2, column 1 (offset: 3)",
+        None
+    )]
+    #[case(
+        Error::new_read(ToyError("foo"), Pos::new(3, 2, 1)),
+        ErrorKind::Read,
+        "read error at line 2, column 1 (offset: 3)",
+        Some(ToyError("foo"))
+    )]
     fn test_error(
         #[case] err: Error<ToyError>,
         #[case] expect_kind: ErrorKind,
@@ -1743,22 +2333,16 @@ mod tests {
         expected = "no error: last `next()` did not return `Token::Err` (use `content()` instead)"
     )]
     fn test_analyzer_single_token_panic_no_err(#[case] input: &str) {
-        const CHUNK_SIZES: [usize; 3] = [
-            1, 2,
-            // TODO: FIXME: uncomment below after refactor
-            // INLINE_LEN - 1,
-            // INLINE_LEN,
-            // INLINE_LEN + 1,
-            10,
-            // TODO: FIXME: uncomment below after refactor
-            // Bufs::DEFAULT_BUF_SIZE,
-        ];
+        const CHUNK_SIZES: [usize; 6] = [1, 2, INLINE_LEN - 1, INLINE_LEN, INLINE_LEN + 1, 10];
 
         for chunk_size in CHUNK_SIZES {
             let mut an = PipeAnalyzer::new(SlicePipe::new(chunk_size, input.as_bytes()));
 
             let token = an.next();
-            assert!(!token.is_terminal(), "input = {input:?}, token = {token:?}");
+            assert!(
+                !token.is_terminal(),
+                "input = {input:?}, token = {token:?}, chunk_size = {chunk_size}"
+            );
 
             let _ = an.err();
         }
@@ -1936,11 +2520,9 @@ mod tests {
     #[rstest]
     #[case(1)]
     #[case(2)]
-    // TODO: FIXME: Uncomment below after refactor
-    // #[case(INLINE_LEN - 1)]
-    // #[case(INLINE_LEN)]
-    // #[case(INLINE_LEN + 1)]
-    // #[case(Bufs::DEFAULT_BUF_SIZE)]
+    #[case(INLINE_LEN - 1)]
+    #[case(INLINE_LEN)]
+    #[case(INLINE_LEN + 1)]
     fn test_analyzer_into_parser(#[case] chunk_size: usize) {
         const INPUT: &str = r#"{"hello":["🌍"]}"#;
 
@@ -1992,11 +2574,9 @@ mod tests {
     #[rstest]
     #[case(1)]
     #[case(2)]
-    // TODO: FIXME: Uncomment below after refactor
-    // #[case(INLINE_LEN - 1)]
-    // #[case(INLINE_LEN)]
-    // #[case(INLINE_LEN + 1)]
-    // #[case(Bufs::DEFAULT_BUF_SIZE)]
+    #[case(INLINE_LEN - 1)]
+    #[case(INLINE_LEN)]
+    #[case(INLINE_LEN + 1)]
     fn test_analyzer_smoke(#[case] chunk_size: usize) {
         const JSON_TEXT: &str = r#"
 

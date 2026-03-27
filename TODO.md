@@ -12,6 +12,8 @@
    - Add a Comparison section that lists other crates and hyperlinks out to separate short
      comparison docs so it doesn't clutter main doc but is available.
    - Add a use cases section but have it link out to a separate doc.
+- Go over the various key `Content`/`Literal` methods like `len()` and into_buf()` to make sure the
+  appropriate ones are inlined.
 - Run `cargo bench` as part of the GitHub Actions.
 - Add number parse methods into `Content`, with provided implementations.
     - Basic algorithm is: if one chunk, use `str::parse`-ish functions directly. If multiple

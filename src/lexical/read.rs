@@ -98,11 +98,16 @@ impl IntoBuf for UniRef {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct MultiRef {
+    // FIXME: The Arc/Vec/Arc/Vec seems like madness for an edge case, keeping in mind that the
+    //        `MultiRef` is already boxed. Just use one level of indirection, and if we're already
+    //        in an allocation, consider a SmallVec.
+
     // Method to the madness of the very nesty Arc/Vec/Arc/Vec:
     // - Outer Arc allows MultiRef to be cloned without an allocation.
-    // - Inner Arc maintains a read-only ownership stake in the buffers, preventing them from dropping.
+    // - Inner Arc maintains a read-only ownership stake in the buffers, preventing them from
+    //   dropping.
     bufs: Arc<Vec<Arc<Vec<u8>>>>,
     // Index into `bufs`.
     //   INVARIANT: `buf <= bufs.len()`; so it can be one past the end, hence invalid
@@ -1410,7 +1415,7 @@ impl<R: Read> ReadAnalyzer<R> {
     /// This method creates a `ReadAnalyzer` with a default buffer size of 8 KiB. To control the
     /// buffer size, construct using [`with_buf_size`] instead.
     ///
-    /// # Examples
+    /// # Example
     ///
     /// ```no_run
     /// # use bufjson::lexical::read::ReadAnalyzer;

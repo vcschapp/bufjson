@@ -58,29 +58,30 @@ impl Content<Vec<u8>> {
     ///
     /// # Panics
     ///
-    /// Panics if the string is not a valid JSON token.
+    /// Panics if the string is not valid JSON token content.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bufjson::lexical::fixed::Content;
+    /// let obj_begin = Content::from_static("{");
+    /// assert_eq!("{", obj_begin.literal());
+    /// assert!(!obj_begin.is_escaped());
+    ///
+    /// let str_escaped = Content::from_static(r#""hello\nworld""#);
+    /// assert_eq!(r#""hello\nworld""#, str_escaped.literal());
+    /// assert!(str_escaped.is_escaped());
+    /// assert_eq!(r#""hello
+    /// world""#, str_escaped.unescaped());
+    /// ```
     pub fn from_static(s: &'static str) -> Self {
-        let b: &[u8] = s.as_bytes();
-        let escaped = if !s.is_empty() {
-            let mut mach = state::Machine::new(b);
-            match mach.next() {
-                state::Next::Part(_, n) if n == b.len() && mach.end() == state::End::Done => {
-                    Some(false)
-                }
-                state::Next::Done(_, escaped, n) if n == b.len() => Some(escaped),
-                _ => None,
-            }
-        } else {
-            Some(false)
-        };
-
-        match escaped {
-            Some(false) => Self(InnerContent::Static(s)),
-            Some(true) => Self(InnerContent::Escaped(Ref::new(
+        let b = s.as_bytes();
+        match state::Machine::verify_static(b) {
+            false => Self(InnerContent::Static(s)),
+            true => Self(InnerContent::Escaped(Ref::new(
                 Arc::new(b.to_vec()),
                 0..b.len(),
             ))),
-            None => panic!("invalid JSON token"),
         }
     }
 }
@@ -685,7 +686,7 @@ mod tests {
     #[case::str_unterminated_1(r#""a"#)]
     #[case::str_leading_space(r#" "a""#)]
     #[case::str_trailing_space(r#""a" "#)]
-    #[should_panic(expected = "invalid JSON token")]
+    #[should_panic(expected = "invalid JSON content")]
     fn test_content_from_static_panic(#[case] s: &'static str) {
         let c = Content::from_static(s);
 
