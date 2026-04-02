@@ -82,10 +82,10 @@ The table below shows JSON text throughput benchmark results.<sup>1</sup>
 |----------------------------|----------------------|------------|
 | `FixedAnalyzer`            | Never                | 1 GiB/s    |
 | `FixedAnalyzer`            | Always               | 1 GiB/s    |
-| `ReadAnalyzer`<sup>2</sup> | Never                | 880 MiB/s  |
-| `ReadAnalyzer`<sup>2</sup> | Always               | 690 MiB/s  |
 | `Parser` + `FixedAnalyzer` | Never                | 1 GiB/s    |
 | `Parser` + `FixedAnalyzer` | Always               | 900 MiB/s  |
+| `ReadAnalyzer`<sup>2</sup> | Never                | 880 MiB/s  |
+| `ReadAnalyzer`<sup>2</sup> | Always               | 690 MiB/s  |
 
 <sub>
 1 Running on Ubuntu 22 with an Intel Core i7 1.8 GHz with four physical cores.
