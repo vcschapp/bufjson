@@ -1161,6 +1161,56 @@ where
         }
     }
 
+    /// Returns the token that ends the current structured value, skipping all content within it.
+    ///
+    /// If the parser is currently inside an array or object, this method consumes tokens until the
+    /// matching `]` or `}` is reached at the same nesting level, and returns that end token
+    /// ([`Token::ArrEnd`] or [`Token::ObjEnd`]).
+    ///
+    /// If the parser is not inside a structured value, this method consumes tokens until
+    /// [`Token::Eof`] is reached.
+    ///
+    /// # Examples
+    ///
+    /// Skip the contents of a nested array.
+    ///
+    /// ```
+    /// use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::Parser};
+    ///
+    /// let mut parser = Parser::new(FixedAnalyzer::new(r#"{"a": [1, 2, 3], "b": true}"#.as_bytes()));
+    /// assert_eq!(Token::ObjBegin, parser.next_meaningful());  // {
+    /// assert_eq!(Token::Str, parser.next_meaningful());       // "a"
+    /// assert_eq!(Token::ArrBegin, parser.next_meaningful());  // [
+    /// assert_eq!(Token::ArrEnd, parser.next_end());           // skip 1, 2, 3 and return ]
+    /// assert_eq!(1, parser.level());
+    /// assert_eq!(Token::Str, parser.next_meaningful());       // "b"
+    /// assert_eq!(Token::LitTrue, parser.next_meaningful());   // true
+    /// assert_eq!(Token::ObjEnd, parser.next_meaningful());    // }
+    /// assert_eq!(Token::Eof, parser.next_meaningful());
+    /// ```
+    ///
+    /// Skip an entire top-level value when not inside a structured value.
+    ///
+    /// ```
+    /// use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::Parser};
+    ///
+    /// let mut parser = Parser::new(FixedAnalyzer::new(r#"[1, 2, 3]"#.as_bytes()));
+    /// assert_eq!(Token::Eof, parser.next_end());
+    /// ```
+    ///
+    /// [`level`]: method@Self::level
+    pub fn next_end(&mut self) -> Token {
+        let end_level = self.level().saturating_sub(1);
+        loop {
+            let token = self.next();
+            match token {
+                Token::Eof | Token::Err => break token,
+                Token::ArrEnd | Token::ObjEnd if self.level() == end_level => break token,
+                _ => continue,
+            }
+        }
+    }
+
     /// Fetches the text content for the current non-error token.
     ///
     /// The current token is the token most recently returned by [`next`], [`next_non_white`], or
