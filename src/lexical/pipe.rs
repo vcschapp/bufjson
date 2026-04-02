@@ -546,9 +546,11 @@ impl super::Content for Content {
 }
 
 // Assert that `Literal` does not grow beyond 24 bytes (three 64-bit words).
+#[cfg(target_pointer_width = "64")]
 const _: [(); 24] = [(); std::mem::size_of::<Literal>()];
 
 // Assert that `Content` does not grow beyond 24 bytes (three 64-bit words).
+#[cfg(target_pointer_width = "64")]
 const _: [(); 24] = [(); std::mem::size_of::<Content>()];
 
 /// Lexical analysis error detected by a [`PipeAnalyzer`].

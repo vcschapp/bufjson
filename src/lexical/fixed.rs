@@ -207,6 +207,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> super::Content for Content<B> {
 }
 
 // Assert that `Content` does not grow beyond 32 bytes (four 64-bit words).
+#[cfg(target_pointer_width = "64")]
 const _: [(); 32] = [(); std::mem::size_of::<Content<Vec<u8>>>()];
 
 /// Lexical analysis error detected by a [`FixedAnalyzer`].
