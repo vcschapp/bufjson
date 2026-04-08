@@ -1167,6 +1167,8 @@ where
     /// matching `]` or `}` is reached at the same nesting level, and returns that end token
     /// ([`Token::ArrEnd`] or [`Token::ObjEnd`]).
     ///
+    ///
+    ///
     /// If the parser is not inside a structured value, this method consumes tokens until
     /// [`Token::Eof`] is reached.
     ///
@@ -1200,12 +1202,12 @@ where
     ///
     /// [`level`]: method@Self::level
     pub fn next_end(&mut self) -> Token {
-        let end_level = self.level().saturating_sub(1);
+        let end_level = self.level();
         loop {
             let token = self.next();
             match token {
                 Token::Eof | Token::Err => break token,
-                Token::ArrEnd | Token::ObjEnd if self.level() == end_level => break token,
+                Token::ArrEnd | Token::ObjEnd if self.level() + 1 == end_level => break token,
                 _ => continue,
             }
         }
@@ -1589,6 +1591,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lexical::fixed::FixedAnalyzer;
     use rstest::rstest;
 
     #[rstest]
@@ -1755,5 +1758,88 @@ mod tests {
                 _ => (),
             };
         }
+    }
+
+    // #[rstest]
+    // #[case::empty("", Token::Err, 0, Token::Err)]
+    // #[case::arr_empty("[]", Token::ArrEnd, 0, Token::Eof)]
+    // #[case::arr_single("[false]", Token::ArrEnd, 0, Token::Eof)]
+    // #[case::arr_multiple("[1, -2, true]", Token::ArrEnd, 0, Token::Eof)]
+    // #[case::arr_nested_empty("[[]]", Token::ArrEnd, 0, Token::Eof)]
+    // #[case::arr_nested_single("[[1]]", Token::ArrEnd, 0, Token::Eof)]
+    // #[case::lit("null", Token::Eof, 0, Token::Eof)]
+    // #[case::obj_empty("{}", Token::ObjEnd, 0, Token::Eof)]
+    // #[case::obj_single(r#"{"a":1}"#, Token::ObjEnd, 0, Token::Eof)]
+    // #[case::obj_multiple(r#"{"a":1, "bb":22}"#, Token::ObjEnd, 0, Token::Eof)]
+    // #[case::obj_nested_empty(r#"{"a":{}}"#, Token::ObjEnd, 0, Token::Eof)]
+    // #[case::obj_nested_single(r#"{"a":{"b":["c"]}}"#, Token::ObjEnd, 0, Token::Eof)]
+    // #[case::num("1", Token::Eof, 0, Token::Eof)]
+    // #[case::str(r#""a""#, Token::Eof, 0, Token::Eof)]
+    // fn test_parser_next_end_root(#[case] input: &str, #[case] expect_token: Token, #[case] expect_level: usize, #[case] expect_next: Token) {
+    //     let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+
+    //     assert_eq!(expect_token, parser.next_end());
+    //     assert_eq!(expect_level, parser.level());
+    //     assert_eq!(expect_next, parser.next());
+    // }
+
+    #[rstest]
+    #[case::arr_empty("[]")]
+    #[case::arr_single("[false]")]
+    #[case::arr_multiple("[1, -2, true]")]
+    #[case::arr_nested_empty("[[]]")]
+    #[case::arr_nested_single("[[1]]")]
+    #[case::lit("null")]
+    #[case::obj_empty("{}")]
+    #[case::obj_single(r#"{"a":1}"#)]
+    #[case::obj_multiple(r#"{"a":1, "bb":22}"#)]
+    #[case::obj_nested_empty(r#"{"a":{}}"#)]
+    #[case::obj_nested_single(r#"{"a":{"b":["c"]}}"#)]
+    #[case::num("1")]
+    #[case::str(r#""a""#)]
+    fn test_parser_next_end_root(#[case] input: &str) {
+        let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+
+        assert_eq!(Token::Eof, parser.next_end());
+        assert_eq!(0, parser.level());
+        assert_eq!(Token::Eof, parser.next());
+    }
+
+    #[rstest]
+    #[case("[]", [Token::ArrBegin], Token::ArrEnd, 0, Token::Eof)]
+    #[case("[1]", [Token::ArrBegin], Token::ArrEnd, 0, Token::Eof)]
+    #[case("[1]", [Token::ArrBegin, Token::Num], Token::ArrEnd, 0, Token::Eof)]
+    #[case("[[]]", [Token::ArrBegin], Token::ArrEnd, 0, Token::Eof)]
+    #[case("[[]]", [Token::ArrBegin, Token::ArrBegin], Token::ArrEnd, 1, Token::ArrEnd)]
+    #[case("{}", [Token::ObjBegin], Token::ObjEnd, 0, Token::Eof)]
+    #[case(r#"{"a":1}"#, [Token::ObjBegin], Token::ObjEnd, 0, Token::Eof)]
+    #[case(r#"{"a":1}"#, [Token::ObjBegin, Token::Str], Token::ObjEnd, 0, Token::Eof)]
+    #[case(r#"{"a":1}"#, [Token::ObjBegin, Token::Str, Token::NameSep], Token::ObjEnd, 0, Token::Eof)]
+    #[case(r#"{"a":1}"#, [Token::ObjBegin, Token::Str, Token::NameSep, Token::Num], Token::ObjEnd, 0, Token::Eof)]
+    #[case(r#"{"a":{}}"#, [Token::ObjBegin, Token::Str, Token::NameSep], Token::ObjEnd, 0, Token::Eof)]
+    #[case(r#"{"a":{}}"#, [Token::ObjBegin, Token::Str, Token::NameSep, Token::ObjBegin], Token::ObjEnd, 1, Token::ObjEnd)]
+    fn test_parser_next_end_inside<I>(
+        #[case] input: &str,
+        #[case] leading_tokens: I,
+        #[case] expect_token: Token,
+        #[case] expect_level: usize,
+        #[case] expect_next: Token,
+    ) where
+        I: IntoIterator<Item = Token>,
+    {
+        let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+
+        for (i, leading_token) in leading_tokens.into_iter().enumerate() {
+            let actual_token = parser.next();
+
+            assert_eq!(
+                leading_token, actual_token,
+                "expected leading token {i} to be {leading_token}, but it was {actual_token}"
+            );
+        }
+
+        assert_eq!(expect_token, parser.next_end());
+        assert_eq!(expect_level, parser.level());
+        assert_eq!(expect_next, parser.next());
     }
 }
