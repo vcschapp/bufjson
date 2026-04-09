@@ -586,7 +586,7 @@ impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.repr() {
             Repr::Together(s) => f.write_str(s),
-            Repr::Split(r) => crate::buf_display(r.clone(), f),
+            Repr::Split(r) => crate::buf::display(r.clone(), f),
         }
     }
 }
@@ -599,7 +599,7 @@ impl From<Literal> for String {
     fn from(value: Literal) -> Self {
         match value.repr() {
             Repr::Together(s) => s.to_string(),
-            Repr::Split(r) => crate::buf_to_string(r.clone()),
+            Repr::Split(r) => crate::buf::to_string(r.clone()),
         }
     }
 }
@@ -636,15 +636,9 @@ impl FromStr for Literal {
 impl Hash for Literal {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self.repr() {
-            Repr::Together(s) => state.write(s.as_bytes()),
-            Repr::Split(m) => {
-                let mut x = m.clone();
-                while x.remaining() > 0 {
-                    let b = x.chunk();
-                    state.write(b);
-                    x.advance(b.len());
-                }
-            }
+            Repr::Together(s) if s.len() <= crate::buf::HASH_CHUNK => state.write(s.as_bytes()),
+            Repr::Together(s) => crate::buf::hash(s, state),
+            Repr::Split(m) => crate::buf::hash(m.clone(), state),
         }
     }
 }

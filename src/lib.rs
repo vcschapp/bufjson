@@ -617,48 +617,22 @@ macro_rules! stringify_known_utf8 {
     };
 }
 
-// Convert UTF-8 string content of a trusted `Buf` to a `String`.
-//
-// SAFETY: This function is only safe to call if the `Buf` passed in only contains valid UTF-8 byte
-//         sequences.
-//
-// This is crate-internal, because it's not functionality we particularly need to export, as we
-// don't want to acquire responsibility for supporting every aspect of someone else's `Buf`
-// implementation.
 #[cfg(any(feature = "pipe", feature = "read"))]
-pub(crate) fn buf_to_string<T: IntoBuf>(t: T) -> String {
-    let mut b = t.into_buf();
-    let mut v = Vec::with_capacity(b.remaining());
+pub(crate) mod buf {
+    use super::*;
+    use std::hash::Hasher;
 
-    while b.has_remaining() {
-        let chunk = b.chunk();
-        v.extend(chunk);
-        b.advance(chunk.len());
-    }
-
-    stringify_known_utf8!(String, v)
-}
-
-// Print UTF-8 string content of a trusted `Buf` to a formatter.
-//
-// SAFETY: This function is only safe to call if the `Buf` passed in only contains valid UTF-8 byte
-//         sequences.
-//
-// This is crate-internal, because it's not functionality we particularly need to export, as we
-// don't want to acquire responsibility for supporting every aspect of someone else's `Buf`
-// implementation.
-#[cfg(any(feature = "pipe", feature = "read"))]
-pub(crate) fn buf_display<T: IntoBuf>(t: T, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let mut b = t.into_buf();
-
-    let n = b.remaining();
-    let chunk = b.chunk();
-    if chunk.len() >= n {
-        // Fast path: the entire buffer is in one chunk, so we can print it directly.
-        f.write_str(stringify_known_utf8!(str, chunk))
-    } else {
-        // Slow path: the buffer is split across multiple chunks, so we need to copy it into a temporary vector.
-        let mut v = Vec::with_capacity(n);
+    // Convert UTF-8 string content of a trusted `Buf` to a `String`.
+    //
+    // SAFETY: This function is only safe to call if the `Buf` passed in only contains valid UTF-8
+    //         byte sequences.
+    //
+    // This is crate-internal, because it's not functionality we particularly need to export, as we
+    // don't want to acquire responsibility for supporting every aspect of someone else's `Buf`
+    // implementation.
+    pub fn to_string<T: IntoBuf>(t: T) -> String {
+        let mut b = t.into_buf();
+        let mut v = Vec::with_capacity(b.remaining());
 
         while b.has_remaining() {
             let chunk = b.chunk();
@@ -666,7 +640,88 @@ pub(crate) fn buf_display<T: IntoBuf>(t: T, f: &mut fmt::Formatter<'_>) -> fmt::
             b.advance(chunk.len());
         }
 
-        f.write_str(stringify_known_utf8!(str, &v))
+        stringify_known_utf8!(String, v)
+    }
+
+    // Print UTF-8 string content of a trusted `Buf` to a formatter.
+    //
+    // SAFETY: This function is only safe to call if the `Buf` passed in only contains valid UTF-8 byte
+    //         sequences.
+    pub fn display<T: IntoBuf>(t: T, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut b = t.into_buf();
+
+        let n = b.remaining();
+        let chunk = b.chunk();
+        if chunk.len() >= n {
+            // Fast path: the entire buffer is in one chunk, so we can print it directly.
+            f.write_str(stringify_known_utf8!(str, chunk))
+        } else {
+            // Slow path: the buffer is split across multiple chunks, so we need to copy it into a temporary vector.
+            let mut v = Vec::with_capacity(n);
+
+            while b.has_remaining() {
+                let chunk = b.chunk();
+                v.extend(chunk);
+                b.advance(chunk.len());
+            }
+
+            f.write_str(stringify_known_utf8!(str, &v))
+        }
+    }
+
+    #[cfg(not(test))]
+    pub const HASH_CHUNK: usize = 1024;
+    #[cfg(test)]
+    pub const HASH_CHUNK: usize = 4;
+
+    // Hash the contents of a `Buf` reliably, accounting for the fact that `Hasher` does not allow
+    // us to assume that adjacent `write` calls are merged. e.g., `write("a"); write("aa");` is
+    // allowed to produce a different result than `write("aa"); write("a");`.
+    pub fn hash<T: IntoBuf, H: Hasher>(t: T, state: &mut H) {
+        let mut b = t.into_buf();
+
+        let first = b.chunk();
+        if first.len() <= HASH_CHUNK && first.len() == b.remaining() {
+            state.write(first);
+        } else {
+            let mut chunk = [0; HASH_CHUNK];
+            while HASH_CHUNK <= b.remaining() {
+                b.copy_to_slice(&mut chunk);
+                state.write(&chunk[..]);
+            }
+            let n = b.remaining();
+            if n > 0 {
+                b.copy_to_slice(&mut chunk[..n]);
+                state.write(&chunk[..n]);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        #[cfg(feature = "read")]
+        fn test_to_string() {
+            assert_eq!("foo", to_string("foo"));
+        }
+
+        #[test]
+        #[cfg(feature = "read")]
+        fn test_display() {
+            struct Wrapper(&'static str);
+
+            impl fmt::Display for Wrapper {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    display(self.0.to_string(), f)
+                }
+            }
+
+            let wrapper = Wrapper("foo");
+
+            assert_eq!("foo", format!("{wrapper}"));
+        }
     }
 }
 
@@ -875,27 +930,5 @@ mod tests {
         assert_eq!(Ordering::Less, OrdStr::cmp(&"abc", "abd"));
         assert_eq!(Ordering::Equal, OrdStr::cmp(&"abc", "abc"));
         assert_eq!(Ordering::Greater, OrdStr::cmp(&"abd", "abc"));
-    }
-
-    #[test]
-    #[cfg(feature = "read")]
-    fn test_buf_to_string() {
-        assert_eq!("foo", buf_to_string("foo"));
-    }
-
-    #[test]
-    #[cfg(feature = "read")]
-    fn test_buf_display() {
-        struct Wrapper(&'static str);
-
-        impl fmt::Display for Wrapper {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                buf_display(self.0.to_string(), f)
-            }
-        }
-
-        let wrapper = Wrapper("foo");
-
-        assert_eq!("foo", format!("{wrapper}"));
     }
 }
