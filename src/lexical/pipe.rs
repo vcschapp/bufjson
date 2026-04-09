@@ -91,16 +91,27 @@ struct MultiBytes {
 
 impl MultiBytes {
     fn new(mut arr: Box<[Bytes]>, start_pos: usize, len: usize, escaped: bool) -> Self {
-        debug_assert!(
-            start_pos < arr[0].len(),
-            "start_pos ({start_pos}) < arr[0].len ({})",
-            arr[0].len()
-        );
-        debug_assert!(
-            arr[0].len() < start_pos + len,
-            "arr[0].len() ({}) < start_pos ({start_pos}) + len ({len})",
-            arr[0].len()
-        );
+        #[cfg(debug_assertions)]
+        {
+            #[cfg(test)]
+            const ALLOW_FIRST_BUFFER_EMPTY: bool = true;
+            #[cfg(not(test))]
+            const ALLOW_FIRST_BUFFER_EMPTY: bool = false;
+            debug_assert!(
+                ALLOW_FIRST_BUFFER_EMPTY || start_pos < arr[0].len(),
+                "start_pos ({start_pos}) < arr[0].len ({})",
+                arr[0].len()
+            );
+            #[cfg(test)]
+            const ALLOW_SINGLE_BUFFER: bool = true;
+            #[cfg(not(test))]
+            const ALLOW_SINGLE_BUFFER: bool = false;
+            debug_assert!(
+                ALLOW_SINGLE_BUFFER || arr[0].len() < start_pos + len,
+                "arr[0].len() ({}) < start_pos ({start_pos}) + len ({len})",
+                arr[0].len()
+            );
+        }
 
         // Slice away the unneeded prefix bytes from the first buffer.
         arr[0].advance(start_pos);
@@ -142,7 +153,7 @@ impl Buf for MultiBytes {
             }
             if n > 0 {
                 debug_assert!((pos) < self.arr.len());
-                debug_assert!(self.arr[pos].len() < n);
+                debug_assert!(self.arr[pos].len() > n);
                 self.arr[pos] = self.arr[pos].slice(n..);
             }
             self.pos_escaped.set_usize(pos);
@@ -173,7 +184,7 @@ impl Buf for MultiBytes {
         } else {
             self.rem -= dst.len();
             let mut pos = self.pos_escaped.get_usize();
-            while self.arr[pos].len() <= dst.len() {
+            while pos < self.arr.len() && self.arr[pos].len() <= dst.len() {
                 let b = &self.arr[pos];
                 let m = b.len();
                 dst[0..m].copy_from_slice(b);
@@ -182,9 +193,10 @@ impl Buf for MultiBytes {
             }
             if !dst.is_empty() {
                 debug_assert!(pos < self.arr.len());
-                debug_assert!(self.arr[pos].len() < dst.len());
-                dst.copy_from_slice(&self.arr[pos]);
-                self.arr[pos] = self.arr[pos].slice(dst.len()..);
+                debug_assert!(self.arr[pos].len() > dst.len());
+                let n = dst.len();
+                dst.copy_from_slice(&self.arr[pos][..n]);
+                self.arr[pos] = self.arr[pos].slice(n..);
             }
             self.pos_escaped.set_usize(pos);
 
@@ -221,6 +233,22 @@ impl InnerLiteral {
         dst[0..src.len()].copy_from_slice(src);
 
         Self::Inline(0, src.len() as u8, dst, false)
+    }
+
+    #[cfg(test)]
+    fn test_new_bytes(s: &'static str, escaped: bool) -> Self {
+        Self::Bytes(Bytes::from_static(s.as_bytes()), escaped)
+    }
+
+    #[cfg(test)]
+    fn test_new_multi<I, T>(bufs: I, start_pos: usize, len: usize, escaped: bool) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Bytes>,
+    {
+        let arr: Box<[Bytes]> = bufs.into_iter().map(Into::into).collect();
+
+        Self::Multi(MultiBytes::new(arr, start_pos, len, escaped))
     }
 
     #[inline(always)]
@@ -1722,9 +1750,9 @@ mod tests {
     use crate::{IntoBuf, lexical::Expect};
     use rstest::rstest;
     use std::{
-        // FIXME: Uncomment below after refactor
-        //collections::{BTreeMap, HashMap},
+        collections::{BTreeMap, HashMap},
         error::Error as _,
+        hash::DefaultHasher,
         sync::mpsc::channel,
     };
 
@@ -1743,255 +1771,276 @@ mod tests {
         assert_eq!(Token::Eof, an.next());
     }
 
-    // TODO: FIXME: Uncomment below when after the refactor.
-    // #[rstest]
-    // #[case(Literal::from_static(""), 0)]
-    // #[case(Literal::from_static("a"), 1)]
-    // #[case(Literal::from_static(concat!(
-    //     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    //     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    //     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    //     "aaaaaaaaaaaaaab",
-    // )), u8::MAX as usize)]
-    // #[case(Literal::from_ref(""), 0)]
-    // #[case(Literal::from_ref(&"a".repeat(INLINE_LEN)), INLINE_LEN)]
-    // #[case(Literal::from_ref(&"b".repeat(INLINE_LEN+1)), INLINE_LEN+1)]
-    // #[case(Literal::from_ref(&Cow::Borrowed("foo")), 3)]
-    // #[case(Literal::from_ref(&Cow::Owned("bar".to_string())), 3)]
-    // #[case(Literal::from_string("".to_string()), 0)]
-    // #[case(Literal::from_string("c".to_string()), 1)]
-    // #[case(Literal::from_string("d".repeat(100 * INLINE_LEN)), 100 * INLINE_LEN)]
-    // #[case("baz".into(), 3)]
-    // #[case(Cow::Borrowed("").into(), 0)]
-    // #[case(Cow::<str>::Owned("e".repeat(INLINE_LEN-1)).into(), INLINE_LEN-1)]
-    // #[case("qux".to_string().into(), 3)]
-    // #[case(Literal::from_str("hello, world").unwrap(), 12)]
-    // #[case(Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(["b", "a", "z"], 0..3)))), 3)]
-    // fn test_literal_convert(#[case] literal: Literal, #[case] expect_len: usize) {
-    //     assert_eq!(expect_len, literal.len());
-    //     assert_eq!(expect_len == 0, literal.is_empty());
+    #[rstest]
+    #[case(Literal::from_static(""), 0)]
+    #[case(Literal::from_static("a"), 1)]
+    #[case(Literal::from_static(concat!(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaab",
+    )), u8::MAX as usize)]
+    #[case(Literal::from_ref(""), 0)]
+    #[case(Literal::from_ref(&"a".repeat(INLINE_LEN)), INLINE_LEN)]
+    #[case(Literal::from_ref(&"b".repeat(INLINE_LEN+1)), INLINE_LEN+1)]
+    #[case(Literal::from_ref(&Cow::Borrowed("foo")), 3)]
+    #[case(Literal::from_ref(&Cow::Owned("bar".to_string())), 3)]
+    #[case(Literal::from_string("".to_string()), 0)]
+    #[case(Literal::from_string("c".to_string()), 1)]
+    #[case(Literal::from_string("d".repeat(100 * INLINE_LEN)), 100 * INLINE_LEN)]
+    #[case("baz".into(), 3)]
+    #[case(Cow::Borrowed("").into(), 0)]
+    #[case(Cow::<str>::Owned("e".repeat(INLINE_LEN-1)).into(), INLINE_LEN-1)]
+    #[case("qux".to_string().into(), 3)]
+    #[case(Literal::from_str("hello, world").unwrap(), 12)]
+    #[case(Literal(InnerLiteral::test_new_multi(["b", "a", "z"], 0, 3, false)), 3)]
+    #[case(Literal(InnerLiteral::test_new_multi(["b", "a", "z"], 0, 3, true)), 3)]
+    #[case(Literal(InnerLiteral::test_new_multi(["_f", "o", "o_"], 1, 3, false)), 3)]
+    #[case(Literal(InnerLiteral::test_new_multi(["_f", "oo", ""], 1, 3, true)), 3)]
+    fn test_literal_convert(#[case] literal: Literal, #[case] expect_len: usize) {
+        assert_eq!(expect_len, literal.len());
+        assert_eq!(expect_len == 0, literal.is_empty());
 
-    //     let mut b = literal.clone().into_buf();
+        let mut b = literal.clone().into_buf();
 
-    //     assert_eq!(expect_len, b.remaining());
-    //     assert_eq!(expect_len == 0, !b.has_remaining());
+        assert_eq!(expect_len, b.remaining());
+        assert_eq!(expect_len == 0, !b.has_remaining());
 
-    //     let mut dst = vec![0u8; expect_len];
-    //     b.copy_to_slice(&mut dst);
+        let mut dst = vec![0u8; expect_len];
+        b.copy_to_slice(&mut dst);
 
-    //     let s = String::from_utf8(dst).unwrap();
+        let s = String::from_utf8(dst).unwrap();
 
-    //     assert_eq!(literal.to_string(), s);
-    //     assert_eq!(Into::<String>::into(literal), s);
-    // }
+        assert_eq!(literal.to_string(), s);
+        assert_eq!(Into::<String>::into(literal), s);
+    }
 
-    // #[test]
-    // fn test_literal_compare() {
-    //     let a_s = vec![
-    //         Literal::from_static("a"),
-    //         Literal::from_ref("a"),
-    //         Literal::from_string("a".to_string()),
-    //         Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(
-    //             ["aaa"],
-    //             1..2,
-    //         )))),
-    //     ];
-    //     let aa_s: Vec<Literal> = vec![
-    //         Literal::from_ref(&"a".repeat(INLINE_LEN)),
-    //         Literal::from_string("a".repeat(INLINE_LEN)),
-    //         Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(
-    //             [[b'a'; INLINE_LEN]],
-    //             0..INLINE_LEN,
-    //         )))),
-    //         Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(
-    //             ["a"; INLINE_LEN],
-    //             0..INLINE_LEN,
-    //         )))),
-    //     ];
-    //     let aab_s: Vec<Literal> = vec![
-    //         Literal::from_static(concat!(
-    //             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    //             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    //             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    //             "aaaaaaaaaaaaaab",
-    //         )),
-    //         Literal::from_ref(("a".repeat(u8::MAX as usize - 1) + "b").as_str()),
-    //         Literal::from_string("a".repeat(u8::MAX as usize - 1) + "b"),
-    //         Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(
-    //             ["a".repeat(u8::MAX as usize - 1), "abc".to_string()],
-    //             1..u8::MAX as usize + 1,
-    //         )))),
-    //     ];
+    #[test]
+    fn test_literal_compare() {
+        let a_s = vec![
+            Literal::from_static("a"),
+            Literal::from_ref("a"),
+            Literal::from_string("a".to_string()),
+            Literal(InnerLiteral::test_new_multi(["a"], 0, 1, false)),
+        ];
+        let aa_s: Vec<Literal> = vec![
+            Literal::from_ref(&"a".repeat(INLINE_LEN)),
+            Literal::from_string("a".repeat(INLINE_LEN)),
+            Literal(InnerLiteral::test_new_multi(
+                [vec![b'a'; INLINE_LEN]],
+                0,
+                INLINE_LEN,
+                false,
+            )),
+            Literal(InnerLiteral::test_new_multi(
+                ["a"; INLINE_LEN],
+                0,
+                INLINE_LEN,
+                true,
+            )),
+        ];
+        let aab_s: Vec<Literal> = vec![
+            Literal::from_static(concat!(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "aaaaaaaaaaaaaab",
+            )),
+            Literal::from_ref(("a".repeat(u8::MAX as usize - 1) + "b").as_str()),
+            Literal::from_string("a".repeat(u8::MAX as usize - 1) + "b"),
+            Literal(InnerLiteral::test_new_multi(
+                ["a".repeat(u8::MAX as usize - 1), "abc".to_string()],
+                1,
+                u8::MAX as usize,
+                true,
+            )),
+        ];
 
-    //     macro_rules! assert_all_eq {
-    //         ($a:expr, $b:expr) => {
-    //             assert_eq!($a, $a);
-    //             assert_eq!($b, $a);
-    //             assert_eq!($a, $b);
-    //             assert!($a <= $a);
-    //             assert!(!($a < $a));
-    //             assert!($a >= $a);
-    //             assert!(!($a > $a));
-    //         };
-    //     }
+        macro_rules! assert_all_eq {
+            ($a:expr, $b:expr) => {
+                assert_eq!($a, $a);
+                assert_eq!($b, $a);
+                assert_eq!($a, $b);
+                assert!($a <= $a);
+                assert!(!($a < $a));
+                assert!($a >= $a);
+                assert!(!($a > $a));
+            };
+        }
 
-    //     macro_rules! assert_all_ne {
-    //         ($a:expr, $b:expr) => {
-    //             assert_ne!($a, $b);
-    //             assert_ne!($b, $a);
-    //         };
-    //     }
+        macro_rules! assert_all_ne {
+            ($a:expr, $b:expr) => {
+                assert_ne!($a, $b);
+                assert_ne!($b, $a);
+            };
+        }
 
-    //     macro_rules! assert_all_lt {
-    //         ($a:expr, $b:expr) => {
-    //             assert!($a < $b);
-    //             assert!(!($b < $a));
-    //             assert!(!($a > $b));
-    //             assert!($b > $a);
-    //             assert!($a <= $b);
-    //             assert!($b >= $a);
-    //         };
-    //     }
+        macro_rules! assert_all_lt {
+            ($a:expr, $b:expr) => {
+                assert!($a < $b);
+                assert!(!($b < $a));
+                assert!(!($a > $b));
+                assert!($b > $a);
+                assert!($a <= $b);
+                assert!($b >= $a);
+            };
+        }
 
-    //     macro_rules! assert_all_gt {
-    //         ($a:expr, $b:expr) => {
-    //             assert!($a > $b);
-    //             assert!(!($b > $a));
-    //             assert!(!($a < $b));
-    //             assert!($b < $a);
-    //             assert!($a >= $b);
-    //             assert!($b <= $a);
-    //         };
-    //     }
+        macro_rules! assert_all_gt {
+            ($a:expr, $b:expr) => {
+                assert!($a > $b);
+                assert!(!($b > $a));
+                assert!(!($a < $b));
+                assert!($b < $a);
+                assert!($a >= $b);
+                assert!($b <= $a);
+            };
+        }
 
-    //     for a in &a_s {
-    //         assert_all_eq!(a, "a");
-    //         assert_all_eq!(Unescaped::Literal(a), "a");
-    //         assert_all_ne!(a, "ab");
-    //         assert_all_ne!(Unescaped::Literal(a), "aa");
-    //         assert_eq!(&"a", a);
-    //         assert_eq!(&"a".to_string(), a);
-    //         assert_eq!(a, &"a");
-    //         assert_eq!(a, &"a".to_string());
+        for a in &a_s {
+            assert_all_eq!(a, "a");
+            assert_all_eq!(Unescaped::Literal(a), "a");
+            assert_all_ne!(a, "ab");
+            assert_all_ne!(Unescaped::Literal(a), "aa");
+            assert_eq!(&"a", a);
+            assert_eq!(&"a".to_string(), a);
+            assert_eq!(a, &"a");
+            assert_eq!(a, &"a".to_string());
 
-    //         assert!(a <= &"a");
-    //         assert!(a <= &"a".to_string());
-    //         assert!(!(a < &"a"));
-    //         assert!(!(a < &"a".to_string()));
-    //         assert!(a >= &"a");
-    //         assert!(a >= &"a".to_string());
-    //         assert!(!(a > &"a"));
-    //         assert!(!(a > &"a".to_string()));
+            assert!(a <= &"a");
+            assert!(a <= &"a".to_string());
+            assert!(!(a < &"a"));
+            assert!(!(a < &"a".to_string()));
+            assert!(a >= &"a");
+            assert!(a >= &"a".to_string());
+            assert!(!(a > &"a"));
+            assert!(!(a > &"a".to_string()));
 
-    //         for other in aa_s.iter().chain(aab_s.iter()) {
-    //             assert_all_ne!(a, other);
-    //             assert_all_lt!(a, other);
-    //             assert_all_gt!(other, a);
-    //         }
-    //     }
+            for other in aa_s.iter().chain(aab_s.iter()) {
+                assert_all_ne!(a, other);
+                assert_all_lt!(a, other);
+                assert_all_gt!(other, a);
+            }
+        }
 
-    //     for aa in &aa_s {
-    //         assert_all_eq!(aa, "a".repeat(INLINE_LEN).as_str());
-    //         assert_all_eq!(Unescaped::Literal(aa), "a".repeat(INLINE_LEN).as_str());
-    //         assert_all_ne!(aa, "aab");
-    //         assert_all_ne!(Unescaped::Literal(aa), "aab");
+        for aa in &aa_s {
+            assert_all_eq!(aa, "a".repeat(INLINE_LEN).as_str());
+            assert_all_eq!(Unescaped::Literal(aa), "a".repeat(INLINE_LEN).as_str());
+            assert_all_ne!(aa, "aab");
+            assert_all_ne!(Unescaped::Literal(aa), "aab");
 
-    //         assert_all_gt!(aa, "a");
-    //         assert_all_gt!(Unescaped::Literal(aa), "a");
-    //         assert_all_lt!(aa, "aab");
-    //         assert_all_lt!(Unescaped::Literal(aa), "aab");
+            assert_all_gt!(aa, "a");
+            assert_all_gt!(Unescaped::Literal(aa), "a");
+            assert_all_lt!(aa, "aab");
+            assert_all_lt!(Unescaped::Literal(aa), "aab");
 
-    //         assert!(aa < &"aab");
-    //         assert!(aa < &"aab".to_string());
-    //         assert!(aa <= &"aab");
-    //         assert!(aa <= &"aab".to_string());
-    //         assert!(&"aab" > aa);
-    //         assert!(&"aab".to_string() > aa);
-    //         assert!(aa <= &"aab");
-    //         assert!(aa <= &"aab".to_string());
-    //         assert!(&"aab" > aa);
-    //         assert!(&"aab".to_string() > aa);
+            assert!(aa < &"aab");
+            assert!(aa < &"aab".to_string());
+            assert!(aa <= &"aab");
+            assert!(aa <= &"aab".to_string());
+            assert!(&"aab" > aa);
+            assert!(&"aab".to_string() > aa);
+            assert!(aa <= &"aab");
+            assert!(aa <= &"aab".to_string());
+            assert!(&"aab" > aa);
+            assert!(&"aab".to_string() > aa);
 
-    //         for aab in &aab_s {
-    //             assert_all_ne!(aa, aab);
-    //             assert_all_lt!(aa, aab);
-    //             assert_all_gt!(aab, aa);
-    //         }
-    //     }
+            for aab in &aab_s {
+                assert_all_ne!(aa, aab);
+                assert_all_lt!(aa, aab);
+                assert_all_gt!(aab, aa);
+            }
+        }
 
-    //     macro_rules! check_map {
-    //         ($map:ident, $patient_zero:expr, $iter:expr) => {
-    //             assert!($map.insert($patient_zero, $patient_zero).is_none());
-    //             for item in $iter {
-    //                 assert_eq!($patient_zero, *$map.get(&item).unwrap());
-    //             }
-    //         };
-    //     }
+        fn hash<T: Hash>(t: &T) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            t.hash(&mut hasher);
+            hasher.finish()
+        }
 
-    //     let mut hash_map1 = HashMap::new();
+        macro_rules! check_hash {
+            ($patient_zero:expr, $iter:expr) => {
+                let hash_zero = hash($patient_zero);
+                for (i, item) in $iter.enumerate() {
+                    let hash_item = hash(item);
+                    assert_eq!(hash_zero, hash_item, "hash difference between item 0 ({:?}, {hash_zero}) and item {i}, {item:?}, {hash_item})", $patient_zero);
+                }
+            }
+        }
 
-    //     check_map!(hash_map1, a_s[0].clone(), a_s.clone());
-    //     check_map!(hash_map1, aa_s[0].clone(), aa_s.clone());
-    //     check_map!(hash_map1, aab_s[0].clone(), aab_s.clone());
+        check_hash!(&a_s[0], a_s.iter().skip(1));
+        check_hash!(&aa_s[0], aa_s.iter().skip(1));
+        check_hash!(&aab_s[0], aab_s.iter().skip(1));
 
-    //     let mut hash_map2 = HashMap::new();
+        macro_rules! check_map {
+            ($map:ident, $patient_zero:expr, $iter:expr) => {
+                assert!($map.insert($patient_zero, $patient_zero).is_none());
+                for item in $iter {
+                    assert_eq!($patient_zero, *$map.get(&item).unwrap());
+                }
+            };
+        }
 
-    //     let unescaped_a = Unescaped::Literal(a_s[0].clone());
-    //     let unescaped_aa = Unescaped::Literal(aa_s[0].clone());
-    //     let unescaped_aab = Unescaped::Literal(aab_s[0].clone());
+        let mut hash_map1 = HashMap::new();
 
-    //     check_map!(
-    //         hash_map2,
-    //         unescaped_a.clone(),
-    //         a_s.iter().cloned().map(Unescaped::Literal)
-    //     );
-    //     check_map!(
-    //         hash_map2,
-    //         unescaped_aa.clone(),
-    //         aa_s.iter().cloned().map(Unescaped::Literal)
-    //     );
-    //     check_map!(
-    //         hash_map2,
-    //         unescaped_aab.clone(),
-    //         aab_s.iter().cloned().map(Unescaped::Literal)
-    //     );
+        check_map!(hash_map1, a_s[0].clone(), a_s.clone());
+        check_map!(hash_map1, aa_s[0].clone(), aa_s.clone());
+        check_map!(hash_map1, aab_s[0].clone(), aab_s.clone());
 
-    //     let mut btree_map1 = BTreeMap::new();
+        let mut hash_map2 = HashMap::new();
 
-    //     check_map!(btree_map1, a_s[0].clone(), a_s.clone());
-    //     check_map!(btree_map1, aa_s[0].clone(), aa_s.clone());
-    //     check_map!(btree_map1, aab_s[0].clone(), aab_s.clone());
+        let unescaped_a = Unescaped::Literal(a_s[0].clone());
+        let unescaped_aa = Unescaped::Literal(aa_s[0].clone());
+        let unescaped_aab = Unescaped::Literal(aab_s[0].clone());
 
-    //     let mut btree_map2 = BTreeMap::new();
+        check_map!(
+            hash_map2,
+            unescaped_a.clone(),
+            a_s.iter().cloned().map(Unescaped::Literal)
+        );
+        check_map!(
+            hash_map2,
+            unescaped_aa.clone(),
+            aa_s.iter().cloned().map(Unescaped::Literal)
+        );
+        check_map!(
+            hash_map2,
+            unescaped_aab.clone(),
+            aab_s.iter().cloned().map(Unescaped::Literal)
+        );
 
-    //     check_map!(
-    //         btree_map2,
-    //         unescaped_a.clone(),
-    //         a_s.iter().cloned().map(Unescaped::Literal)
-    //     );
-    //     check_map!(
-    //         btree_map2,
-    //         unescaped_aa.clone(),
-    //         aa_s.iter().cloned().map(Unescaped::Literal)
-    //     );
-    //     check_map!(
-    //         btree_map2,
-    //         unescaped_aab.clone(),
-    //         aab_s.iter().cloned().map(Unescaped::Literal)
-    //     );
-    // }
+        let mut btree_map1 = BTreeMap::new();
+
+        check_map!(btree_map1, a_s[0].clone(), a_s.clone());
+        check_map!(btree_map1, aa_s[0].clone(), aa_s.clone());
+        check_map!(btree_map1, aab_s[0].clone(), aab_s.clone());
+
+        let mut btree_map2 = BTreeMap::new();
+
+        check_map!(
+            btree_map2,
+            unescaped_a.clone(),
+            a_s.iter().cloned().map(Unescaped::Literal)
+        );
+        check_map!(
+            btree_map2,
+            unescaped_aa.clone(),
+            aa_s.iter().cloned().map(Unescaped::Literal)
+        );
+        check_map!(
+            btree_map2,
+            unescaped_aab.clone(),
+            aab_s.iter().cloned().map(Unescaped::Literal)
+        );
+    }
 
     #[rstest]
     #[case(Literal::from_static(""))]
     #[case(Literal::from_ref(""))]
     #[case(Literal::from_string("".into()))]
-    // TODO: FIXME: Uncomment below after refactor, converting from the Read types to the relevant Pipe types.
-    // #[case(Literal(InnerLiteral::Uni(UniRef::test_new("", 0..0))))]
-    // #[case(Literal(InnerLiteral::Uni(UniRef::test_new("a", 1..1))))]
-    // #[case(Literal(InnerLiteral::Uni(UniRef::test_new("ab", 1..1))))]
-    // #[case(Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(["0"], 0..0)))))]
-    // #[case(Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(["a"], 1..1)))))]
-    // #[case(Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(["a", "b"], 1..1)))))]
+    #[case(Literal(InnerLiteral::test_new_bytes("", false)))]
+    #[case(Literal(InnerLiteral::test_new_bytes("", true)))]
+    #[case(Literal(InnerLiteral::test_new_multi([""], 0, 0, false)))]
     #[should_panic(expected = "not enough bytes in buffer (1 requested, but only 0 remain)")]
     fn test_literal_buf_advance_panic(#[case] literal: Literal) {
         let _ = literal.into_buf().advance(1);
@@ -2001,13 +2050,12 @@ mod tests {
     #[case(Literal::from_static(""))]
     #[case(Literal::from_ref(""))]
     #[case(Literal::from_string("".into()))]
-    // TODO: FIXME: Uncomment below after refactor, converting from the Read types to the relevant Pipe types.
-    // #[case(Literal(InnerLiteral::Uni(UniRef::test_new("", 0..0))))]
-    // #[case(Literal(InnerLiteral::Uni(UniRef::test_new("a", 1..1))))]
-    // #[case(Literal(InnerLiteral::Uni(UniRef::test_new("ab", 1..1))))]
-    // #[case(Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(["0"], 0..0)))))]
-    // #[case(Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(["a"], 1..1)))))]
-    // #[case(Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(["a", "b"], 1..1)))))]
+    #[case(Literal(InnerLiteral::test_new_bytes("", false)))]
+    #[case(Literal(InnerLiteral::test_new_bytes("", true)))]
+    #[case(Literal(InnerLiteral::test_new_multi([""], 0, 0, false)))]
+    #[case(Literal(InnerLiteral::test_new_multi(["", ""], 0, 0, true)))]
+    #[case(Literal(InnerLiteral::test_new_multi(["a"], 1, 0, false)))]
+    #[case(Literal(InnerLiteral::test_new_multi(["a", "a"], 1, 0, true)))]
     #[should_panic(expected = "not enough bytes in buffer (1 requested, but only 0 remain)")]
     fn test_literal_buf_copy_to_slice_panic(#[case] literal: Literal) {
         let mut dst = [0; 1];
@@ -2015,50 +2063,50 @@ mod tests {
         let _ = literal.into_buf().copy_to_slice(&mut dst);
     }
 
+    #[rstest]
+    #[case(Content(InnerLiteral::Static("", false)), "", None)]
+    #[case(Content(InnerLiteral::Static("", false)), "", None)]
+    #[case(
+        Content(InnerLiteral::Static(concat!(
+            "................................................................................",
+            ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,",
+            "________________________________________________________________________________",
+            "+++++++++++++++",
+        ), false)),
+        concat!(
+            "................................................................................",
+            ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,",
+            "________________________________________________________________________________",
+            "+++++++++++++++",
+        ),
+        None,
+    )]
+    #[case(Content(InnerLiteral::Inline(0, 0, [0; INLINE_LEN], false)), "", None)]
+    #[case(Content(InnerLiteral::test_new_bytes("", false)), "", None)]
+    #[case(Content(InnerLiteral::test_new_bytes("foo", false)), "foo", None)]
+    #[case(Content(InnerLiteral::Bytes(Bytes::from_static(b"a barge").slice(2..5), false)), "bar", None)]
+    #[case(Content(InnerLiteral::test_new_multi([""], 0, 0, false)), "", None)]
+    #[case(Content(InnerLiteral::test_new_multi(["a b", "a", "rge"], 2, 3, false)), "bar", None)]
+    #[case(Content(InnerLiteral::test_new_bytes("", true)), "", Some(""))]
+    #[case(Content(InnerLiteral::test_new_bytes("foo", true)), "foo", Some("foo"))]
+    #[case(Content(InnerLiteral::Bytes(Bytes::from_static(b"a b\\u0061rge").slice(2..10), true)), "b\\u0061r", Some("bar"))]
+    #[case(Content(InnerLiteral::test_new_multi([""], 0, 0, true)), "", Some(""))]
+    #[case(Content(InnerLiteral::test_new_multi(["tomf", "oo", "lery"], 3, 3, true)), "foo", Some("foo"))]
+    #[case(Content(InnerLiteral::test_new_multi(["\\", "u", "006", "6\\u", "0", "06", "fox"], 0, 13, true)), "\\u0066\\u006fo", Some("foo"))]
     // TODO: FIXME: Uncomment below after refactor, converting from the Read types to the relevant Pipe types.
-    // #[rstest]
-    // #[case(Content::from_static(""), "", None)]
-    // #[case(Content::from_static(""), "", None)]
-    // #[case(
-    //     Content::from_static(concat!(
-    //         "................................................................................",
-    //         ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,",
-    //         "________________________________________________________________________________",
-    //         "+++++++++++++++",
-    //     )),
-    //     concat!(
-    //         "................................................................................",
-    //         ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,",
-    //         "________________________________________________________________________________",
-    //         "+++++++++++++++",
-    //     ),
-    //     None,
-    // )]
-    // #[case(Content(InnerContent::Inline(0, [0; INLINE_LEN])), "", None)]
-    // #[case(Content(InnerContent::NotEscapedUni(UniRef::test_new("", 0..0))), "", None)]
-    // #[case(Content(InnerContent::NotEscapedUni(UniRef::test_new("foo", 0..3))), "foo", None)]
-    // #[case(Content(InnerContent::NotEscapedUni(UniRef::test_new("a barge", 2..5))), "bar", None)]
-    // #[case(Content(InnerContent::NotEscapedMulti(Box::new(MultiRef::test_new([""], 0..0)))), "", None)]
-    // #[case(Content(InnerContent::NotEscapedMulti(Box::new(MultiRef::test_new(["a b", "a", "rge"], 2..5)))), "bar", None)]
-    // #[case(Content(InnerContent::EscapedUni(UniRef::test_new("", 0..0))), "", Some(""))]
-    // #[case(Content(InnerContent::EscapedUni(UniRef::test_new("foo", 0..3))), "foo", Some("foo"))]
-    // #[case(Content(InnerContent::EscapedUni(UniRef::test_new("a b\\u0061rge", 2..10))), "b\\u0061r", Some("bar"))]
-    // #[case(Content(InnerContent::EscapedMulti(Box::new(MultiRef::test_new([""], 0..0)))), "", Some(""))]
-    // #[case(Content(InnerContent::EscapedMulti(Box::new(MultiRef::test_new(["tomf", "oo", "lery"], 3..6)))), "foo", Some("foo"))]
-    // #[case(Content(InnerContent::EscapedMulti(Box::new(MultiRef::test_new(["\\", "u", "006", "6\\u", "0", "06", "fox"], 0..13)))), "\\u0066\\u006fo", Some("foo"))]
     // #[case(Content::from_bufs(&Bufs::new(Bufs::MIN_BUF_SIZE), 0..0, false), "", None)]
     // #[case(Content::from_bufs(&Bufs::new(Bufs::MIN_BUF_SIZE), 0..0, true), "", Some(""))]
-    // fn test_content(
-    //     #[case] content: Content,
-    //     #[case] expect_literal: &str,
-    //     #[case] expect_unescaped: Option<&str>,
-    // ) {
-    //     assert_eq!(expect_literal, content.literal().into_string());
-    //     assert_eq!(expect_unescaped.is_some(), content.is_escaped());
-    //     if let Some(expect) = expect_unescaped {
-    //         assert_eq!(expect, content.unescaped().into_string());
-    //     }
-    // }
+    fn test_content(
+        #[case] content: Content,
+        #[case] expect_literal: &str,
+        #[case] expect_unescaped: Option<&str>,
+    ) {
+        assert_eq!(expect_literal, content.literal().into_string());
+        assert_eq!(expect_unescaped.is_some(), content.is_escaped());
+        if let Some(expect) = expect_unescaped {
+            assert_eq!(expect, content.unescaped().into_string());
+        }
+    }
 
     #[rstest]
     #[case(
@@ -2225,16 +2273,7 @@ mod tests {
         #[case] expect: Token,
         #[case] unescaped: Option<&str>,
     ) {
-        const CHUNK_SIZES: [usize; 3] = [
-            1, 2,
-            // TODO: FIXME: Uncomment below after refactor.
-            // INLINE_LEN - 1,
-            // INLINE_LEN,
-            // INLINE_LEN + 1,
-            10,
-            // TODO: FIXME: Uncomment below after refactor.
-            // Bufs::DEFAULT_BUF_SIZE,
-        ];
+        const CHUNK_SIZES: [usize; 6] = [1, 2, INLINE_LEN - 1, INLINE_LEN, INLINE_LEN + 1, 10];
 
         for chunk_size in CHUNK_SIZES {
             // With content fetch.
@@ -2365,16 +2404,7 @@ mod tests {
     ) where
         T: AsRef<[u8]> + fmt::Debug,
     {
-        const CHUNK_SIZES: [usize; 3] = [
-            1, 2,
-            // TODO: FIXME: uncomment below after refactor
-            // INLINE_LEN - 1,
-            // INLINE_LEN,
-            // INLINE_LEN + 1,
-            10,
-            // TODO: FIXME: uncomment below after refactor
-            // Bufs::DEFAULT_BUF_SIZE,
-        ];
+        const CHUNK_SIZES: [usize; 6] = [1, 2, INLINE_LEN - 1, INLINE_LEN, INLINE_LEN + 1, 10];
 
         for chunk_size in CHUNK_SIZES {
             // With error fetch.
@@ -2419,20 +2449,27 @@ mod tests {
     #[case(1, r#"{"#, [Token::ObjBegin], Pos::new(1, 1, 2), Pos::new(1, 1, 2))]
     #[case(1, r#"fals"#, [], Pos::default(), Pos::new(4, 1, 5))]
     #[case(2, r#"fals"#, [], Pos::default(), Pos::new(4, 1, 5))]
-    // TODO: FIXME: Uncomment after refactor
-    // #[case(Bufs::DEFAULT_BUF_SIZE, r#"fals"#, [], Pos::default(), Pos::new(4, 1, 5))]
+    #[case(INLINE_LEN-1, r#"fals"#, [], Pos::default(), Pos::new(4, 1, 5))]
+    #[case(INLINE_LEN-1, r#"fals"#, [], Pos::default(), Pos::new(4, 1, 5))]
+    #[case(INLINE_LEN+1, r#"fals"#, [], Pos::default(), Pos::new(4, 1, 5))]
+    #[case(512, r#"fals"#, [], Pos::default(), Pos::new(4, 1, 5))]
     #[case(1, r#"[3.141592653589793238462643383279"#, [Token::ArrBegin], Pos::new(1, 1, 2), Pos::new(33, 1, 34))]
     #[case(2, r#"[3.141592653589793238462643383279"#, [Token::ArrBegin], Pos::new(1, 1, 2), Pos::new(33, 1, 34))]
+    #[case(INLINE_LEN-1, r#"[3.141592653589793238462643383279"#, [Token::ArrBegin], Pos::new(1, 1, 2), Pos::new(33, 1, 34))]
+    #[case(INLINE_LEN, r#"[3.141592653589793238462643383279"#, [Token::ArrBegin], Pos::new(1, 1, 2), Pos::new(33, 1, 34))]
+    #[case(INLINE_LEN+1, r#"[3.141592653589793238462643383279"#, [Token::ArrBegin], Pos::new(1, 1, 2), Pos::new(33, 1, 34))]
     #[case(1, r#"[3.141592653589793238462643383279,"#, [Token::ArrBegin, Token::Num, Token::ValueSep], Pos::new(34, 1, 35), Pos::new(34, 1, 35))]
     #[case(2, r#"[3.141592653589793238462643383279,"#, [Token::ArrBegin, Token::Num, Token::ValueSep], Pos::new(34, 1, 35), Pos::new(34, 1, 35))]
-    // TODO: FIXME: Uncomment after refactor
-    // #[case(INLINE_LEN-1, r#"[314.1592653589793238462643383279e-2"#, [Token::ArrBegin], Pos::new(1, 1, 2), Pos::new(36, 1, 37))]
-    // #[case(INLINE_LEN-1, r#"[314.1592653589793238462643383279e-2 :"#, [Token::ArrBegin, Token::Num, Token::White, Token::NameSep], Pos::new(38, 1, 39), Pos::new(38, 1, 39))]
-    // #[case(INLINE_LEN, r#"[314.1592653589793238462643383279e-2"#, [Token::ArrBegin], Pos::new(1, 1, 2), Pos::new(36, 1, 37))]
-    // #[case(INLINE_LEN, r#"[314.1592653589793238462643383279e-2 :"#, [Token::ArrBegin, Token::Num, Token::White, Token::NameSep], Pos::new(38, 1, 39), Pos::new(38, 1, 39))]
-    // #[case(INLINE_LEN+1, r#"[314.1592653589793238462643383279e-2"#, [Token::ArrBegin], Pos::new(1, 1, 2), Pos::new(36, 1, 37))]
-    // #[case(INLINE_LEN+1, r#"[314.1592653589793238462643383279E+999 :"#, [Token::ArrBegin, Token::Num, Token::White, Token::NameSep], Pos::new(40, 1, 41), Pos::new(40, 1, 41))]
-    // #[case(Bufs::DEFAULT_BUF_SIZE, r#"[3141.592653589793238462643383279e-3,{"aaaaaaaaaaaaaaaaaaaaaaaaaaaa":true}]    "#, [Token::ArrBegin, Token::Num, Token::ValueSep, Token::ObjBegin, Token::Str, Token::NameSep, Token::LitTrue,  Token::ObjEnd, Token::ArrEnd], Pos::new(75, 1, 76), Pos::new(79, 1, 80))]
+    #[case(INLINE_LEN-1, r#"[3.141592653589793238462643383279,"#, [Token::ArrBegin, Token::Num, Token::ValueSep], Pos::new(34, 1, 35), Pos::new(34, 1, 35))]
+    #[case(INLINE_LEN, r#"[3.141592653589793238462643383279,"#, [Token::ArrBegin, Token::Num, Token::ValueSep], Pos::new(34, 1, 35), Pos::new(34, 1, 35))]
+    #[case(INLINE_LEN+1, r#"[3.141592653589793238462643383279,"#, [Token::ArrBegin, Token::Num, Token::ValueSep], Pos::new(34, 1, 35), Pos::new(34, 1, 35))]
+    #[case(INLINE_LEN-1, r#"[314.1592653589793238462643383279e-2"#, [Token::ArrBegin], Pos::new(1, 1, 2), Pos::new(36, 1, 37))]
+    #[case(INLINE_LEN-1, r#"[314.1592653589793238462643383279e-2 :"#, [Token::ArrBegin, Token::Num, Token::White, Token::NameSep], Pos::new(38, 1, 39), Pos::new(38, 1, 39))]
+    #[case(INLINE_LEN, r#"[314.1592653589793238462643383279e-2"#, [Token::ArrBegin], Pos::new(1, 1, 2), Pos::new(36, 1, 37))]
+    #[case(INLINE_LEN, r#"[314.1592653589793238462643383279e-2 :"#, [Token::ArrBegin, Token::Num, Token::White, Token::NameSep], Pos::new(38, 1, 39), Pos::new(38, 1, 39))]
+    #[case(INLINE_LEN+1, r#"[314.1592653589793238462643383279e-2"#, [Token::ArrBegin], Pos::new(1, 1, 2), Pos::new(36, 1, 37))]
+    #[case(INLINE_LEN+1, r#"[314.1592653589793238462643383279E+999 :"#, [Token::ArrBegin, Token::Num, Token::White, Token::NameSep], Pos::new(40, 1, 41), Pos::new(40, 1, 41))]
+    #[case(512, r#"[3141.592653589793238462643383279e-3,{"aaaaaaaaaaaaaaaaaaaaaaaaaaaa":true}]    "#, [Token::ArrBegin, Token::Num, Token::ValueSep, Token::ObjBegin, Token::Str, Token::NameSep, Token::LitTrue,  Token::ObjEnd, Token::ArrEnd], Pos::new(75, 1, 76), Pos::new(79, 1, 80))]
     fn test_analyzer_single_read_error<T>(
         #[case] chunk_size: usize,
         #[case] input: &str,
@@ -2501,12 +2538,11 @@ mod tests {
         let err = an.try_content().unwrap_err();
         assert_eq!(ErrorKind::Read, err.kind());
         assert_eq!(expect_err_pos, *err.pos());
-        // TODO: FIXME: Uncomment below after refactor
-        // assert!(
-        //     err.source()
-        //         .and_then(|e| e.downcast_ref::<PipeError>())
-        //         .is_some()
-        // );
+        assert!(
+            err.source()
+                .and_then(|e| e.downcast_ref::<PipeError>())
+                .is_some()
+        );
 
         assert_eq!(Token::Err, an.next());
     }
