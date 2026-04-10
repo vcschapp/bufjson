@@ -21,7 +21,7 @@ debug = true
 ignore_case = ["dep:caseless"]
 pointer = ["dep:smallvec"]
 read = []
-pipe = ["dep:bytes", "dep:smallvec"]
+pipe = ["dep:bytes"]
 
 [dependencies]
 bitvec = { version = "^1.0.1", default-features = false, features = ["alloc"] }
