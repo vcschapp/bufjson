@@ -1,11 +1,18 @@
 pub mod generator;
 
-use bufjson::lexical::{Token, fixed::FixedAnalyzer, read::ReadAnalyzer};
+use bufjson::lexical::{
+    Token,
+    fixed::FixedAnalyzer,
+    pipe::{Pipe, PipeAnalyzer},
+    read::ReadAnalyzer,
+};
+use bytes::Bytes;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use generator::{Generator, LineSep, NumRules, WhiteRules};
 use rand::{SeedableRng, rngs::StdRng};
 use rand_distr::Normal;
 use serde_json::Value;
+use std::convert::Infallible;
 
 macro_rules! read_no_content {
     ($x:expr) => {{
@@ -64,6 +71,18 @@ fn bench_throughput_bufjson(c: &mut Criterion) {
     group.bench_function("FixedAnalyzer: content fetch", |b| {
         b.iter(|| read_with_content!(FixedAnalyzer::new(json_with_space.as_slice())));
         b.iter(|| read_with_content!(FixedAnalyzer::new(json_no_space.as_slice())));
+    });
+
+    // Pipe analyzer without content fetch.
+    group.bench_function("PipeAnalyzer: no content fetch", |b| {
+        b.iter(|| read_no_content!(PipeAnalyzer::new(HalfPipe::new(json_with_space.clone()))));
+        b.iter(|| read_no_content!(PipeAnalyzer::new(HalfPipe::new(json_no_space.clone()))));
+    });
+
+    // Pipe analyzer with content fetch.
+    group.bench_function("PipeAnalyzer: content fetch", |b| {
+        b.iter(|| read_with_content!(PipeAnalyzer::new(HalfPipe::new(json_with_space.clone()))));
+        b.iter(|| read_with_content!(PipeAnalyzer::new(HalfPipe::new(json_no_space.clone()))));
     });
 
     // Read analyzer without content fetch.
@@ -127,3 +146,33 @@ fn bench_throughput_compare(c: &mut Criterion) {
 
 criterion_group!(benches, bench_throughput_bufjson, bench_throughput_compare);
 criterion_main!(benches);
+
+// A Pipe that provides a view of an input buffer as two `Bytes` values representing the first and
+// second halves.
+//
+// The idea is to simulate a minor amount of splitting input across buffers to make the
+// `PipeAnalyzer` benchmark representative of intended real world use cases.
+struct HalfPipe([Option<Bytes>; 2]);
+
+impl HalfPipe {
+    fn new(input: impl Into<Bytes>) -> Self {
+        let mut a = input.into();
+        let b = a.split_off(a.len() / 2);
+
+        Self([Some(a), Some(b)])
+    }
+}
+
+impl Pipe for HalfPipe {
+    type Error = Infallible;
+
+    fn recv(&mut self) -> Option<Result<Bytes, Self::Error>> {
+        if self.0[0].is_some() {
+            self.0[0].take().map(Ok)
+        } else if self.0[1].is_some() {
+            self.0[1].take().map(Ok)
+        } else {
+            None
+        }
+    }
+}
