@@ -1,5 +1,4 @@
 - Update `README`:
-  - Drop `AsyncAnalyzer` and add `PipeAnalyzer`
   - De-emphasize "Architecture" (and maybe remove)
   - Add a Features section, maybe after Performance that emphasizes:
       - Fast performance

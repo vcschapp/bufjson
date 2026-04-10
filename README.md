@@ -38,7 +38,8 @@ with these implementations:
 
 - `FixedAnalyzer` tokenizes fixed-size buffers;
 - `ReadAnalyzer` tokenizes sync input streams implementing `io::Read`; and
-- `AsyncAnalyzer` tokenizes async streams that yield byte buffers (COMING SOON-ISH);
+- `PipeAnalyzer` tokenizes streams that yield `Bytes` buffers, useful for zero-copy network
+  programming use cases.
 
 The remainder of the library builds on the lexical analyzer trait.
 

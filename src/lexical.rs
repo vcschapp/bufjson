@@ -18,6 +18,11 @@
 #![cfg_attr(not(feature = "read"), doc = "- `read`")]
 //! contains an implementation of [`Analyzer`] for tokenizing streams that implement `std::io::Read`
 //! stream. Requires the `read` feature to be enabled.
+#![cfg_attr(feature = "pipe", doc = "- [`pipe`][`crate::lexical::pipe`]")]
+#![cfg_attr(not(feature = "pipe"), doc = "- `pipe`")]
+//! contains an implementation of [`Analyzer`] for tokenizing of streams that yield chunks
+//! of input in `Bytes` buffers, useful for zero-copy network programming use cases. Requires the
+//! `pipe` feature to be enabled.
 //!
 //! # Performance
 //!
