@@ -1,3 +1,6 @@
+- Finish unit testing odds and ends:
+   - Squeeze a few more percent coverage out of `pipe.rs`
+   - `Parser`
 - Update `README`:
   - De-emphasize "Architecture" (and maybe remove)
   - Add a Features section, maybe after Performance that emphasizes:
