@@ -1898,6 +1898,9 @@ mod tests {
         }
 
         for a in &a_s {
+            for other in &a_s {
+                assert_all_eq!(a, other);
+            }
             assert_all_eq!(a, "a");
             assert_all_eq!(Unescaped::Literal(a), "a");
             assert_all_ne!(a, "ab");
@@ -1924,6 +1927,9 @@ mod tests {
         }
 
         for aa in &aa_s {
+            for other in &aa_s {
+                assert_all_eq!(aa, other);
+            }
             assert_all_eq!(aa, "a".repeat(INLINE_LEN).as_str());
             assert_all_eq!(Unescaped::Literal(aa), "a".repeat(INLINE_LEN).as_str());
             assert_all_ne!(aa, "aab");
@@ -1949,6 +1955,12 @@ mod tests {
                 assert_all_ne!(aa, aab);
                 assert_all_lt!(aa, aab);
                 assert_all_gt!(aab, aa);
+            }
+        }
+
+        for aab in &aab_s {
+            for other in &aab_s {
+                assert_all_eq!(aab, other);
             }
         }
 
