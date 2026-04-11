@@ -1812,7 +1812,17 @@ mod tests {
         let s = String::from_utf8(dst).unwrap();
 
         assert_eq!(literal.to_string(), s);
-        assert_eq!(Into::<String>::into(literal), s);
+        assert_eq!(Into::<String>::into(literal.clone()), s);
+
+        // Exercise `advance` with non-chunk-aligned values on Multi-backed bufs.
+        let mut b = literal.clone().into_buf();
+        let mut dst = Vec::with_capacity(expect_len);
+        while b.remaining() > 0 {
+            let byte = b.chunk()[0];
+            b.advance(1);
+            dst.push(byte);
+        }
+        assert_eq!(s.as_bytes(), &dst);
     }
 
     #[test]
@@ -2114,6 +2124,7 @@ mod tests {
         #[case] expect_unescaped: Option<&str>,
     ) {
         assert_eq!(expect_literal, content.literal().into_string());
+        assert_eq!(expect_literal, content.to_string());
         assert_eq!(expect_unescaped.is_some(), content.is_escaped());
         if let Some(expect) = expect_unescaped {
             assert_eq!(expect, content.unescaped().into_string());
