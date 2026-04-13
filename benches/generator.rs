@@ -137,6 +137,7 @@ pub struct StrRules<K: Distribution<f64> = Normal<f64>, V: Distribution<f64> = N
     pct_multiline: f64,
     pct_escaped: f64,
     pct_multibyte: f64,
+    avoid_surrogate_pairs: bool,
 }
 
 impl<K: Distribution<f64>, V: Distribution<f64>> StrRules<K, V> {
@@ -146,6 +147,7 @@ impl<K: Distribution<f64>, V: Distribution<f64>> StrRules<K, V> {
         pct_multiline: f64,
         pct_escaped: f64,
         pct_multibyte: f64,
+        avoid_surrogate_pairs: bool,
     ) -> Self {
         pct_value_check!(pct_multiline);
         pct_partial_group_check!(pct_escaped; pct_multibyte);
@@ -156,6 +158,7 @@ impl<K: Distribution<f64>, V: Distribution<f64>> StrRules<K, V> {
             pct_multiline,
             pct_escaped,
             pct_multibyte,
+            avoid_surrogate_pairs,
         }
     }
 }
@@ -168,7 +171,15 @@ impl Default for StrRules<Normal<f64>> {
             0.1,
             0.05,
             0.05,
+            false,
         )
+    }
+}
+
+impl<K: Distribution<f64>, V: Distribution<f64>> StrRules<K, V> {
+    pub fn avoid_surrogate_pairs(mut self) -> Self {
+        self.avoid_surrogate_pairs = true;
+        self
     }
 }
 
@@ -866,7 +877,14 @@ impl<
             if rem >= 6 && self.rng.random_bool(self.str_rules.pct_escaped) {
                 let c = match rem {
                     6..=11 => CharRange::random_char_byte_range(1..=3, &mut self.rng),
-                    12.. => CharRange::random_char_byte_range(1..=4, &mut self.rng),
+                    12.. => CharRange::random_char_byte_range(
+                        1..=if self.str_rules.avoid_surrogate_pairs {
+                            3
+                        } else {
+                            4
+                        },
+                        &mut self.rng,
+                    ),
                     _ => unreachable!(),
                 };
 

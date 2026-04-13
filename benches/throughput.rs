@@ -8,7 +8,8 @@ use bufjson::lexical::{
 };
 use bytes::Bytes;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use generator::{Generator, LineSep, NumRules, WhiteRules};
+use generator::{Generator, LineSep, NumRules, StrRules, WhiteRules};
+use json_streaming::shared::JsonReadToken;
 use rand::{SeedableRng, rngs::StdRng};
 use rand_distr::Normal;
 use serde_json::Value;
@@ -127,6 +128,21 @@ fn bench_throughput_compare(c: &mut Criterion) {
     let mut buf = Vec::with_capacity(LEN);
     g.generate(LEN, &mut buf).unwrap();
 
+    // Separate dataset for `json-streaming` which cannot handle surrogate pairs in \uXXXX
+    // escape sequences (it encodes each half as CESU-8 instead of valid UTF-8).
+    let mut g_no_sp = Generator::default()
+        .with_num_rules(NumRules::new(
+            Normal::new(4.0, 3.0).unwrap(),
+            0.35,
+            0.30,
+            0.50,
+            0.01,
+        ))
+        .with_str_rules(StrRules::default().avoid_surrogate_pairs())
+        .with_rng(StdRng::seed_from_u64(0x2020082420230424));
+    let mut buf_no_sp = Vec::with_capacity(LEN);
+    g_no_sp.generate(LEN, &mut buf_no_sp).unwrap();
+
     let mut group = c.benchmark_group("throughput_compare");
     group.throughput(Throughput::Bytes(LEN as u64));
     group.sample_size(20);
@@ -140,6 +156,39 @@ fn bench_throughput_compare(c: &mut Criterion) {
     group.bench_function("serde_json", |b| {
         b.iter(|| {
             let _: Value = serde_json::from_slice(&buf).unwrap();
+        })
+    });
+
+    // `json-streaming` blocking reader, consuming all tokens.
+    group.bench_function("json-streaming: blocking", |b| {
+        b.iter(|| {
+            let mut reader = buf_no_sp.as_slice();
+            let mut jr = json_streaming::blocking::JsonReader::new(LEN, &mut reader);
+            loop {
+                match black_box(jr.next().unwrap()) {
+                    JsonReadToken::EndOfStream => break,
+                    _ => continue,
+                }
+            }
+        })
+    });
+
+    // `json-streaming` nonblocking reader via tokio, consuming all tokens.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    group.bench_function("json-streaming: nonblocking", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                let mut reader = buf_no_sp.as_slice();
+                let mut jr = json_streaming::nonblocking::JsonReader::new(LEN, &mut reader);
+                loop {
+                    match black_box(jr.next().await.unwrap()) {
+                        JsonReadToken::EndOfStream => break,
+                        _ => continue,
+                    }
+                }
+            })
         })
     });
 }
