@@ -771,8 +771,8 @@ pub trait Content: fmt::Debug {
     ///
     /// # Static content tokens
     ///
-    /// For token types with a static text content, *e.g.* [`Token::NameSep`], the value returned
-    /// is the static content.
+    /// For token types with a static text content, *e.g.*, [`Token::NameSep`], the value returned
+    /// is the static content, *e.g.*, `:`.
     ///
     /// # Numbers
     ///
