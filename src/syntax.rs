@@ -1167,8 +1167,6 @@ where
     /// matching `]` or `}` is reached at the same nesting level, and returns that end token
     /// ([`Token::ArrEnd`] or [`Token::ObjEnd`]).
     ///
-    ///
-    ///
     /// If the parser is not inside a structured value, this method consumes tokens until
     /// [`Token::Eof`] is reached.
     ///

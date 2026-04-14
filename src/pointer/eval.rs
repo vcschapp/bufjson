@@ -627,6 +627,81 @@ where
         self.eventify(token)
     }
 
+    /// Returns the event for the token that ends the current structured value, skipping all content
+    /// within it.
+    ///
+    /// If the evaluator is currently inside an array or object, this method consumes tokens until
+    /// the matching `]` or `}` is reached at the same nesting level, and returns the event for that
+    /// end token.
+    ///
+    /// If the evaluator is not inside a structured value, this method consumes tokens until
+    /// [`Token::Eof`] is reached.
+    ///
+    /// This method behaves like [`Parser::next_end`] but returns an [`Event`] instead of a raw
+    /// token. Any events that would have been produced by tokens consumed by this method are lost.
+    /// If the ending token itself corresponds to an event, that event is returned.
+    ///
+    /// # Examples
+    ///
+    /// Skip the contents of a nested array, receiving the exit event for a matched pointer.
+    ///
+    /// ```
+    /// use bufjson::{
+    ///     lexical::{Token, fixed::FixedAnalyzer},
+    ///     pointer::{Evaluator, Event, Group, Pointer},
+    /// };
+    ///
+    /// let parser = FixedAnalyzer::new(br#"{"a": [1, 2, 3], "b": true}"#.as_ref()).into_parser();
+    /// let ptr = Pointer::from_static("/a");
+    /// let group = Group::from_pointer(ptr_a.clone());
+    /// let mut eval = Evaluator::new(parser, group, false);
+    ///
+    /// assert!(matches!(eval.next_meaningful(), Event::Nil(Token::ObjBegin)));     // {
+    /// assert!(matches!(eval.next_meaningful(), Event::Nil(Token::Str)));           // "a"
+    /// assert!(matches!(eval.next_meaningful(), Event::Enter(Token::ArrBegin, _))); // [
+    /// let event = eval.next_end();                                                 // skip to ]
+    /// assert!(matches!(event, Event::Exit(Token::ArrEnd, p) if *p == ptr));
+    /// assert_eq!(1, eval.level());
+    /// ```
+    ///
+    /// Skip an entire top-level value.
+    ///
+    /// ```
+    /// use bufjson::{
+    ///     lexical::{Token, fixed::FixedAnalyzer},
+    ///     pointer::{Evaluator, Event, Group, Pointer},
+    /// };
+    ///
+    /// let parser = FixedAnalyzer::new(b"[1, 2, 3]".as_ref()).into_parser();
+    /// let group = Group::from_pointer(Pointer::from_static("/0"));
+    /// let mut eval = Evaluator::new(parser, group, false);
+    ///
+    /// assert!(matches!(eval.next_end(), Event::Nil(Token::Eof)));
+    /// ```
+    ///
+    /// [`Parser::next_end`]: crate::syntax::Parser::next_end
+    pub fn next_end(&mut self) -> Event<&Pointer> {
+        if self.parser.level() > self.skip_level {
+            let token = self.parser.next_end();
+            self.eventify(token)
+        } else {
+            let end_level = self.parser.level();
+            let token = loop {
+                let token = self.parser.next();
+                match token {
+                    Token::Eof | Token::Err => break token,
+                    Token::ArrEnd | Token::ObjEnd if self.parser.level() + 1 == end_level => {
+                        break token;
+                    }
+                    _ => {
+                        self.eventify(token);
+                    }
+                }
+            };
+            self.eventify(token)
+        }
+    }
+
     /// Fetches the text content for the current non-error token.
     ///
     /// The current token is the token contained in the event most recently returned by [`next`],
@@ -1319,6 +1394,180 @@ mod tests {
         assert!(
             matches!(parser.err().kind(), syntax::ErrorKind::Syntax { context: c, token: Token::Eof } if c.expect() == syntax::Expect::ObjValueSepOrEnd)
         );
+    }
+
+    #[rstest]
+    #[case::no_pointers_lit(NO_POINTERS, "null")]
+    #[case::no_pointers_num(NO_POINTERS, "1")]
+    #[case::no_pointers_str(NO_POINTERS, r#""a""#)]
+    #[case::no_pointers_arr_empty(NO_POINTERS, "[]")]
+    #[case::no_pointers_arr_single(NO_POINTERS, "[false]")]
+    #[case::no_pointers_arr_nested(NO_POINTERS, "[[1]]")]
+    #[case::no_pointers_obj_empty(NO_POINTERS, "{}")]
+    #[case::no_pointers_obj_single(NO_POINTERS, r#"{"a":1}"#)]
+    #[case::no_pointers_obj_nested(NO_POINTERS, r#"{"a":{"b":["c"]}}"#)]
+    #[case::root_lit(Some(Pointer::default()), "null")]
+    #[case::root_num(Some(Pointer::default()), "1")]
+    #[case::root_str(Some(Pointer::default()), r#""a""#)]
+    #[case::root_arr_empty(Some(Pointer::default()), "[]")]
+    #[case::root_arr_single(Some(Pointer::default()), "[false]")]
+    #[case::root_arr_nested(Some(Pointer::default()), "[[1]]")]
+    #[case::root_obj_empty(Some(Pointer::default()), "{}")]
+    #[case::root_obj_single(Some(Pointer::default()), r#"{"a":1}"#)]
+    #[case::root_obj_nested(Some(Pointer::default()), r#"{"a":{"b":["c"]}}"#)]
+    #[case::nonmatch_lit(Some("/x"), "null")]
+    #[case::nonmatch_arr(Some("/x"), "[1,2,3]")]
+    #[case::nonmatch_obj(Some("/x"), r#"{"a":1}"#)]
+    fn test_evaluator_next_end_root<P, I>(#[case] pointers: I, #[case] input: &str)
+    where
+        P: TryInto<Pointer>,
+        <P as TryInto<Pointer>>::Error: fmt::Debug,
+        I: IntoIterator<Item = P>,
+    {
+        let group = Group::from_pointers(pointers.into_iter().map(|p| p.try_into().unwrap()));
+        let parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+        let mut eval = Evaluator::new(parser, group, NO_UNESCAPE);
+
+        let event = eval.next_end();
+
+        assert_eq!(Token::Eof, event.token());
+        assert!(event.is_nil());
+        assert_eq!(0, eval.level());
+    }
+
+    #[rstest]
+    // No pointers — enter structure, skip contents, end token is Nil.
+    #[case::no_ptr_arr_empty(NO_POINTERS, "[]", [Event::Nil(Token::ArrBegin)], Event::Nil(Token::ArrEnd), 0, Event::Nil(Token::Eof), None)]
+    #[case::no_ptr_arr_single(NO_POINTERS, "[1]", [Event::Nil(Token::ArrBegin)], Event::Nil(Token::ArrEnd), 0, Event::Nil(Token::Eof), None)]
+    #[case::no_ptr_arr_nested(NO_POINTERS, "[[]]", [Event::Nil(Token::ArrBegin)], Event::Nil(Token::ArrEnd), 0, Event::Nil(Token::Eof), None)]
+    #[case::no_ptr_obj_empty(NO_POINTERS, "{}", [Event::Nil(Token::ObjBegin)], Event::Nil(Token::ObjEnd), 0, Event::Nil(Token::Eof), None)]
+    #[case::no_ptr_obj_single(NO_POINTERS, r#"{"a":1}"#, [Event::Nil(Token::ObjBegin)], Event::Nil(Token::ObjEnd), 0, Event::Nil(Token::Eof), None)]
+    // Pointer matches the structure being ended — Exit event.
+    #[case::exit_arr(
+        Some("/0"),
+        "[[1,2]]",
+        [Event::Nil(Token::ArrBegin), Event::Enter(Token::ArrBegin, Pointer::from_static("/0"))],
+        Event::Exit(Token::ArrEnd, Pointer::from_static("/0")),
+        1,
+        Event::Nil(Token::ArrEnd),
+        None,
+    )]
+    #[case::exit_obj(
+        Some("/a"),
+        r#"{"a":{"x":1}}"#,
+        [Event::Nil(Token::ObjBegin), Event::Nil(Token::Str), Event::Enter(Token::ObjBegin, Pointer::from_static("/a"))],
+        Event::Exit(Token::ObjEnd, Pointer::from_static("/a")),
+        1,
+        Event::Nil(Token::ObjEnd),
+        None,
+    )]
+    #[case::exit_root_arr(
+        Some(Pointer::default()),
+        "[1,2,3]",
+        [Event::Enter(Token::ArrBegin, Pointer::default())],
+        Event::Exit(Token::ArrEnd, Pointer::default()),
+        0,
+        Event::Nil(Token::Eof),
+        None,
+    )]
+    #[case::exit_root_obj(
+        Some(Pointer::default()),
+        r#"{"a":1}"#,
+        [Event::Enter(Token::ObjBegin, Pointer::default())],
+        Event::Exit(Token::ObjEnd, Pointer::default()),
+        0,
+        Event::Nil(Token::Eof),
+        None,
+    )]
+    // State machine consistency: events after next_end are correct.
+    #[case::resume_after_skip(
+        ["/a", "/b"],
+        r#"{"a":[1,2],"b":3}"#,
+        [Event::Nil(Token::ObjBegin), Event::Nil(Token::Str), Event::Enter(Token::ArrBegin, Pointer::from_static("/a"))],
+        Event::Exit(Token::ArrEnd, Pointer::from_static("/a")),
+        1,
+        Event::Nil(Token::Str),
+        Some(Event::Match(Token::Num, Pointer::from_static("/b"))),
+    )]
+    #[case::resume_after_skip_obj(
+        ["/a", "/b"],
+        r#"{"a":{"x":true},"b":false}"#,
+        [Event::Nil(Token::ObjBegin), Event::Nil(Token::Str), Event::Enter(Token::ObjBegin, Pointer::from_static("/a"))],
+        Event::Exit(Token::ObjEnd, Pointer::from_static("/a")),
+        1,
+        Event::Nil(Token::Str),
+        Some(Event::Match(Token::LitFalse, Pointer::from_static("/b"))),
+    )]
+    // Fast path: next_end called while skip_level is active (non-matching subtree).
+    #[case::fast_path_skip(
+        Some("/b"),
+        r#"{"a":{"x":[1,2,3]},"b":1}"#,
+        [Event::Nil(Token::ObjBegin), Event::Nil(Token::Str), Event::Nil(Token::ObjBegin)],
+        Event::Nil(Token::ObjEnd),
+        1,
+        Event::Nil(Token::Str),
+        Some(Event::Match(Token::Num, Pointer::from_static("/b"))),
+    )]
+    // Nested: next_end from inner level.
+    #[case::nested_inner(
+        Some("/0"),
+        "[[[1,2]]]",
+        [Event::Nil(Token::ArrBegin), Event::Enter(Token::ArrBegin, Pointer::from_static("/0"))],
+        Event::Exit(Token::ArrEnd, Pointer::from_static("/0")),
+        1,
+        Event::Nil(Token::ArrEnd),
+        None,
+    )]
+    // Non-matching end token is Nil.
+    #[case::nil_end(
+        Some("/x"),
+        "[1,2,3]",
+        [Event::Nil(Token::ArrBegin)],
+        Event::Nil(Token::ArrEnd),
+        0,
+        Event::Nil(Token::Eof),
+        None,
+    )]
+    fn test_evaluator_next_end_inside<P, I, E>(
+        #[case] pointers: I,
+        #[case] input: &str,
+        #[case] leading_events: E,
+        #[case] expect_event: Event<Pointer>,
+        #[case] expect_level: usize,
+        #[case] expect_next: Event<Pointer>,
+        #[case] expect_next2: Option<Event<Pointer>>,
+    ) where
+        P: TryInto<Pointer>,
+        <P as TryInto<Pointer>>::Error: fmt::Debug,
+        I: IntoIterator<Item = P>,
+        E: IntoIterator<Item = Event<Pointer>>,
+    {
+        let group = Group::from_pointers(pointers.into_iter().map(|p| p.try_into().unwrap()));
+        let parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+        let mut eval = Evaluator::new(parser, group, NO_UNESCAPE);
+
+        // Consume leading events via next_meaningful.
+        for (i, expect) in leading_events.into_iter().enumerate() {
+            let actual = eval.next_meaningful();
+            assert_eq!(
+                expect, actual,
+                "leading event {i}: expected {expect:?}, got {actual:?}"
+            );
+        }
+
+        // Call next_end and verify the returned event.
+        let event = eval.next_end();
+        assert_eq!(expect_event, event, "next_end event");
+        assert_eq!(expect_level, eval.level(), "level after next_end");
+
+        // Verify state machine consistency with the next meaningful event(s).
+        let next = eval.next_meaningful();
+        assert_eq!(expect_next, next, "event after next_end");
+
+        if let Some(expect2) = expect_next2 {
+            let next2 = eval.next_meaningful();
+            assert_eq!(expect2, next2, "second event after next_end");
+        }
     }
 
     fn collect_events<M>(
