@@ -1760,29 +1760,6 @@ mod tests {
         }
     }
 
-    // #[rstest]
-    // #[case::empty("", Token::Err, 0, Token::Err)]
-    // #[case::arr_empty("[]", Token::ArrEnd, 0, Token::Eof)]
-    // #[case::arr_single("[false]", Token::ArrEnd, 0, Token::Eof)]
-    // #[case::arr_multiple("[1, -2, true]", Token::ArrEnd, 0, Token::Eof)]
-    // #[case::arr_nested_empty("[[]]", Token::ArrEnd, 0, Token::Eof)]
-    // #[case::arr_nested_single("[[1]]", Token::ArrEnd, 0, Token::Eof)]
-    // #[case::lit("null", Token::Eof, 0, Token::Eof)]
-    // #[case::obj_empty("{}", Token::ObjEnd, 0, Token::Eof)]
-    // #[case::obj_single(r#"{"a":1}"#, Token::ObjEnd, 0, Token::Eof)]
-    // #[case::obj_multiple(r#"{"a":1, "bb":22}"#, Token::ObjEnd, 0, Token::Eof)]
-    // #[case::obj_nested_empty(r#"{"a":{}}"#, Token::ObjEnd, 0, Token::Eof)]
-    // #[case::obj_nested_single(r#"{"a":{"b":["c"]}}"#, Token::ObjEnd, 0, Token::Eof)]
-    // #[case::num("1", Token::Eof, 0, Token::Eof)]
-    // #[case::str(r#""a""#, Token::Eof, 0, Token::Eof)]
-    // fn test_parser_next_end_root(#[case] input: &str, #[case] expect_token: Token, #[case] expect_level: usize, #[case] expect_next: Token) {
-    //     let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
-
-    //     assert_eq!(expect_token, parser.next_end());
-    //     assert_eq!(expect_level, parser.level());
-    //     assert_eq!(expect_next, parser.next());
-    // }
-
     #[rstest]
     #[case::arr_empty("[]")]
     #[case::arr_single("[false]")]
