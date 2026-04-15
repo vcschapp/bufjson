@@ -1,6 +1,11 @@
 - Finish unit testing odds and ends:
-   - Squeeze a few more percent coverage out of `pipe.rs`
    - `Parser`
+- Add number parse methods into `Content`, with provided implementations.
+    - Basic algorithm is: if one chunk, use `str::parse`-ish functions directly. If multiple
+      chunks but would fit in a reasonable stack buffer, copy it there and `str::parse`, otherwise
+      put in heap buffer and `str::parse`. Obviously `str::parse` is a placeholder for whatever the
+      real function name is.
+- Add overall crate documentation (`lib.rs`).
 - Update `README`:
   - De-emphasize "Architecture" (and maybe remove)
   - Add a Features section, maybe after Performance that emphasizes:
@@ -17,21 +22,11 @@
 - Go over the various key `Content`/`Literal` methods like `len()` and into_buf()` to make sure the
   appropriate ones are inlined.
 - Run `cargo bench` as part of the GitHub Actions.
-- Add number parse methods into `Content`, with provided implementations.
-    - Basic algorithm is: if one chunk, use `str::parse`-ish functions directly. If multiple
-      chunks but would fit in a reasonable stack buffer, copy it there and `str::parse`, otherwise
-      put in heap buffer and `str::parse`. Obviously `str::parse` is a placeholder for whatever the
-      real function name is.
 - Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
   strings without allocating to unescape. This should be a provided method on the trait.
-- Add overall crate documentation (`lib.rs`).
-- Once at least one streaming type is available, update module-level documentation for mod `lexical`
-  with an *Examples* heading as the first section and give an example of using each lexer type.
-  Right now with only `FixedAnalyzer` that exercise seems a bit pointless.
 - Re-export the following into the root: `Token`, `FixedAnalyzer`, `Parser`.
 - Replace `#[inline(always)]` with `#[inline]` except for methods that are just a reference return
   or single method call.
-- Put `#[must_use]` directives in appropriate places.
 
 PERFORMANCE
 ===========
