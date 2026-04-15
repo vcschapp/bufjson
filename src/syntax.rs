@@ -302,6 +302,12 @@ impl StructContext {
     }
 }
 
+impl Default for StructContext {
+    fn default() -> Self {
+        Self::Inline(0, BitArray::new([0usize; INLINE_LEN_USIZES]))
+    }
+}
+
 impl IntoIterator for StructContext {
     type Item = bool;
     type IntoIter = StructContextIntoIter;
@@ -350,12 +356,6 @@ impl ExactSizeIterator for StructContextIntoIter {
             StructContextIntoIter::Inline(i) => i.len(),
             StructContextIntoIter::Heap(i) => i.len(),
         }
-    }
-}
-
-impl Default for StructContext {
-    fn default() -> Self {
-        Self::Inline(0, BitArray::new([0usize; INLINE_LEN_USIZES]))
     }
 }
 
@@ -1609,6 +1609,39 @@ mod tests {
     }
 
     #[rstest]
+    #[case(Expect::ArrElementOrEnd, [Token::ArrBegin, Token::ArrEnd, Token::LitFalse, Token::LitNull, Token::LitTrue, Token::Num, Token::ObjBegin, Token::Str])]
+    #[case(Expect::ArrElementSepOrEnd, [Token::ArrEnd, Token::ValueSep])]
+    #[case(Expect::Eof, [])]
+    #[case(Expect::ObjName, [Token::Str])]
+    #[case(Expect::ObjNameOrEnd, [Token::Str, Token::ObjEnd])]
+    #[case(Expect::ObjNameSep, [Token::NameSep])]
+    #[case(Expect::ObjValueSepOrEnd, [Token::ObjEnd, Token::ValueSep])]
+    #[case(Expect::Value, [Token::ArrBegin, Token::LitFalse, Token::LitNull, Token::LitTrue, Token::Num, Token::ObjBegin, Token::Str])]
+    fn test_expect_allowed_tokens<const N: usize>(
+        #[case] input: Expect,
+        #[case] expect: [Token; N],
+    ) {
+        let actual = input.allowed_tokens();
+
+        assert_eq!(expect, actual);
+    }
+
+    #[rstest]
+    #[case(Expect::ArrElement, "array element")]
+    #[case(Expect::ArrElementOrEnd, "array element or ]")]
+    #[case(Expect::ArrElementSepOrEnd, ", or ]")]
+    #[case(Expect::Eof, "EOF")]
+    #[case(Expect::ObjName, "object member name")]
+    #[case(Expect::ObjNameOrEnd, "object member name or }")]
+    #[case(Expect::ObjNameSep, ":")]
+    #[case(Expect::ObjValue, "object member value")]
+    #[case(Expect::ObjValueSepOrEnd, ", or }")]
+    #[case(Expect::Value, "value")]
+    fn test_expect_display(#[case] variant: Expect, #[case] expect: &str) {
+        assert_eq!(expect, variant.to_string());
+    }
+
+    #[rstest]
     #[case::empty(None::<StructKind>)]
     #[case::array([StructKind::Arr])]
     #[case::array_array([StructKind::Arr, StructKind::Arr])]
@@ -1685,25 +1718,142 @@ mod tests {
         assert_eq!(Vec::<StructKind>::new(), ctx.iter().collect::<Vec<_>>());
     }
 
-    #[rstest]
-    #[case(Expect::ArrElementOrEnd, [Token::ArrBegin, Token::ArrEnd, Token::LitFalse, Token::LitNull, Token::LitTrue, Token::Num, Token::ObjBegin, Token::Str])]
-    #[case(Expect::ArrElementSepOrEnd, [Token::ArrEnd, Token::ValueSep])]
-    #[case(Expect::Eof, [])]
-    #[case(Expect::ObjName, [Token::Str])]
-    #[case(Expect::ObjNameOrEnd, [Token::Str, Token::ObjEnd])]
-    #[case(Expect::ObjNameSep, [Token::NameSep])]
-    #[case(Expect::ObjValueSepOrEnd, [Token::ObjEnd, Token::ValueSep])]
-    #[case(Expect::Value, [Token::ArrBegin, Token::LitFalse, Token::LitNull, Token::LitTrue, Token::Num, Token::ObjBegin, Token::Str])]
-    fn test_expect_allowed_tokens<const N: usize>(
-        #[case] input: Expect,
-        #[case] expect: [Token; N],
-    ) {
-        let actual = input.allowed_tokens();
+    #[test]
+    fn test_struct_context_partial_eq() {
+        let empty_inline = StructContext::default();
+        let empty_heap = StructContext::Heap(BitVec::new());
+        assert_eq!(empty_inline, empty_inline);
+        assert_eq!(empty_inline, empty_heap);
+        assert_eq!(empty_heap, empty_inline);
+        assert_eq!(empty_heap, empty_heap);
 
-        assert_eq!(expect, actual);
+        let mut arr_inline = StructContext::default();
+        arr_inline.push(StructKind::Arr);
+        let mut arr_heap = BitVec::new();
+        arr_heap.push(StructKind::Arr.into());
+        let arr_heap = StructContext::Heap(arr_heap);
+        assert_eq!(arr_inline, arr_inline);
+        assert_eq!(arr_inline, arr_heap);
+        assert_eq!(arr_heap, arr_inline);
+        assert_eq!(arr_heap, arr_heap);
+
+        let mut obj_inline = StructContext::default();
+        obj_inline.push(StructKind::Obj);
+        let mut obj_heap = BitVec::new();
+        obj_heap.push(StructKind::Obj.into());
+        let obj_heap = StructContext::Heap(obj_heap);
+        assert_eq!(obj_inline, obj_inline);
+        assert_eq!(obj_inline, obj_heap);
+        assert_eq!(obj_heap, obj_inline);
+        assert_eq!(obj_heap, obj_heap);
+
+        macro_rules! assert_groups_ne {
+            (@one $a:expr, [$($b:expr),+]) => {
+                $( assert_ne!($a, $b); assert_ne!($b, $a); )+
+            };
+            (@group [$single:expr], $($rest:tt),+) => {
+                $( assert_groups_ne!(@one $single, $rest); )+
+            };
+            (@group [$head:expr, $($tail:expr),+], $($rest:tt),+) => {
+                $( assert_groups_ne!(@one $head, $rest); )+
+                assert_groups_ne!(@group [$($tail),+], $($rest),+);
+            };
+            ($single:tt) => {};
+            ($first:tt, $($rest:tt),+) => {
+                assert_groups_ne!(@group $first, $($rest),+);
+                assert_groups_ne!($($rest),+);
+            };
+        }
+
+        assert_groups_ne!(
+            [empty_inline, empty_heap],
+            [arr_inline, arr_heap],
+            [obj_inline, obj_heap]
+        );
     }
 
-    // TODO: next new test is Display for Expect
+    #[test]
+    fn test_context() {
+        let context = Context::default();
+
+        assert_eq!(Expect::Value, context.expect());
+        assert!(!context.is_struct());
+        assert!(context.struct_kind().is_none());
+        assert!(context.iter().next().is_none());
+        assert!(context.clone().into_iter().next().is_none());
+        assert_eq!(0, context.into_iter().len());
+    }
+
+    #[rstest]
+    #[case(ErrorKind::Level { level: 1, token: Token::ArrBegin }, "level error: level 1 would exceed parser's configured maximum on [")]
+    #[case(ErrorKind::Level { level: 2, token: Token::ObjBegin }, "level error: level 2 would exceed parser's configured maximum on {")]
+    #[case(ErrorKind::Lexical(lexical::ErrorKind::Read), "read error")]
+    #[case(
+        ErrorKind::Lexical(lexical::ErrorKind::UnexpectedByte { token: Some(Token::LitTrue), expect: lexical::Expect::Char('r'), actual: b'!'}),
+        "lexical error: expected character 'r' but got character '!' (ASCII 0x21) in true token"
+    )]
+    #[case(
+        ErrorKind::Syntax { context: Context::default(), token: Token::Eof },
+        "syntax error: expected value but got EOF"
+    )]
+    fn test_error_kind_display(#[case] variant: ErrorKind, #[case] expect: &str) {
+        assert_eq!(expect, variant.to_string());
+    }
+
+    #[test]
+    fn test_error_no_source() {
+        let kind = ErrorKind::Syntax {
+            context: Context::default(),
+            token: Token::Eof,
+        };
+
+        let err = Error {
+            kind: kind.clone(),
+            pos: Pos::default(),
+            source: None,
+        };
+
+        assert_eq!(kind, *err.kind());
+        assert_eq!(Pos::default(), *err.pos());
+        assert!(err.source().is_none());
+        assert_eq!(
+            "syntax error: expected value but got EOF at line 1, column 1 (offset: 0)",
+            err.to_string()
+        );
+    }
+
+    #[test]
+    fn test_error_source() {
+        use crate::lexical::read::{self, ReadAnalyzer};
+        use std::{error::Error as StdErr, io};
+
+        struct ErrRead;
+        impl std::io::Read for ErrRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "boom"))
+            }
+        }
+
+        let mut parser = ReadAnalyzer::new(ErrRead).into_parser();
+        assert_eq!(Token::Err, parser.next());
+
+        let err = parser.err();
+        assert_eq!(ErrorKind::Lexical(lexical::ErrorKind::Read), *err.kind());
+        assert_eq!(
+            "read error at line 1, column 1 (offset: 0)",
+            err.to_string()
+        );
+
+        assert!(err.source().is_some());
+        assert!(StdErr::source(&err).is_some());
+        let source = err.source().unwrap();
+        let read_err = source.downcast_ref::<read::Error>().unwrap();
+        let source = read_err.source().unwrap();
+        let io_err = source.downcast_ref::<io::Error>().unwrap();
+        assert_eq!(io::ErrorKind::BrokenPipe, io_err.kind());
+        assert_eq!("boom", io_err.to_string());
+    }
+
     // TODO: replace temp tests below with more comprehensive tests
 
     #[test]
