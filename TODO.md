@@ -1,5 +1,4 @@
-- Finish unit testing odds and ends:
-   - `Parser`
+- Run `cargo bench` as part of the GitHub Actions (and ensure `test --benches` is indeed run).
 - Add number parse methods into `Content`, with provided implementations.
     - Basic algorithm is: if one chunk, use `str::parse`-ish functions directly. If multiple
       chunks but would fit in a reasonable stack buffer, copy it there and `str::parse`, otherwise
@@ -21,7 +20,6 @@
    - Add a use cases section but have it link out to a separate doc.
 - Go over the various key `Content`/`Literal` methods like `len()` and into_buf()` to make sure the
   appropriate ones are inlined.
-- Run `cargo bench` as part of the GitHub Actions.
 - Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
   strings without allocating to unescape. This should be a provided method on the trait.
 - Re-export the following into the root: `Token`, `FixedAnalyzer`, `Parser`.
