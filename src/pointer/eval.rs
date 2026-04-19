@@ -653,7 +653,7 @@ where
     ///
     /// let parser = FixedAnalyzer::new(br#"{"a": [1, 2, 3], "b": true}"#.as_ref()).into_parser();
     /// let ptr = Pointer::from_static("/a");
-    /// let group = Group::from_pointer(ptr_a.clone());
+    /// let group = Group::from_pointer(ptr.clone());
     /// let mut eval = Evaluator::new(parser, group, false);
     ///
     /// assert!(matches!(eval.next_meaningful(), Event::Nil(Token::ObjBegin)));     // {
