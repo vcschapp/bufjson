@@ -7,7 +7,7 @@ readonly -A tool_commands=(
   [doc]='env,RUSTDOCFLAGS=-D warnings,cargo,doc'
   [fmt]='cargo,fmt,--check'
   [build]='env,RUSTFLAGS=-D warnings,cargo,build'
-  [test]='env,RUSTFLAGS=-D warnings,cargo,test,--benches'
+  [test]='env,RUSTFLAGS=-D warnings,cargo,test'
 )
 
 readonly -A profile_args=(
@@ -26,7 +26,6 @@ readonly -A tool_profiles=(
 readonly -A feature_mix_args=(
   [default]=""
   [all]="--all-features"
-  [benches]="--all-features"
 )
 
 readonly -A tool_feature_mixes=(
