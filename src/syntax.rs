@@ -109,11 +109,6 @@ impl From<BitRef<'_>> for StructKind {
 /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Expect {
-    /// While parsing an array value, the parser expects any lexical token that indicates a valid
-    /// JSON value. This can be a literal value, a number or string value, or the start of a
-    /// structured value via `[` or `{`.
-    ArrElement,
-
     /// While parsing an array value, the parser expects one of:
     /// - the `]` character indicating the end of the array ([`Token::ArrEnd`]); or
     /// - any lexical token that indicates an array element (this can be a literal value, a number
@@ -143,11 +138,6 @@ pub enum Expect {
     /// the member name from the member value ([`Token::NameSep`]).
     ObjNameSep,
 
-    /// While parsing an object value member, the parser expects any lexical token that indicates a
-    /// valid JSON value. This can be a literal value, a number or string value, or the start of a
-    /// structured value via `[` or `{`.
-    ObjValue,
-
     /// While parsing an object value, the parser expects one of:
     /// - the `,` character which separates object members ([`Token::ValueSep`]); or
     /// - the `}` character indicating the end of the object ([`Token::ObjEnd`]).
@@ -170,7 +160,7 @@ impl Expect {
     /// ```
     pub const fn allowed_tokens(&self) -> &'static [Token] {
         match self {
-            Expect::ArrElement | Expect::ObjValue | Expect::Value => &[
+            Expect::Value => &[
                 Token::ArrBegin,
                 Token::LitFalse,
                 Token::LitNull,
@@ -209,14 +199,12 @@ impl Expect {
 impl fmt::Display for Expect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            Self::ArrElement => "array element",
             Self::ArrElementOrEnd => "array element or ]",
             Self::ArrElementSepOrEnd => ", or ]",
             Self::Eof => "EOF",
             Self::ObjName => "object member name",
             Self::ObjNameOrEnd => "object member name or }",
             Self::ObjNameSep => ":",
-            Self::ObjValue => "object member value",
             Self::ObjValueSepOrEnd => ", or }",
             Self::Value => "value",
         };
@@ -510,6 +498,35 @@ impl Context {
     pub fn iter(&self) -> StructIter<bitvec::slice::Iter<'_, usize, Lsb0>> {
         self.inner.iter()
     }
+
+    #[cfg(test)]
+    fn with_expect(expect: Expect) -> Self {
+        Self {
+            inner: StructContext::default(),
+            expect,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_struct<I, T>(struct_kinds: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<StructKind>,
+    {
+        let mut this = Self::default();
+        struct_kinds
+            .into_iter()
+            .map(Into::into)
+            .for_each(|k| this.inner.push(k));
+
+        this
+    }
+
+    #[cfg(test)]
+    fn and_expect(mut self, expect: Expect) -> Self {
+        self.expect = expect;
+        self
+    }
 }
 
 impl IntoIterator for Context {
@@ -562,7 +579,11 @@ pub enum ErrorKind {
     /// The next lexical token is a `{` or `[` character that would cause the parser's configured
     /// [maximum nesting level][Parser::max_level] to be exceeded.
     Level {
-        /// The parser's nesting level processing the new token.
+        /// The invalid nesting level that would be triggered by the next lexical token.
+        ///
+        /// This value will always be one more than the parser's [`max_level`].
+        ///
+        /// [`max_level`]: Parser::max_level
         level: usize,
 
         /// The new `{` or `]` token.
@@ -902,8 +923,8 @@ where
         #[rustfmt::skip]
         #[derive(Clone, Copy, Debug)]
         enum Action {
-            ArrBegin, ArrElement, ArrElementSep, Ignore, Name, NameSep, ObjBegin, ObjValue,
-            ObjValueSep, StructEnd, Value, ErrLexical, ErrSyntax, ErrCached,
+            ArrBegin, ArrElement, ArrElementSep, Ignore, Name, NameSep, ObjBegin, ObjValueSep,
+            StructEnd, Value, ErrLexical, ErrSyntax, ErrCached,
         }
 
         macro_rules! key {
@@ -935,18 +956,10 @@ where
             }
 
             set!([ArrElementOrEnd], [ArrEnd], StructEnd);
+            set!([ArrElementOrEnd, Value], [ObjBegin], ObjBegin);
+            set!([ArrElementOrEnd, Value], [ArrBegin], ArrBegin);
             set!(
-                [ArrElement, ArrElementOrEnd, ObjValue, Value],
-                [ObjBegin],
-                ObjBegin
-            );
-            set!(
-                [ArrElement, ArrElementOrEnd, ObjValue, Value],
-                [ArrBegin],
-                ArrBegin
-            );
-            set!(
-                [ArrElement, ArrElementOrEnd],
+                [ArrElementOrEnd],
                 [LitFalse, LitNull, LitTrue, Num, Str],
                 ArrElement
             );
@@ -958,19 +971,16 @@ where
             set!([ObjNameSep], [NameSep], NameSep);
             set!([ObjValueSepOrEnd], [ValueSep], ObjValueSep);
             set!([ObjValueSepOrEnd], [ObjEnd], StructEnd);
-            set!([ObjValue], [LitFalse, LitNull, LitTrue, Num, Str], ObjValue);
             set!([Value], [LitFalse, LitNull, LitTrue, Num, Str], Value);
             set!([Eof], [Eof], Ignore);
             set!(
                 [
-                    ArrElement,
                     ArrElementOrEnd,
                     ArrElementSepOrEnd,
                     Eof,
                     ObjName,
                     ObjNameOrEnd,
                     ObjNameSep,
-                    ObjValue,
                     ObjValueSepOrEnd,
                     Value
                 ],
@@ -979,7 +989,6 @@ where
             );
             set!(
                 [
-                    ArrElement,
                     ArrElementOrEnd,
                     ArrElementSepOrEnd,
                     Eof,
@@ -1006,7 +1015,7 @@ where
                     self.context.expect = Expect::ArrElementOrEnd;
                     return token;
                 } else {
-                    self.err_level(level, token);
+                    self.err_level(token);
                     return Token::Err;
                 }
             }
@@ -1022,11 +1031,10 @@ where
                     self.context.expect = Expect::ObjNameOrEnd;
                     return token;
                 } else {
-                    self.err_level(level, token);
+                    self.err_level(token);
                     return Token::Err;
                 }
             }
-            Action::ObjValue => self.context.expect = Expect::ObjValueSepOrEnd,
             Action::ObjValueSep => self.context.expect = Expect::ObjName,
             Action::StructEnd => self.got_value(true),
             Action::Value => self.got_value(false),
@@ -1282,7 +1290,12 @@ where
     /// [`next_meaningful`]: method@Self::next_meaningful
     #[inline]
     pub fn err(&self) -> Error {
-        self.try_content().unwrap_err()
+        match self.try_content() {
+            Ok(_) => panic!(
+                "no error: last `next()` did not return `Token::Err` (use `content()` instead)"
+            ),
+            Err(err) => err,
+        }
     }
 
     /// Returns the position of the current lexical token.
@@ -1484,7 +1497,7 @@ where
     ///
     /// // Arrays and objects will produce a nesting error because we have set max level to 0.
     /// let err = parse_primitive("[]").unwrap_err();
-    /// assert!(matches!(err.kind(), ErrorKind::Level { level: 0, token: Token::ArrBegin }));
+    /// assert!(matches!(err.kind(), ErrorKind::Level { level: 1, token: Token::ArrBegin }));
     /// ```
     ///
     /// [`max_level`]: method@Self::max_level
@@ -1549,10 +1562,13 @@ where
         }
     }
 
-    fn err_level(&mut self, level: usize, token: Token) {
+    fn err_level(&mut self, token: Token) {
         self.state = State::Err;
         self.err = Some(Error {
-            kind: ErrorKind::Level { level, token },
+            kind: ErrorKind::Level {
+                level: self.max_level + 1,
+                token,
+            },
             pos: *self.pos(),
             source: None,
         });
@@ -1627,14 +1643,12 @@ mod tests {
     }
 
     #[rstest]
-    #[case(Expect::ArrElement, "array element")]
     #[case(Expect::ArrElementOrEnd, "array element or ]")]
     #[case(Expect::ArrElementSepOrEnd, ", or ]")]
     #[case(Expect::Eof, "EOF")]
     #[case(Expect::ObjName, "object member name")]
     #[case(Expect::ObjNameOrEnd, "object member name or }")]
     #[case(Expect::ObjNameSep, ":")]
-    #[case(Expect::ObjValue, "object member value")]
     #[case(Expect::ObjValueSepOrEnd, ", or }")]
     #[case(Expect::Value, "value")]
     fn test_expect_display(#[case] variant: Expect, #[case] expect: &str) {
@@ -1854,57 +1868,263 @@ mod tests {
         assert_eq!("boom", io_err.to_string());
     }
 
-    // TODO: replace temp tests below with more comprehensive tests
-
     #[test]
-    fn temp_test_to_repro_bug_delete_or_replace_me_pls() {
-        let mut parser = lexical::fixed::FixedAnalyzer::new(&b"[1]"[..]).into_parser();
+    fn test_parser_content_new() {
+        let parser = FixedAnalyzer::new("{}".as_bytes()).into_parser();
 
-        assert_eq!(Token::ArrBegin, parser.next());
-        assert_eq!("[", parser.content().literal());
-        assert_eq!(Token::Num, parser.next());
-        assert_eq!("1", parser.content().literal());
+        assert_eq!("", parser.content().literal());
+        assert!(!parser.content().is_escaped());
+        assert_eq!("", parser.content().unescaped());
     }
 
     #[test]
-    fn temp_test_to_repro_bug_delete_or_replace_me_pls_2() {
-        let mut parser = lexical::fixed::FixedAnalyzer::new(&b"[1, 2]"[..]).into_parser();
+    #[should_panic(expected = "no content: parser is in error state (use `err()` instead)")]
+    fn test_parser_content_panic_on_err() {
+        let mut parser = FixedAnalyzer::new(",".as_bytes()).into_parser();
+
+        assert_eq!(Token::Err, parser.next());
+        let _ = parser.content();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "no error: last `next()` did not return `Token::Err` (use `content()` instead"
+    )]
+    fn test_parser_err_panic_on_content() {
+        let parser = FixedAnalyzer::new("".as_bytes()).into_parser();
+
+        let _ = parser.err();
+    }
+
+    #[test]
+    fn test_parser_set_max_level_inflight_level_less() {
+        let mut parser = FixedAnalyzer::new("{}".as_bytes()).into_parser();
+
+        assert_eq!(Token::ObjBegin, parser.next_meaningful());
+        assert_eq!(1, parser.level());
+        assert_eq!(
+            vec![StructKind::Obj],
+            parser.context().iter().collect::<Vec<_>>()
+        );
+
+        parser.set_max_level(2);
+    }
+
+    #[test]
+    fn test_parser_set_max_level_inflight_level_equal() {
+        let mut parser = FixedAnalyzer::new("[]".as_bytes()).into_parser();
 
         assert_eq!(Token::ArrBegin, parser.next_meaningful());
-        assert_eq!("[", parser.content().literal());
-        assert_eq!(Token::Num, parser.next_meaningful());
-        assert_eq!("1", parser.content().literal());
-        assert_eq!(Token::Num, parser.next_meaningful());
-        assert_eq!("2", parser.content().literal());
+        assert_eq!(1, parser.level());
+        assert_eq!(
+            vec![StructKind::Arr],
+            parser.context().iter().collect::<Vec<_>>()
+        );
+
+        parser.set_max_level(1);
     }
 
     #[test]
-    fn temp_test_to_repro_bug_delete_or_replace_me_pls_3() {
-        let mut parser = lexical::fixed::FixedAnalyzer::new(&b"[}"[..]).into_parser();
+    #[should_panic(expected = "current level 2 exceeds new max level 1")]
+    fn test_parser_set_max_level_inflight_level_more() {
+        let mut parser = FixedAnalyzer::new("[{}]".as_bytes()).into_parser();
 
         assert_eq!(Token::ArrBegin, parser.next());
-        assert_eq!("[", parser.content().literal());
-        assert_eq!(Token::Err, parser.next());
+        assert_eq!(Token::ObjBegin, parser.next());
+        assert_eq!(2, parser.level());
+        assert_eq!(
+            vec![StructKind::Arr, StructKind::Obj],
+            parser.context().iter().collect::<Vec<_>>()
+        );
+
+        parser.set_max_level(1);
     }
 
     #[test]
-    fn temp_test_to_repro_bug_delete_or_replace_me_pls_4() {
-        let mut parser = lexical::fixed::FixedAnalyzer::new(
-            &br#"{"multiValueHeaders":{"foo":["bar"],"foo":["baz"]}}"#[..],
-        )
-        .into_parser();
+    fn test_parser_with_max_level() {
+        let mut parser = Parser::with_max_level(FixedAnalyzer::new("{".as_bytes()), 0);
 
-        loop {
-            match parser.next() {
-                Token::Err => panic!("{:?}", parser.err()),
-                Token::Str => assert!(
-                    parser.content().literal().len() >= 2,
-                    "literal content: {:?}",
-                    parser.content().literal()
-                ),
-                Token::Eof => break,
-                _ => (),
-            };
+        assert_eq!(Token::Err, parser.next());
+        assert!(matches!(
+            parser.err().kind(),
+            ErrorKind::Level {
+                level: 1,
+                token: Token::ObjBegin
+            }
+        ));
+    }
+
+    #[test]
+    fn test_parser_into_inner() {
+        let mut parser = FixedAnalyzer::new("[,".as_bytes()).into_parser();
+
+        assert_eq!(Token::ArrBegin, parser.next());
+
+        let mut lexer = parser.into_inner();
+
+        assert_eq!(Token::ValueSep, lexer.next());
+        assert_eq!(Token::Eof, lexer.next());
+        assert_eq!(Token::Eof, lexer.next());
+    }
+
+    #[rstest]
+    #[case::arr_empty("[]", [(Token::ArrBegin, "["), (Token::ArrEnd, "]")])]
+    #[case::arr_one("[1]", [(Token::ArrBegin, "["), (Token::Num, "1"), (Token::ArrEnd, "]")])]
+    #[case::arr_two(r#"["a",null]"#, [(Token::ArrBegin, "["), (Token::Str, r#""a""#), (Token::ValueSep, ","), (Token::LitNull, "null"), (Token::ArrEnd, "]")])]
+    #[case::arr_three(r#"[[],{},[123]]"#, [(Token::ArrBegin, "["), (Token::ArrBegin, "["), (Token::ArrEnd, "]"), (Token::ValueSep, ","), (Token::ObjBegin, "{"), (Token::ObjEnd, "}"), (Token::ValueSep, ","), (Token::ArrBegin, "["), (Token::Num, "123"), (Token::ArrEnd, "]"), (Token::ArrEnd, "]")])]
+    #[case::num("-123.4e+5", Some((Token::Num, "-123.4e+5")))]
+    #[case::lit_false("false", Some((Token::LitFalse, "false")))]
+    #[case::lit_null("null", Some((Token::LitNull, "null")))]
+    #[case::lit_true("true", Some((Token::LitTrue, "true")))]
+    #[case::obj_empty("{}", [(Token::ObjBegin, "{"), (Token::ObjEnd, "}")])]
+    #[case::obj_one_arr(r#"{"a":[]}"#, [(Token::ObjBegin, "{"), (Token::Str, r#""a""#), (Token::NameSep, ":"), (Token::ArrBegin, "["), (Token::ArrEnd, "]"), (Token::ObjEnd, "}")])]
+    #[case::obj_one_num(r#"{"a":1}"#, [(Token::ObjBegin, "{"), (Token::Str, r#""a""#), (Token::NameSep, ":"), (Token::Num, "1"), (Token::ObjEnd, "}")])]
+    #[case::obj_one_lit_false(r#"{"a":false}"#, [(Token::ObjBegin, "{"), (Token::Str, r#""a""#), (Token::NameSep, ":"), (Token::LitFalse, "false"), (Token::ObjEnd, "}")])]
+    #[case::obj_one_lit_null(r#"{"a":null}"#, [(Token::ObjBegin, "{"), (Token::Str, r#""a""#), (Token::NameSep, ":"), (Token::LitNull, "null"), (Token::ObjEnd, "}")])]
+    #[case::obj_one_lit_true(r#"{"a":true}"#, [(Token::ObjBegin, "{"), (Token::Str, r#""a""#), (Token::NameSep, ":"), (Token::LitTrue, "true"), (Token::ObjEnd, "}")])]
+    #[case::obj_one_str(r#"{"a":"b"}"#, [(Token::ObjBegin, "{"), (Token::Str, r#""a""#), (Token::NameSep, ":"), (Token::Str, r#""b""#), (Token::ObjEnd, "}")])]
+    #[case::obj_two(r#"{"a":null,"b":"c"}"#, [(Token::ObjBegin, "{"), (Token::Str, r#""a""#), (Token::NameSep, ":"), (Token::LitNull, "null"), (Token::ValueSep, ","), (Token::Str, r#""b""#), (Token::NameSep, ":"), (Token::Str, r#""c""#), (Token::ObjEnd, "}")])]
+    #[case::obj_three(r#"{"a":[],"b":{},"c":{"d":123}}"#, [(Token::ObjBegin, "{"), (Token::Str, r#""a""#), (Token::NameSep, ":"), (Token::ArrBegin, "["), (Token::ArrEnd, "]"), (Token::ValueSep, ","), (Token::Str, r#""b""#), (Token::NameSep, ":"), (Token::ObjBegin, "{"), (Token::ObjEnd, "}"), (Token::ValueSep, ","), (Token::Str, r#""c""#), (Token::NameSep, ":"), (Token::ObjBegin, "{"), (Token::Str, r#""d""#), (Token::NameSep, ":"), (Token::Num, "123"), (Token::ObjEnd, "}"), (Token::ObjEnd, "}")])]
+    #[case::str(r#""foo""#, Some((Token::Str, r#""foo""#)))]
+    #[case::white_arr(" [ false ] ", [(Token::White, " "), (Token::ArrBegin, "["), (Token::White, " "), (Token::LitFalse, "false"), (Token::White, " "), (Token::ArrEnd, "]"), (Token::White, " ")])]
+    #[case::white_lit_false(" false ", [(Token::White, " "), (Token::LitFalse, "false"), (Token::White, " ")])]
+    #[case::white_lit_null(" null ", [(Token::White, " "), (Token::LitNull, "null"), (Token::White, " ")])]
+    #[case::white_lit_true(" true ", [(Token::White, " "), (Token::LitTrue, "true"), (Token::White, " ")])]
+    #[case::white_num(" \n  42 ", [(Token::White, " \n  "), (Token::Num, "42"), (Token::White, " ")])]
+    #[case::white_obj(r#" { "a" : null } "#, [(Token::White, " "), (Token::ObjBegin, "{"), (Token::White, " "), (Token::Str, r#""a""#), (Token::White, " "), (Token::NameSep, ":"), (Token::White, " "), (Token::LitNull, "null"), (Token::White, " "), (Token::ObjEnd, "}"), (Token::White, " ")])]
+    #[case::white_str(r#" "foo" "#, [(Token::White, " "), (Token::Str, r#""foo""#), (Token::White, " ")])]
+    fn test_parser_next<I>(#[case] input: &'static str, #[case] expect: I)
+    where
+        I: IntoIterator<Item = (Token, &'static str)> + Clone,
+    {
+        // `next`
+        {
+            // Without content fetch.
+            {
+                let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+                for (i, (expect_token, _)) in expect.clone().into_iter().enumerate() {
+                    let actual_token = parser.next();
+                    assert_eq!(
+                        expect_token, actual_token,
+                        "expected token {i} to be {expect_token} but it was {actual_token}"
+                    );
+                }
+                assert_eq!(Token::Eof, parser.next());
+                assert_eq!(Token::Eof, parser.next());
+                assert_eq!(Expect::Eof, parser.context().expect());
+                assert_eq!(None, parser.context().struct_kind());
+            }
+
+            // With content fetch.
+            {
+                let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+                for (i, (expect_token, expect_literal)) in expect.clone().into_iter().enumerate() {
+                    let actual_token = parser.next();
+                    assert_eq!(
+                        expect_token, actual_token,
+                        "expected token {i} to be {expect_token} but it was {actual_token}"
+                    );
+                    let actual_content = parser.content();
+                    let actual_literal = actual_content.literal();
+                    assert_eq!(expect_literal, actual_literal);
+                }
+                assert_eq!(Token::Eof, parser.next());
+                assert_eq!(Token::Eof, parser.next());
+                assert_eq!(Expect::Eof, parser.context().expect());
+                assert_eq!(None, parser.context().struct_kind());
+            }
+        }
+
+        // `next_non_white`
+        {
+            // Without content fetch.
+            {
+                let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+                for (i, (expect_token, _)) in expect
+                    .clone()
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, (t, _))| *t != Token::White)
+                {
+                    let actual_token = parser.next_non_white();
+                    assert_eq!(
+                        expect_token, actual_token,
+                        "expected token {i} to be {expect_token} but it was {actual_token}"
+                    );
+                }
+                assert_eq!(Token::Eof, parser.next_non_white());
+                assert_eq!(Token::Eof, parser.next_non_white());
+                assert_eq!(Expect::Eof, parser.context().expect());
+                assert_eq!(None, parser.context().struct_kind());
+            }
+
+            // With content fetch.
+            {
+                let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+                for (i, (expect_token, expect_literal)) in expect
+                    .clone()
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, (t, _))| *t != Token::White)
+                {
+                    let actual_token = parser.next_non_white();
+                    assert_eq!(
+                        expect_token, actual_token,
+                        "expected token {i} to be {expect_token} but it was {actual_token}"
+                    );
+                    let actual_content = parser.content();
+                    let actual_literal = actual_content.literal();
+                    assert_eq!(expect_literal, actual_literal);
+                }
+                assert_eq!(Token::Eof, parser.next_non_white());
+                assert_eq!(Token::Eof, parser.next_non_white());
+                assert_eq!(Expect::Eof, parser.context().expect());
+                assert_eq!(None, parser.context().struct_kind());
+            }
+        }
+
+        // `next_meaningful`
+        {
+            // Without content fetch.
+            {
+                let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+                for (i, (expect_token, _)) in expect
+                    .clone()
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, (t, _))| *t != Token::White && !t.is_punct())
+                {
+                    let actual_token = parser.next_meaningful();
+                    assert_eq!(
+                        expect_token, actual_token,
+                        "expected token {i} to be {expect_token} but it was {actual_token}"
+                    );
+                }
+                assert_eq!(Token::Eof, parser.next_meaningful());
+                assert_eq!(Token::Eof, parser.next_meaningful());
+            }
+
+            // With content fetch.
+            {
+                let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+                for (i, (expect_token, expect_literal)) in expect
+                    .clone()
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, (t, _))| *t != Token::White && !t.is_punct())
+                {
+                    let actual_token = parser.next_meaningful();
+                    assert_eq!(
+                        expect_token, actual_token,
+                        "expected token {i} to be {expect_token} but it was {actual_token}"
+                    );
+                    let actual_content = parser.content();
+                    let actual_literal = actual_content.literal();
+                    assert_eq!(expect_literal, actual_literal);
+                }
+                assert_eq!(Token::Eof, parser.next_meaningful());
+                assert_eq!(Token::Eof, parser.next_meaningful());
+            }
         }
     }
 
@@ -1928,6 +2148,8 @@ mod tests {
         assert_eq!(Token::Eof, parser.next_end());
         assert_eq!(0, parser.level());
         assert_eq!(Token::Eof, parser.next());
+        assert_eq!(Expect::Eof, parser.context().expect());
+        assert_eq!(None, parser.context().struct_kind());
     }
 
     #[rstest]
@@ -1966,5 +2188,337 @@ mod tests {
         assert_eq!(expect_token, parser.next_end());
         assert_eq!(expect_level, parser.level());
         assert_eq!(expect_next, parser.next());
+    }
+
+    #[rstest]
+    #[case::arr_max_level_0("[", 0, None::<Token>, Token::ArrBegin)]
+    #[case::arr_max_level_1("[[", 1, [Token::ArrBegin], Token::ArrBegin)]
+    #[case::arr_max_level_2("[[[", 2, [Token::ArrBegin, Token::ArrBegin], Token::ArrBegin)]
+    #[case::obj_max_level_0("{", 0, None::<Token>, Token::ObjBegin)]
+    #[case::obj_max_level_1(r#"{"a":{"#, 1, [Token::ObjBegin, Token::Str], Token::ObjBegin)]
+    #[case::obj_max_level_2(r#"{"a":{"b":{"#, 2, [Token::ObjBegin, Token::Str, Token::ObjBegin, Token::Str], Token::ObjBegin)]
+    #[case::mixed(r#"[null, {"a":1}, [true, {"b":[null]}]]"#, 3, [Token::ArrBegin, Token::LitNull, Token::ObjBegin, Token::Str, Token::Num, Token::ObjEnd, Token::ArrBegin, Token::LitTrue, Token::ObjBegin, Token::Str], Token::ArrBegin)]
+    fn test_parser_err_level<I>(
+        #[case] input: &str,
+        #[case] max_level: usize,
+        #[case] leading_tokens: I,
+        #[case] trigger_token: Token,
+    ) where
+        I: IntoIterator<Item = Token>,
+    {
+        let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+        parser.set_max_level(max_level);
+        assert_eq!(max_level, parser.max_level());
+
+        for (i, expect_token) in leading_tokens.into_iter().enumerate() {
+            let actual_token = parser.next_meaningful();
+            assert_eq!(
+                expect_token, actual_token,
+                "expected token {i} to be {expect_token} but it was {actual_token}"
+            );
+        }
+
+        assert_eq!(Token::Err, parser.next_meaningful());
+
+        let err = parser.err();
+        let err_kind = err.kind();
+        assert!(
+            matches!(err_kind, ErrorKind::Level { level, token } if *level == max_level + 1 && *token == trigger_token),
+            "err_kind: {err_kind:?}"
+        );
+
+        assert_eq!(Token::Err, parser.next());
+    }
+
+    #[rstest]
+    #[case::expect_arr_element_or_end("[_", [Token::ArrBegin], lexical::ErrorKind::UnexpectedByte { token: None, expect: lexical::Expect::TokenStartChar, actual: b'_' })]
+    #[case::expect_arr_element_sep_or_end("[1 _", [Token::ArrBegin, Token::Num], lexical::ErrorKind::UnexpectedByte { token: None, expect: lexical::Expect::TokenStartChar, actual: b'_' })]
+    #[case::expect_eof("true \"", [Token::LitTrue], lexical::ErrorKind::UnexpectedEof(Token::Str))]
+    #[case::expect_obj_name(r#"{"a":"b",""#, [Token::ObjBegin, Token::Str, Token::Str], lexical::ErrorKind::UnexpectedEof(Token::Str))]
+    #[case::expect_obj_name_or_end("{1b", [Token::ObjBegin], lexical::ErrorKind::UnexpectedByte { token: Some(Token::Num), expect: lexical::Expect::DigitDotExpOrBoundary, actual: b'b' })]
+    #[case::expect_obj_name_sep(r#"{"a"n"#, [Token::ObjBegin, Token::Str], lexical::ErrorKind::UnexpectedEof(Token::LitNull))]
+    #[case::expect_value_root("1x", None::<Token>, lexical::ErrorKind::UnexpectedByte { token: Some(Token::Num), expect: lexical::Expect::DigitDotExpOrBoundary, actual: b'x' })]
+    #[case::expect_value_arr_element("[1,t", [Token::ArrBegin, Token::Num], lexical::ErrorKind::UnexpectedEof(Token::LitTrue))]
+    #[case::expect_value_obj_member(r#"{"a":n"#, [Token::ObjBegin, Token::Str], lexical::ErrorKind::UnexpectedEof(Token::LitNull))]
+    fn test_parser_err_lexical<I>(
+        #[case] input: &str,
+        #[case] leading_tokens: I,
+        #[case] expect_kind: lexical::ErrorKind,
+    ) where
+        I: IntoIterator<Item = Token>,
+    {
+        let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+
+        for (i, expect_token) in leading_tokens.into_iter().enumerate() {
+            let actual_token = parser.next_meaningful();
+            assert_eq!(
+                expect_token, actual_token,
+                "expected token {i} to be {expect_token} but it was {actual_token}"
+            );
+        }
+
+        assert_eq!(Token::Err, parser.next_meaningful());
+
+        let err = parser.err();
+        let err_kind = err.kind();
+        assert!(
+            matches!(err_kind, ErrorKind::Lexical(actual_kind) if *actual_kind == expect_kind),
+            "err_kind: {err_kind:?}"
+        );
+
+        assert_eq!(Token::Err, parser.next());
+    }
+
+    #[rstest]
+    #[case::expect_arr_element_or_end_eof("[", [Token::ArrBegin], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementOrEnd), Token::Eof)]
+    #[case::expect_arr_element_or_end_name_sep("[:", [Token::ArrBegin], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementOrEnd), Token::NameSep)]
+    #[case::expect_arr_element_or_end_obj_end("[}", [Token::ArrBegin], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementOrEnd), Token::ObjEnd)]
+    #[case::expect_arr_element_or_end_value_sep("[,", [Token::ArrBegin], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementOrEnd), Token::ValueSep)]
+    #[case::expect_arr_element_sep_or_end_arr_begin(r#"[1,"a"["#, [Token::ArrBegin, Token::Num, Token::Str], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementSepOrEnd), Token::ArrBegin)]
+    #[case::expect_arr_element_sep_or_end_eof("[1,2", [Token::ArrBegin, Token::Num, Token::Num], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementSepOrEnd), Token::Eof)]
+    #[case::expect_arr_element_sep_or_end_lit_false("[1,[]false", [Token::ArrBegin, Token::Num, Token::ArrBegin, Token::ArrEnd], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementSepOrEnd), Token::LitFalse)]
+    #[case::expect_arr_element_sep_or_end_lit_null("[1,{}null", [Token::ArrBegin, Token::Num, Token::ObjBegin, Token::ObjEnd], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementSepOrEnd), Token::LitNull)]
+    #[case::expect_arr_element_sep_or_end_lit_true(r#"[1,"a"true"#, [Token::ArrBegin, Token::Num, Token::Str], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementSepOrEnd), Token::LitTrue)]
+    #[case::expect_arr_element_sep_or_end_name_sep("[1,null:", [Token::ArrBegin, Token::Num, Token::LitNull], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementSepOrEnd), Token::NameSep)]
+    #[case::expect_arr_element_sep_or_end_lit_true(r#"[1,"a"2"#, [Token::ArrBegin, Token::Num, Token::Str], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementSepOrEnd), Token::Num)]
+    #[case::expect_arr_element_sep_or_end_obj_begin(r#"[1,true{"#, [Token::ArrBegin, Token::Num, Token::LitTrue], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementSepOrEnd), Token::ObjBegin)]
+    #[case::expect_arr_element_sep_or_end_obj_end(r#"[[],1}"#, [Token::ArrBegin, Token::ArrBegin, Token::ArrEnd, Token::Num], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementSepOrEnd), Token::ObjEnd)]
+    #[case::expect_arr_element_sep_or_end_str(r#"[1,false"a"}"#, [Token::ArrBegin, Token::Num, Token::LitFalse], Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementSepOrEnd), Token::Str)]
+    #[case::expect_eof_arr_begin(r#"1["#, [Token::Num], Context::with_expect(Expect::Eof), Token::ArrBegin)]
+    #[case::expect_eof_arr_end(r#""foo"]"#, [Token::Str], Context::with_expect(Expect::Eof), Token::ArrEnd)]
+    #[case::expect_eof_lit_false("1 false", [Token::Num], Context::with_expect(Expect::Eof), Token::LitFalse)]
+    #[case::expect_eof_lit_null("[]null", [Token::ArrBegin, Token::ArrEnd], Context::with_expect(Expect::Eof), Token::LitNull)]
+    #[case::expect_eof_lit_true("{}true", [Token::ObjBegin, Token::ObjEnd], Context::with_expect(Expect::Eof), Token::LitTrue)]
+    #[case::expect_eof_name_sep("1:", [Token::Num], Context::with_expect(Expect::Eof), Token::NameSep)]
+    #[case::expect_eof_num("null -1", [Token::LitNull], Context::with_expect(Expect::Eof), Token::Num)]
+    #[case::expect_eof_obj_begin("[]{", [Token::ArrBegin, Token::ArrEnd], Context::with_expect(Expect::Eof), Token::ObjBegin)]
+    #[case::expect_eof_obj_end("{}}", [Token::ObjBegin, Token::ObjEnd], Context::with_expect(Expect::Eof), Token::ObjEnd)]
+    #[case::expect_eof_num(r#"0 "baz""#, [Token::Num], Context::with_expect(Expect::Eof), Token::Str)]
+    #[case::expect_eof_name_sep("[],", [Token::ArrBegin, Token::ArrEnd], Context::with_expect(Expect::Eof), Token::ValueSep)]
+    #[case::expect_obj_name_arr_begin(r#"{"a":"b",["#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjName), Token::ArrBegin)]
+    #[case::expect_obj_name_arr_end(r#"{"a":"b",]"#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjName), Token::ArrEnd)]
+    #[case::expect_obj_name_eof(r#"{"a":"b","#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjName), Token::Eof)]
+    #[case::expect_obj_name_lit_false(r#"{"a":"b",false"#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjName), Token::LitFalse)]
+    #[case::expect_obj_name_lit_null(r#"{"a":"b",null"#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjName), Token::LitNull)]
+    #[case::expect_obj_name_lit_true(r#"{"a":"b",true"#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjName), Token::LitTrue)]
+    #[case::expect_obj_name_name_sep(r#"{"a":"b",:"#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjName), Token::NameSep)]
+    #[case::expect_obj_name_num(r#"{"a":"b",1"#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjName), Token::Num)]
+    #[case::expect_obj_name_obj_begin(r#"{"a":"b",{"#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjName), Token::ObjBegin)]
+    #[case::expect_obj_name_obj_end(r#"{"a":"b",}"#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjName), Token::ObjEnd)]
+    #[case::expect_obj_name_value_sep(r#"{"a":"b",,"#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjName), Token::ValueSep)]
+    #[case::expect_obj_name_or_end_arr_begin(r#"{["#, [Token::ObjBegin], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameOrEnd), Token::ArrBegin)]
+    #[case::expect_obj_name_or_end_arr_end(r#"{]"#, [Token::ObjBegin], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameOrEnd), Token::ArrEnd)]
+    #[case::expect_obj_name_or_end_eof(r#"{"#, [Token::ObjBegin], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameOrEnd), Token::Eof)]
+    #[case::expect_obj_name_or_end_lit_false(r#"{false"#, [Token::ObjBegin], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameOrEnd), Token::LitFalse)]
+    #[case::expect_obj_name_or_end_lit_null(r#"{null"#, [Token::ObjBegin], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameOrEnd), Token::LitNull)]
+    #[case::expect_obj_name_or_end_lit_true(r#"{true"#, [Token::ObjBegin], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameOrEnd), Token::LitTrue)]
+    #[case::expect_obj_name_or_end_name_sep(r#"{:"#, [Token::ObjBegin], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameOrEnd), Token::NameSep)]
+    #[case::expect_obj_name_or_end_num(r#"{1"#, [Token::ObjBegin], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameOrEnd), Token::Num)]
+    #[case::expect_obj_name_or_end_obj_begin(r#"{{"#, [Token::ObjBegin], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameOrEnd), Token::ObjBegin)]
+    #[case::expect_obj_name_or_end_value_sep(r#"{,"#, [Token::ObjBegin], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameOrEnd), Token::ValueSep)]
+    #[case::expect_obj_name_sep_arr_begin(r#"{"a"["#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameSep), Token::ArrBegin)]
+    #[case::expect_obj_name_sep_arr_end(r#"{"a"]"#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameSep), Token::ArrEnd)]
+    #[case::expect_obj_name_sep_eof(r#"{"a""#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameSep), Token::Eof)]
+    #[case::expect_obj_name_sep_lit_false(r#"{"a"false"#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameSep), Token::LitFalse)]
+    #[case::expect_obj_name_sep_lit_null(r#"{"a"null"#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameSep), Token::LitNull)]
+    #[case::expect_obj_name_sep_lit_true(r#"{"a"true"#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameSep), Token::LitTrue)]
+    #[case::expect_obj_name_sep_num(r#"{"a"1"#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameSep), Token::Num)]
+    #[case::expect_obj_name_sep_obj_begin(r#"{"a"{"#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameSep), Token::ObjBegin)]
+    #[case::expect_obj_name_sep_obj_end(r#"{"a"}"#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameSep), Token::ObjEnd)]
+    #[case::expect_obj_name_sep_str(r#"{"a""b""#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameSep), Token::Str)]
+    #[case::expect_obj_name_sep_value_sep(r#"{"a","#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameSep), Token::ValueSep)]
+    #[case::expect_obj_value_sep_or_end_arr_begin(r#"{"a":false["#, [Token::ObjBegin, Token::Str, Token::LitFalse], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjValueSepOrEnd), Token::ArrBegin)]
+    #[case::expect_obj_value_sep_or_end_arr_end(r#"{"a":1]"#, [Token::ObjBegin, Token::Str, Token::Num], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjValueSepOrEnd), Token::ArrEnd)]
+    #[case::expect_obj_value_sep_or_end_eof(r#"{"a":null"#, [Token::ObjBegin, Token::Str, Token::LitNull], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjValueSepOrEnd), Token::Eof)]
+    #[case::expect_obj_value_sep_or_end_lit_false(r#"{"a":"b" false"#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjValueSepOrEnd), Token::LitFalse)]
+    #[case::expect_obj_value_sep_or_end_lit_null(r#"{"a":true null"#, [Token::ObjBegin, Token::Str, Token::LitTrue], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjValueSepOrEnd), Token::LitNull)]
+    #[case::expect_obj_value_sep_or_end_lit_true(r#"{"a":{}true"#, [Token::ObjBegin, Token::Str, Token::ObjBegin, Token::ObjEnd], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjValueSepOrEnd), Token::LitTrue)]
+    #[case::expect_obj_value_sep_or_end_name_sep(r#"{"a":"b":"#, [Token::ObjBegin, Token::Str, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjValueSepOrEnd), Token::NameSep)]
+    #[case::expect_obj_value_sep_or_end_num(r#"{"a":[]1"#, [Token::ObjBegin, Token::Str, Token::ArrBegin, Token::ArrEnd], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjValueSepOrEnd), Token::Num)]
+    #[case::expect_obj_value_sep_or_end_obj_begin(r#"{"a":false{"#, [Token::ObjBegin, Token::Str, Token::LitFalse], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjValueSepOrEnd), Token::ObjBegin)]
+    #[case::expect_obj_value_sep_or_end_str(r#"{"a":1"b""#, [Token::ObjBegin, Token::Str, Token::Num], Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjValueSepOrEnd), Token::Str)]
+    #[case::expect_value_arr_end("]", None::<Token>, Context::default(), Token::ArrEnd)]
+    #[case::expect_value_eof("", None::<Token>, Context::default(), Token::Eof)]
+    #[case::expect_value_name_sep(":", None::<Token>, Context::default(), Token::NameSep)]
+    #[case::expect_value_obj_end("}", None::<Token>, Context::default(), Token::ObjEnd)]
+    #[case::expect_value_value_sep(",", None::<Token>, Context::default(), Token::ValueSep)]
+    #[case::expect_value_in_arr_arr_end("[1,]", [Token::ArrBegin, Token::Num], Context::with_struct([StructKind::Arr]).and_expect(Expect::Value), Token::ArrEnd)]
+    #[case::expect_value_in_arr_eof("[1,", [Token::ArrBegin, Token::Num], Context::with_struct([StructKind::Arr]).and_expect(Expect::Value), Token::Eof)]
+    #[case::expect_value_in_arr_name_sep("[1,:", [Token::ArrBegin, Token::Num], Context::with_struct([StructKind::Arr]).and_expect(Expect::Value), Token::NameSep)]
+    #[case::expect_value_in_arr_obj_end("[1,}", [Token::ArrBegin, Token::Num], Context::with_struct([StructKind::Arr]).and_expect(Expect::Value), Token::ObjEnd)]
+    #[case::expect_value_in_arr_value_sep("[1,,", [Token::ArrBegin, Token::Num], Context::with_struct([StructKind::Arr]).and_expect(Expect::Value), Token::ValueSep)]
+    #[case::expect_value_in_obj_arr_end(r#"{"a":]"#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::Value), Token::ArrEnd)]
+    #[case::expect_value_in_obj_name_sep(r#"{"a"::"#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::Value), Token::NameSep)]
+    #[case::expect_value_in_obj_obj_end(r#"{"a":}"#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::Value), Token::ObjEnd)]
+    #[case::expect_value_in_obj_value_sep(r#"{"a":,]"#, [Token::ObjBegin, Token::Str], Context::with_struct([StructKind::Obj]).and_expect(Expect::Value), Token::ValueSep)]
+    fn test_parser_err_syntax<I>(
+        #[case] input: &str,
+        #[case] leading_tokens: I,
+        #[case] expect_context: Context,
+        #[case] expect_token: Token,
+    ) where
+        I: IntoIterator<Item = Token> + Clone,
+    {
+        // Without added whitespace between tokens.
+        {
+            let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+
+            for (i, expect_token) in leading_tokens.clone().into_iter().enumerate() {
+                let actual_token = parser.next_meaningful();
+                assert_eq!(
+                    expect_token, actual_token,
+                    "expected token {i} to be {expect_token} but it was {actual_token}"
+                );
+            }
+
+            assert_eq!(Token::Err, parser.next_meaningful());
+
+            let err = parser.err();
+            let err_kind = err.kind();
+
+            assert!(
+                matches!(err_kind, ErrorKind::Syntax { context, token } if *context == expect_context && *token == expect_token),
+                "err_kind: {err_kind:?}"
+            );
+
+            assert_eq!(Token::Err, parser.next());
+        }
+
+        // With added whitespace between tokens.
+        {
+            // Create a version of the input with whitespace between every token.
+            let mut lexer = FixedAnalyzer::new(input.as_bytes());
+            let mut buf = Vec::with_capacity(2 * input.len());
+            buf.push(b' ');
+            while !lexer.next().is_terminal() {
+                buf.extend_from_slice(lexer.content().literal().as_bytes());
+                buf.push(b' ');
+            }
+
+            // Now repeat the test with the version of the input that has the whitespace.
+            let mut parser = FixedAnalyzer::new(buf).into_parser();
+
+            for (i, expect_token) in leading_tokens.into_iter().enumerate() {
+                let actual_token = parser.next_meaningful();
+                assert_eq!(
+                    expect_token, actual_token,
+                    "expected token {i} to be {expect_token} but it was {actual_token}"
+                );
+            }
+
+            assert_eq!(Token::Err, parser.next_meaningful());
+
+            let err = parser.err();
+            let err_kind = err.kind();
+
+            assert!(
+                matches!(err_kind, ErrorKind::Syntax { context, token } if *context == expect_context && *token == expect_token),
+                "err_kind: {err_kind:?}"
+            );
+
+            assert_eq!(Token::Err, parser.next());
+        }
+    }
+
+    #[test]
+    fn test_parser_smoke() {
+        const JSON_TEXT: &str = r#"{
+  "foo":[false,null,true,1,"bar",{},[[]]],
+  "baz":{"qux":5e-7,"abc\u0020123":"Lorem ipsum dolor sit amet, consectetur adipiscing elit. Cras sed ipsum at arcu porta blandit."},
+  "👋":[[null],[true],[1],["こんにちは、世界"],[{},-3.00e+0]]
+}"#;
+        const EXPECT: &[(Token, &str)] = &[
+            // Line 1
+            (Token::ObjBegin, "{"),
+            (Token::White, "\n  "),
+            // Line 2: "foo":[false,null,true,1,"bar",{},[[]]],
+            (Token::Str, r#""foo""#),
+            (Token::NameSep, ":"),
+            (Token::ArrBegin, "["),
+            (Token::LitFalse, "false"),
+            (Token::ValueSep, ","),
+            (Token::LitNull, "null"),
+            (Token::ValueSep, ","),
+            (Token::LitTrue, "true"),
+            (Token::ValueSep, ","),
+            (Token::Num, "1"),
+            (Token::ValueSep, ","),
+            (Token::Str, r#""bar""#),
+            (Token::ValueSep, ","),
+            (Token::ObjBegin, "{"),
+            (Token::ObjEnd, "}"),
+            (Token::ValueSep, ","),
+            (Token::ArrBegin, "["),
+            (Token::ArrBegin, "["),
+            (Token::ArrEnd, "]"),
+            (Token::ArrEnd, "]"),
+            (Token::ArrEnd, "]"),
+            (Token::ValueSep, ","),
+            (Token::White, "\n  "),
+            // Line 3: "baz":{"qux":5e-7,"abc\u0020123":"Lorem ipsum ..."},
+            (Token::Str, r#""baz""#),
+            (Token::NameSep, ":"),
+            (Token::ObjBegin, "{"),
+            (Token::Str, r#""qux""#),
+            (Token::NameSep, ":"),
+            (Token::Num, "5e-7"),
+            (Token::ValueSep, ","),
+            (Token::Str, r#""abc\u0020123""#),
+            (Token::NameSep, ":"),
+            (
+                Token::Str,
+                r#""Lorem ipsum dolor sit amet, consectetur adipiscing elit. Cras sed ipsum at arcu porta blandit.""#,
+            ),
+            (Token::ObjEnd, "}"),
+            (Token::ValueSep, ","),
+            (Token::White, "\n  "),
+            // Line 4: "👋":[[null],[true],[1],["こんにちは、世界"],[{},-3.00e+0]]
+            (Token::Str, r#""👋""#),
+            (Token::NameSep, ":"),
+            (Token::ArrBegin, "["),
+            (Token::ArrBegin, "["),
+            (Token::LitNull, "null"),
+            (Token::ArrEnd, "]"),
+            (Token::ValueSep, ","),
+            (Token::ArrBegin, "["),
+            (Token::LitTrue, "true"),
+            (Token::ArrEnd, "]"),
+            (Token::ValueSep, ","),
+            (Token::ArrBegin, "["),
+            (Token::Num, "1"),
+            (Token::ArrEnd, "]"),
+            (Token::ValueSep, ","),
+            (Token::ArrBegin, "["),
+            (Token::Str, r#""こんにちは、世界""#),
+            (Token::ArrEnd, "]"),
+            (Token::ValueSep, ","),
+            (Token::ArrBegin, "["),
+            (Token::ObjBegin, "{"),
+            (Token::ObjEnd, "}"),
+            (Token::ValueSep, ","),
+            (Token::Num, "-3.00e+0"),
+            (Token::ArrEnd, "]"),
+            (Token::ArrEnd, "]"),
+            (Token::White, "\n"),
+            // Line 5
+            (Token::ObjEnd, "}"),
+            (Token::Eof, ""),
+            (Token::Eof, ""),
+            (Token::Eof, ""),
+        ];
+
+        let mut parser = FixedAnalyzer::new(JSON_TEXT.as_bytes()).into_parser();
+
+        for (i, (expect_token, expect_literal)) in EXPECT.iter().enumerate() {
+            let actual_token = parser.next();
+            let content = parser.content();
+
+            assert_eq!(*expect_token, actual_token, "i = {i}, content = {content}");
+            assert_eq!(
+                *expect_literal,
+                content.literal(),
+                "i = {i}, token = {actual_token}"
+            );
+        }
     }
 }
