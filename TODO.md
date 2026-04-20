@@ -1,7 +1,6 @@
 Path to 1.0
 ===========
 
-- Run `cargo bench` as part of the GitHub Actions (and ensure `test --benches` is indeed run).
 - `no_std`
 - Add number parse methods into `Content`, with provided implementations.
     - Basic algorithm is: if one chunk, use `str::parse`-ish functions directly. If multiple

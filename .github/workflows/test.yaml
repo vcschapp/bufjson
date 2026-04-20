@@ -39,3 +39,19 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: actions/checkout@v5
       - run: cargo test --release --all-features
+
+  bench-test:
+    runs-on: ubuntu-latest
+    name: Benchmark Tests
+    steps:
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: RUSTFLAGS="-D warnings" cargo test --benches --all-features
+
+  bench-run:
+    runs-on: ubuntu-latest
+    name: Benchmarks
+    steps:
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v5
+      - run: cargo bench --all-features
