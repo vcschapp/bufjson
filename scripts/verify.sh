@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-readonly -a tools=(clippy doc fmt build test)
+readonly -a tools=(clippy doc fmt build test bench)
 
 readonly -A tool_commands=(
   [clippy]='env,RUSTFLAGS=-D warnings,cargo,clippy'
@@ -8,6 +8,7 @@ readonly -A tool_commands=(
   [fmt]='cargo,fmt,--check'
   [build]='env,RUSTFLAGS=-D warnings,cargo,build'
   [test]='env,RUSTFLAGS=-D warnings,cargo,test'
+  [bench]='env,RUSTFLAGS=-D warnings,cargo,test,--benches'
 )
 
 readonly -A profile_args=(
@@ -21,6 +22,7 @@ readonly -A tool_profiles=(
   [fmt]="default"
   [build]="default release"
   [test]="default release"
+  [bench]="default"
 )
 
 readonly -A feature_mix_args=(
@@ -34,6 +36,7 @@ readonly -A tool_feature_mixes=(
     [fmt]="default"
     [build]="default all"
     [test]="default all"
+    [bench]="default all"
 )
 
 function run_tool_quiet() {
@@ -56,7 +59,7 @@ function run_tool_quiet() {
   printf "  profile: %s, feature mix: %s ... " "$profile" "$feature_mix"
 
   local exit_code=0
-  if [[ "$tool" != test ]]; then
+  if [[ "$tool" != test && "$tool" != bench ]]; then
     "${cmd[@]}" "${args[@]}" || exit_code=$?
   else
     "${cmd[@]}" "${args[@]}" >/dev/null 2>&1 || exit_code=$?

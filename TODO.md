@@ -1,10 +1,27 @@
+Path to 1.0
+===========
+
 - Run `cargo bench` as part of the GitHub Actions (and ensure `test --benches` is indeed run).
+- `no_std`
 - Add number parse methods into `Content`, with provided implementations.
     - Basic algorithm is: if one chunk, use `str::parse`-ish functions directly. If multiple
       chunks but would fit in a reasonable stack buffer, copy it there and `str::parse`, otherwise
       put in heap buffer and `str::parse`. Obviously `str::parse` is a placeholder for whatever the
       real function name is.
-- Add overall crate documentation (`lib.rs`).
+    - Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
+      strings without allocating to unescape. This should be a provided method on the trait.
+- Go over the various key `Content`/`Literal` methods like `len()` and into_buf()` to make sure the
+  appropriate ones are inlined.
+    - Duplicate: ~~Replace `#[inline(always)]` with `#[inline]` except for methods that are just a reference return
+  or single method call.~~
+    - One known location that needs `#[inline(always)] - `pointer::Event` accessors that just `match!`.
+- Instead of depending on a `&mut Vec<u8>` for `unescape` or waiting for that `Extend` or whatever
+  trait to land, just write our own trait for this.
+    - Do one implementation for `Vec<u8>`.
+    - Do one implementation for `<const N: usize> [u8; N]`
+    - With the `const` version in mind, update `pointer::Evaluator` to use stack based storage to
+      unescape into as long as `remaining` is less than `N`. (Currently it unescapes into a scratch
+      space that's always a `Vec`.)
 - Update `README`:
   - De-emphasize "Architecture" (and maybe remove)
   - Add a Features section, maybe after Performance that emphasizes:
@@ -18,13 +35,12 @@
    - Add a Comparison section that lists other crates and hyperlinks out to separate short
      comparison docs so it doesn't clutter main doc but is available.
    - Add a use cases section but have it link out to a separate doc.
-- Go over the various key `Content`/`Literal` methods like `len()` and into_buf()` to make sure the
-  appropriate ones are inlined.
-- Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
-  strings without allocating to unescape. This should be a provided method on the trait.
+
+Post 1.0
+========
 - Re-export the following into the root: `Token`, `FixedAnalyzer`, `Parser`.
-- Replace `#[inline(always)]` with `#[inline]` except for methods that are just a reference return
-  or single method call.
+- Add overall crate documentation (`lib.rs`).
+
 
 PERFORMANCE
 ===========
