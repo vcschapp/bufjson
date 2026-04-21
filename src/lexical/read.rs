@@ -398,7 +398,7 @@ impl Literal {
     /// ```
     ///
     /// [`from_ref`]: method@Self::from_ref
-    /// [`from_string`]: method@Self::from_str
+    /// [`from_string`]: method@Self::from_string
     pub const fn from_static(s: &'static str) -> Self {
         Self(InnerLiteral::Static(s))
     }
@@ -757,8 +757,8 @@ impl LiteralBuf {
     /// Returns a slice of bytes starting at the current position, with length between 0 and
     /// [`remaining`].
     ///
-    /// The returned slice may be shorter than [`remaining`] to if the internal representation is
-    /// not contiguous. An empty slice is returned only when [`remaining`] returns 0, and is always
+    /// The returned slice may be shorter than [`remaining`] if the internal representation is not
+    /// contiguous. An empty slice is returned only when [`remaining`] returns 0, and is always
     /// returned in this case since this method never panics.
     ///
     /// Calling `chunk` does not advance the internal cursor.
@@ -1685,7 +1685,7 @@ impl<R: Read> ReadAnalyzer<R> {
     /// ```
     ///
     /// [`next`]: method@Self::next
-    /// [`err`]: method@Self::content
+    /// [`err`]: method@Self::err
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
         &self.content_pos

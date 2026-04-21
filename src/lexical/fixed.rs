@@ -575,7 +575,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
     /// ```
     ///
     /// [`next`]: method@Self::next
-    /// [`err`]: method@Self::content
+    /// [`err`]: method@Self::err
     #[inline(always)]
     pub fn pos(&self) -> &Pos {
         &self.pos

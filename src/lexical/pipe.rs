@@ -573,7 +573,7 @@ impl Literal {
     /// Get the length of a literal.
     ///
     /// ```
-    /// # use bufjson::lexical::read::Literal;
+    /// # use bufjson::lexical::pipe::Literal;
     /// let boring = Literal::from_static("foo");
     /// assert_eq!(3, boring.len());
     ///
@@ -589,7 +589,7 @@ impl Literal {
     /// # Examples
     ///
     /// ```
-    /// # use bufjson::lexical::read::Literal;
+    /// # use bufjson::lexical::pipe::Literal;
     /// assert_eq!(true, Literal::from_static("").is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {

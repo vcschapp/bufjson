@@ -16,13 +16,13 @@
 //!   buffers.
 #![cfg_attr(feature = "read", doc = "- [`read`][`crate::lexical::read`]")]
 #![cfg_attr(not(feature = "read"), doc = "- `read`")]
-//! contains an implementation of [`Analyzer`] for tokenizing streams that implement `std::io::Read`
-//! stream. Requires the `read` feature to be enabled.
+//! contains an implementation of [`Analyzer`] for tokenizing streams that implement
+//! `std::io::Read`. Requires the `read` feature to be enabled.
 #![cfg_attr(feature = "pipe", doc = "- [`pipe`][`crate::lexical::pipe`]")]
 #![cfg_attr(not(feature = "pipe"), doc = "- `pipe`")]
-//! contains an implementation of [`Analyzer`] for tokenizing of streams that yield chunks
-//! of input in `Bytes` buffers, useful for zero-copy network programming use cases. Requires the
-//! `pipe` feature to be enabled.
+//! contains an implementation of [`Analyzer`] for tokenizing streams that yield chunks of input in
+//! `Bytes` buffers, useful for zero-copy network programming use cases. Requires the `pipe` feature
+//! to be enabled.
 //!
 //! # Performance
 //!
@@ -61,7 +61,7 @@
 //! attempting to expand the escape sequences.
 //!
 //! Escape sequences can be expanded by explicitly requesting [`Content::unescaped`] instead of
-//! [`Content::literal`]. Note that getting the unescaped content, will trigger an allocation if the
+//! [`Content::literal`]. Note that getting the unescaped content will trigger an allocation if the
 //! string indeed does contain at least one escape sequence, which may not be desirable in all
 //! circumstances.
 //!
@@ -930,8 +930,8 @@ pub enum Expect {
     /// - `'u'` (lowercase 'u', U+0075)
     EscChar,
 
-    /// Any character that is valid in a JSON string token, the string token termination character
-    /// `'"'` (double quotation mark, U+0022).
+    /// Any character that is valid in a JSON string token, or the string token termination
+    /// character `'"'` (double quotation mark, U+0022).
     ///
     /// This essentially means any valid Unicode character at or above the space `' '` (U+0020).
     StrChar,
@@ -1279,7 +1279,7 @@ pub trait Error: std::error::Error + Send + Sync {
     /// "foo
     /// ```
     ///
-    /// The above text contains an unteriminated string token. A lexical analyzer tokenizing this
+    /// The above text contains an unterminated string token. A lexical analyzer tokenizing this
     /// text will return:
     ///
     /// 1. [`Token::Err`] on the first call to its [`next`][`Analyzer::next`] method, since the very
@@ -1318,11 +1318,11 @@ pub trait Analyzer {
     ///
     /// If the end of the JSON text is reached, without encountering an error, the token type
     /// returned is `Token::Eof`; and this token type is also returned on all subsequent calls. For
-    /// `Token::Eof`, the [`content`] method returns an `Ok` result containing empty text.
+    /// `Token::Eof`, the [`content`] method returns a value containing empty text.
     ///
     /// If an error is encountered while analyzing the JSON text, the token type returned is
     /// `Token::Err`; and this token type is also returned on all subsequent calls. For
-    /// `Token::Err`, the [`content`] method returns an `Ok` result containing empty text.
+    /// `Token::Err`, the [`content`] method panics.
     ///
     /// [`content`]: method@Self::content
     ///

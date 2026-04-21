@@ -490,7 +490,7 @@ impl IntoBuf for String {
     }
 }
 
-/// Trait for types that form an [equivalent relation] together with `str`.
+/// Trait for types that form an [equivalence relation] together with `str`.
 ///
 /// This trait without methods is equivalent in all respects to [`std::cmp::Eq`] excepting that it
 /// indicates that the type implementing it can be compared for equality with `str`.
@@ -502,7 +502,7 @@ impl EqStr for &'_ str {}
 
 /// Trait for types that form a [total ordering] together with `str`.
 ///
-/// This trait may implemented by a type that is comparable to `str` such that the values of that
+/// This trait may be implemented by a type that is comparable to `str` such that the values of that
 /// type and `str` can be placed in a single total ordering. It is equivalent in all respects to
 /// [`std::cmp::Ord`] excepting that it indicates that the type implementing it joins together in a
 /// total ordering with `str`.
