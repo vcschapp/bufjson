@@ -8,16 +8,17 @@
 //! [`pointer::Evaluator`]: crate::pointer::Evaluator
 
 use crate::{
-    Buf, IntoBuf, Sink, lexical,
+    Buf, IntoBuf, lexical,
     pointer::{
         Group, Pointer,
         group::{InnerNode, Node},
     },
+    sink::InlineSink,
 };
 use alloc::vec::Vec;
 #[cfg(feature = "ignore_case")]
 use caseless::Caseless;
-use core::{cmp::Ordering, iter::Peekable, mem::MaybeUninit, ops::Range};
+use core::{cmp::Ordering, iter::Peekable, ops::Range};
 use smallvec::{SmallVec, smallvec};
 
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
@@ -80,65 +81,6 @@ pub enum StructAction {
     /// [`obj_begin`]: method@Machine::obj_begin
     /// [`obj_end`]: method@Machine::obj_end
     Skip,
-}
-
-#[cfg(test)]
-const MAX_INLINE_UNESCAPE_LEN: usize = 7;
-
-#[cfg(not(test))]
-const MAX_INLINE_UNESCAPE_LEN: usize = 128;
-
-struct InlineSink {
-    buf: [MaybeUninit<u8>; MAX_INLINE_UNESCAPE_LEN],
-    len: usize,
-}
-
-impl InlineSink {
-    #[inline(always)]
-    const fn new() -> Self {
-        Self {
-            buf: [const { MaybeUninit::uninit() }; MAX_INLINE_UNESCAPE_LEN],
-            len: 0,
-        }
-    }
-
-    #[inline(always)]
-    const fn as_slice(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.buf.as_ptr().cast(), self.len) }
-    }
-}
-
-impl Sink for InlineSink {
-    #[inline(always)]
-    fn reserve(&mut self, additional: usize) {
-        if self.len + additional > MAX_INLINE_UNESCAPE_LEN {
-            unreachable!(
-                "can't expand inline capacity beyond {MAX_INLINE_UNESCAPE_LEN}, but adding {additional} to {} will do so",
-                self.len
-            );
-        }
-    }
-
-    #[inline(always)]
-    fn extend_from_slice(&mut self, other: &[u8]) {
-        let new_len = self.len + other.len();
-        debug_assert!(new_len <= MAX_INLINE_UNESCAPE_LEN);
-        unsafe {
-            self.buf
-                .as_mut_ptr()
-                .cast::<u8>()
-                .add(self.len)
-                .copy_from_nonoverlapping(other.as_ptr(), other.len());
-        }
-        self.len = new_len;
-    }
-
-    #[inline(always)]
-    fn push(&mut self, value: u8) {
-        debug_assert!(self.len < MAX_INLINE_UNESCAPE_LEN);
-        self.buf[self.len] = MaybeUninit::new(value);
-        self.len += 1;
-    }
 }
 
 /// State machine for identifying JSON Pointer matches against a JSON pattern.
@@ -662,12 +604,18 @@ impl<G: AsRef<Group>> Machine<G> {
             .get() as usize;
         let end = start + node.num_trie_children as usize + node.num_name_children as usize;
 
+        #[cfg(test)]
+        const MAX_INLINE_UNESCAPE_LEN: usize = 7;
+
+        #[cfg(not(test))]
+        const MAX_INLINE_UNESCAPE_LEN: usize = 128;
+
         if !name.is_escaped() || !self.unescape {
             self.find_name_child_in_buf(start..end, name.literal().into_buf())
         } else if name.literal_len() <= MAX_INLINE_UNESCAPE_LEN + 1 {
             // The `+ 1` in the test condition comes from the fact that we know that every escaped
             // string must, when unescaped, shrink by at least one byte.
-            let mut sink = InlineSink::new();
+            let mut sink = InlineSink::<MAX_INLINE_UNESCAPE_LEN>::new();
             lexical::unescape(name.literal(), &mut sink);
             self.find_name_child_in_buf(start..end, sink.as_slice())
         } else {

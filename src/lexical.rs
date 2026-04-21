@@ -96,6 +96,8 @@
 //! [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 
 use crate::{Buf, EqStr, IntoBuf, OrdStr, Pos, Sink, StringBuf};
+#[cfg(feature = "num")]
+use crate::{sink, sink::InlineSink};
 use alloc::string::String;
 use core::{
     borrow::Borrow,
@@ -104,6 +106,451 @@ use core::{
     hash::{Hash, Hasher},
     ops::Deref,
 };
+#[cfg(feature = "num")]
+use core::{num::ParseFloatError, str::FromStr};
+
+#[cfg(feature = "num")]
+macro_rules! max_decimal_digits {
+    ($n:expr) => {{
+        const V: u128 = if ($n as i128) < 0 {
+            (!($n as u128)).wrapping_add(1)
+        } else {
+            $n as u128
+        };
+        const N: usize = if V == 0 { 1 } else { V.ilog10() as usize + 1 };
+
+        N
+    }};
+}
+
+#[cfg(feature = "num")]
+macro_rules! parse_int {
+    (into_buf, $b:ident, $t:ty, $sign:literal, $limit_val:expr) => {{
+        let buf = $b.into_buf();
+        let rem = buf.remaining();
+        const N: usize = $sign + max_decimal_digits!($limit_val);
+        if 0 < rem && rem <= N {
+            let chunk = buf.chunk();
+            if chunk.len() == rem {
+                parse_int!(one_slice, chunk, $t, $sign, $limit_val);
+            } else {
+                let mut dst = InlineSink::<N>::new();
+                sink(buf, &mut dst);
+                let slice = dst.as_slice();
+                parse_int!(one_slice, slice, $t, $sign, $limit_val);
+            }
+        }
+
+        Err(parse_int_err(buf, $sign == 1))
+    }};
+
+    (one_slice, $slice:ident, $t:ty, $sign:literal, $limit_val:expr) => {{
+        const MAX_DIGITS: usize = max_decimal_digits!($limit_val);
+        if $sign == 1 && $slice[0] == b'-' {
+            let digits = &$slice[1..];
+            if digits.len() < MAX_DIGITS {
+                parse_int!(calculate, digits, $t, negative, cannot_overflow);
+            } else if digits.len() == MAX_DIGITS {
+                parse_int!(calculate, digits, $t, negative, might_overflow);
+            }
+        } else {
+            let digits = $slice;
+            if digits.len() < MAX_DIGITS {
+                parse_int!(calculate, digits, $t, non_negative, cannot_overflow);
+            } else if digits.len() == MAX_DIGITS {
+                parse_int!(calculate, digits, $t, non_negative, might_overflow);
+            }
+        }
+
+        return Err(parse_int_err($slice, $sign == 1));
+    }};
+
+    (calculate, $slice:ident, $t:ty, negative, cannot_overflow) => {{
+        let mut acc: $t = 0;
+        let mut i = 0;
+        while i < $slice.len() {
+            let d = $slice[i].wrapping_sub(b'0');
+            if d >= 10 {
+                break;
+            }
+            acc = acc * 10 - d as $t;
+            i += 1;
+        }
+        if i == $slice.len() {
+            return Ok(acc);
+        }
+    }};
+
+    (calculate, $slice:ident, $t:ty, negative, might_overflow) => {{
+        if $slice.iter().all(|b| b.is_ascii_digit()) {
+            let (head, tail) = $slice.split_at($slice.len() - 1);
+            let acc = head
+                .iter()
+                .fold(0 as $t, |acc, &b| acc * 10 - (b - b'0') as $t);
+            let d = (tail[0] - b'0') as $t;
+            return if let Some(v) = acc.checked_mul(10).and_then(|a| a.checked_sub(d)) {
+                Ok(v)
+            } else {
+                Err(NumError::Range)
+            };
+        }
+    }};
+
+    (calculate, $slice:ident, $t:ty, non_negative, cannot_overflow) => {{
+        let mut acc: $t = 0;
+        let mut i = 0;
+        while i < $slice.len() {
+            let d = $slice[i].wrapping_sub(b'0');
+            if d >= 10 {
+                break;
+            }
+            acc = acc * 10 + d as $t;
+            i += 1;
+        }
+        if i == $slice.len() {
+            return Ok(acc);
+        }
+    }};
+
+    (calculate, $slice:ident, $t:ty, non_negative, might_overflow) => {{
+        if $slice.iter().all(|b| b.is_ascii_digit()) {
+            let (head, tail) = $slice.split_at($slice.len() - 1);
+            let acc = head
+                .iter()
+                .fold(0 as $t, |acc, &b| acc * 10 + (b - b'0') as $t);
+            let d = (tail[0] - b'0') as $t;
+            return if let Some(v) = acc.checked_mul(10).and_then(|a| a.checked_add(d)) {
+                Ok(v)
+            } else {
+                Err(NumError::Range)
+            };
+        }
+    }};
+}
+
+/// Extracts a 64-bit signed integer from any sequence of bytes containing ASCII decimal digits with
+/// an optional leading minus sign.
+///
+/// When the input is a valid JSON number token, this function will return `Ok` if the content does
+/// not have a decimal point or exponent and represents an integer within the range of `i64`. For
+/// other number tokens, the result is an `Err`. For any other input, the result is
+/// `Err(NumError::Format)`.
+///
+/// # Performance considerations
+///
+/// Never allocates. May copy a small number of bytes on stack if the representation is
+/// non-contiguous. This function is very fast.
+///
+/// # Examples
+///
+/// Parse an integer in the range of `i64`.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_i64};
+///
+/// assert_eq!(Ok(-1), parse_i64("-1"));
+/// ```
+///
+/// An integer outside the range of `i64` cannot be parsed.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_i64};
+///
+/// assert_eq!(Err(NumError::Range), parse_i64(format!("{}", i64::MAX as u64 + 1)));
+/// ```
+///
+/// A number value containing a decimal point is considered to be badly-formatted and cannot be
+/// parsed, even if it technically represents an integer.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_i64};
+///
+/// assert_eq!(Err(NumError::Format), parse_i64("2.0"));
+/// ```
+///
+/// A number value containing an exponent is considered to be badly-formatted and cannot be parsed,
+/// even if it technically represents an integer.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_i64};
+///
+/// assert_eq!(Err(NumError::Format), parse_i64("1e3"));
+/// ```
+///
+/// Non-numeric values cannot be parsed.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_i64};
+///
+/// assert_eq!(Err(NumError::Format), parse_i64("true"));
+/// ```
+#[cfg(feature = "num")]
+pub fn parse_i64(literal: impl IntoBuf) -> Result<i64, NumError> {
+    parse_int!(into_buf, literal, i64, 1, i64::MIN)
+}
+
+/// Extracts a 64-bit unsigned integer from any sequence of bytes containing ASCII decimal digits.
+///
+/// When the input is a valid JSON number token, this function will return `Ok` if the content does
+/// not have a leading minus sign, a decimal point, or exponent; and represents an integer within
+/// the range of `u64`. For other number tokens, the result is an `Err`. For any other input, the
+/// result is `Err(NumError::Format)`.
+///
+/// # Performance considerations
+///
+/// Never allocates. May copy a small number of bytes on stack if the representation is
+/// non-contiguous. This function is very fast.
+///
+/// # Examples
+///
+/// Parse an integer in the range of `u64`.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_u64};
+///
+/// assert_eq!(Ok(u64::MAX), parse_u64(format!("{}", u64::MAX)));
+/// ```
+///
+/// An integer outside the range of `u64` cannot be parsed.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_u64};
+///
+/// assert_eq!(Err(NumError::Range), parse_u64(format!("{}", u64::MAX as u128 + 1)));
+/// ```
+///
+/// A number value containing a decimal point is considered to be badly-formatted and cannot be
+/// parsed, even if it technically represents an integer.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_u64};
+///
+/// assert_eq!(Err(NumError::Format), parse_u64("2.0"));
+/// ```
+///
+/// A number value containing an exponent is considered to be badly-formatted and cannot be parsed,
+/// even if it technically represents an integer.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_u64};
+///
+/// assert_eq!(Err(NumError::Format), parse_u64("1e3"));
+/// ```
+///
+/// Negative integers cannot be parsed.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_u64};
+///
+/// assert_eq!(Err(NumError::Format), parse_u64("-1"));
+/// ```
+///
+/// Non-numeric values cannot be parsed.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_u64};
+///
+/// assert_eq!(Err(NumError::Format), parse_u64("true"));
+/// ```
+#[cfg(feature = "num")]
+pub fn parse_u64(literal: impl IntoBuf) -> Result<u64, NumError> {
+    parse_int!(into_buf, literal, u64, 0, u64::MAX)
+}
+
+/// Extracts a 128-bit signed integer from any sequence of bytes containing ASCII decimal digits
+/// with an optional leading minus sign.
+///
+/// When the input is a valid JSON number token, this function will return `Ok` if the content does
+/// not have a decimal point or exponent and represents an integer within the range of `i128`. For
+/// other number tokens, the result is an `Err`. For any other input, the result is
+/// `Err(NumError::Format)`.
+///
+/// # Performance considerations
+///
+/// Never allocates. May copy a small number of bytes on stack if the representation is
+/// non-contiguous. This function is very fast.
+///
+/// # Examples
+///
+/// Parse an integer in the range of `i128`.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_i128};
+///
+/// assert_eq!(Ok(-1), parse_i128("-1"));
+/// ```
+///
+/// An integer outside the range of `i128` cannot be parsed.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_i128};
+///
+/// assert_eq!(Err(NumError::Range), parse_i128(format!("{}", i128::MAX as u128 + 1)));
+/// ```
+///
+/// A number value containing a decimal point is considered to be badly-formatted and cannot be
+/// parsed, even if it technically represents an integer.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_i128};
+///
+/// assert_eq!(Err(NumError::Format), parse_i128("2.0"));
+/// ```
+///
+/// A number value containing an exponent is considered to be badly-formatted and cannot be parsed,
+/// even if it technically represents an integer.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_i128};
+///
+/// assert_eq!(Err(NumError::Format), parse_i128("-100e-1"));
+/// ```
+///
+/// Non-numeric values cannot be parsed.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_i128};
+///
+/// assert_eq!(Err(NumError::Format), parse_i128("true"));
+/// ```
+#[cfg(feature = "num_ext")]
+pub fn parse_i128(literal: impl IntoBuf) -> Result<i128, NumError> {
+    parse_int!(into_buf, literal, i128, 1, i128::MIN)
+}
+
+/// Extracts a 64-bit IEEE double-precision floating point number from any sequence of bytes that
+/// is a valid JSON number token.
+///
+/// When the input is a valid JSON number token, this function will return `Ok` if the number value
+/// in the text is within the range of an `f64`. If the content is within the range of an `f64` but
+/// not representable due to precision limitations, `Ok` is returned with the nearest representable
+/// `f64` value (rounded according to IEEE 754 round-to-nearest-even). For other number tokens, the
+/// result is `Err(NumError::Range)`. For non-number tokens, the result is always
+/// `Err(NumError::Format)`.
+///
+/// # Performance considerations
+///
+/// - Generally does not allocate, but will do so if the input bytes are non-contiguous.
+/// - Unlike integers, which have a natural finite representation, floating point numbers can
+///   conceptually have an infinite number of digits that have to be examined. Application writers
+///   should be aware of this characteristic and may wish to set and enforce length limits on number
+///   tokens before parsing the number value.
+///
+/// # Examples
+///
+/// Parse a value in the range of `f64`.
+///
+/// ```
+/// use bufjson::lexical::parse_f64;
+///
+/// assert_eq!(Ok(3.14159), parse_f64("3.14159"));
+/// ```
+///
+/// A number value that is within the range of `f64` but that cannot be represented precisely is
+/// rounded to the closest representable value.
+///
+/// ```
+/// use bufjson::lexical::parse_f64;
+///
+/// assert_eq!(
+///     Ok(9007199254740994.0),                 // Got a number ending in `...4.0`.
+///     parse_f64("9007199254740993.1"),        // Asked for a number ending in `...3.1`.
+/// );
+/// ```
+///
+/// A number that is outside the range of `f64` cannot be parsed.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_f64};
+///
+/// assert_eq!(Err(NumError::Range), parse_f64("-10e+309"));
+/// ```
+///
+/// Non-numeric values cannot be parsed.
+///
+/// ```
+/// use bufjson::lexical::{NumError, parse_f64};
+///
+/// assert_eq!(Err(NumError::Format), parse_f64("true"));
+/// ```
+#[cfg(feature = "num")]
+pub fn parse_f64(literal: impl IntoBuf) -> Result<f64, NumError> {
+    let buf = literal.into_buf();
+    let rem = buf.remaining();
+    let mut chunk = buf.chunk();
+
+    #[cfg(test)]
+    const MAX_INLINE_PARSE_LEN: usize = 7;
+
+    #[cfg(not(test))]
+    const MAX_INLINE_PARSE_LEN: usize = 128;
+
+    let r = if chunk.len() == rem {
+        // SAFETY: The `Buf` invariant requires that the entire sequence of bytes yielded by a
+        //         `Buf` is valid UTF-8.
+        let s = unsafe { str::from_utf8_unchecked(chunk) };
+
+        f64::from_str(s)
+    } else {
+        let n = chunk.len();
+        #[allow(unused_assignments)]
+        {
+            chunk = &[]; /* Drop the immutable borrow from `buf`. */
+        }
+        if n <= MAX_INLINE_PARSE_LEN {
+            let mut dst = InlineSink::<MAX_INLINE_PARSE_LEN>::new();
+            sink(buf, &mut dst);
+            // SAFETY: The `Buf` invariant requires that the entire sequence of bytes yielded by a
+            //         `Buf` is valid UTF-8.
+            let s = unsafe { str::from_utf8_unchecked(dst.as_slice()) };
+
+            f64::from_str(s)
+        } else {
+            let mut dst = Vec::new();
+            sink(buf, &mut dst);
+            // SAFETY: The `Buf` invariant requires that the entire sequence of bytes yielded by a
+            //         `Buf` is valid UTF-8.
+            let s = unsafe { str::from_utf8_unchecked(&dst) };
+
+            f64::from_str(s)
+        }
+    };
+
+    parse_f64_result(r)
+}
+
+#[cfg(feature = "num")]
+pub(crate) fn parse_int_err(mut buf: impl Buf, signed: bool) -> NumError {
+    let mut chunk = buf.chunk();
+    if chunk.is_empty() {
+        return NumError::Format;
+    } else if signed && chunk[0] == b'-' {
+        buf.advance(1);
+        chunk = buf.chunk();
+    }
+
+    loop {
+        if !chunk.iter().all(|b| b.is_ascii_digit()) {
+            return NumError::Format;
+        }
+
+        buf.advance(chunk.len());
+        chunk = buf.chunk();
+        if chunk.is_empty() {
+            return NumError::Range;
+        }
+    }
+}
+
+#[cfg(feature = "num")]
+#[inline(always)]
+fn parse_f64_result(r: Result<f64, ParseFloatError>) -> Result<f64, NumError> {
+    match r {
+        Ok(v) if v.is_infinite() => Err(NumError::Range),
+        Ok(v) => Ok(v),
+        Err(_) => Err(NumError::Format),
+    }
+}
 
 pub mod fixed;
 pub mod state;
@@ -750,6 +1197,23 @@ impl<B: Buf> Buf for UnescapedBuf<B> {
     }
 }
 
+/// An error encountered when converting the content of a JSON number token to a Rust numeric type.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum NumError {
+    /// The JSON token content is not formatted correctly to be converted to the target numeric
+    /// type.
+    ///
+    /// This error variant can occur if the value to convert is not a valid JSON number, *e.g.*,
+    /// `true` or `"foo"`; or if the target numeric type is an integer type such as `u64` or `i128`
+    /// and the value to convert contains a decimal point, *e.g.*, `1.0`, or an exponent, *e.g.*,
+    /// `2E-1`, or both, *e.g.*, `2.15e+3`.
+    Format,
+
+    /// The JSON token content is formatted correctly but represents a value that is out of range
+    /// of the target numeric type.
+    Range,
+}
+
 /// Text content of a JSON token.
 ///
 /// Contains the actual textual *content* of the JSON token read from the JSON text. This is in
@@ -761,7 +1225,8 @@ impl<B: Buf> Buf for UnescapedBuf<B> {
 /// "foo"
 /// ```
 ///
-/// The above JSON text contains one token whose type is [`Token::Str`] and whose content is `"foo"`.
+/// The above JSON text contains one token whose type is [`Token::Str`] and whose content is
+/// `"foo"`.
 pub trait Content: fmt::Debug {
     /// Type that contains the literal string of the token exactly as it appears in the JSON text.
     type Literal<'a>: IntoBuf
@@ -855,6 +1320,71 @@ pub trait Content: fmt::Debug {
     /// [`is_escaped`]: method@Self::is_escaped
     /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
     fn unescaped<'a>(&'a self) -> Unescaped<Self::Literal<'a>>;
+
+    /// Converts the token content to a 64-bit signed integer.
+    ///
+    /// For a number token, this method will return `Ok` if the content does not have a decimal
+    /// point or exponent and represents an integer within the range of `i64`. For other number
+    /// tokens, the result is an `Err`. For non-number tokens, the result is always
+    /// `Err(NumError::Format)`.
+    ///
+    /// # Performance considerations
+    ///
+    /// Implementations should never allocate. Some implementations may copy a small number of bytes
+    /// on stack if the representation is non-contiguous.
+    #[cfg(feature = "num")]
+    #[inline]
+    fn parse_i64(&self) -> Result<i64, NumError> {
+        parse_i64(self.literal())
+    }
+
+    /// Converts the token content to a 64-bit unsigned integer.
+    ///
+    /// For a number token, this method will return `Ok` if the content does not have a leading
+    /// minus sign, a decimal point, or an exponent, and represents an integer within the range of
+    /// `u64`. For other number tokens, the result is an `Err`. For non-number tokens, the result
+    /// is always `Err(NumError::Format)`.
+    ///
+    /// # Performance considerations
+    ///
+    /// Implementations should never allocate. Some implementations may copy a small number of bytes
+    /// on stack if the representation is non-contiguous.
+    #[cfg(feature = "num")]
+    #[inline]
+    fn parse_u64(&self) -> Result<u64, NumError> {
+        parse_u64(self.literal())
+    }
+
+    /// Converts the token content to a 128-bit signed integer.
+    ///
+    /// For a number token, this method will return `Ok` if the content does not have a decimal
+    /// point or exponent and represents an integer within the range of `i128`. For other number
+    /// tokens, the result is an `Err`. For non-number tokens, the result is always
+    /// `Err(NumError::Format)`.
+    ///
+    /// # Performance considerations
+    ///
+    /// Implementations should never allocate. Some implementations may copy a small number of bytes
+    /// on stack if the representation is non-contiguous.
+    #[cfg(feature = "num_ext")]
+    #[inline]
+    fn parse_i128(&self) -> Result<i128, NumError> {
+        parse_i128(self.literal())
+    }
+
+    /// Converts the token content to a 64-bit IEEE double precision floating point number.
+    ///
+    /// For a number token, this method will return `Ok` if the number value in the text is within
+    /// the range of an `f64`. If the content is within the range of an `f64` but not representable
+    /// due to precision limitations, `Ok` is returned with the nearest representable `f64` value
+    /// (rounded according to IEEE 754 round-to-nearest-even). For other number tokens, the result
+    /// is `Err(NumError::Range)`. For non-number tokens, the result is always
+    /// `Err(NumError::Format)`.
+    #[cfg(feature = "num")]
+    #[inline]
+    fn parse_f64(&self) -> Result<f64, NumError> {
+        parse_f64(self.literal())
+    }
 }
 
 /// Character or class of characters expected at the next input position of a JSON text.
@@ -1427,21 +1957,21 @@ pub(crate) fn hex2u16(b: u8) -> u16 {
 
 /// Expands escape sequences in the content of a valid JSON string.
 ///
-/// The [`Buf`] to unescape must contain the literal content of a valid JSON string value, as it
+/// The input to unescape must contain the literal content of a valid JSON string value, as it
 /// appears in the JSON text (with or without the surrounding double quotation mark characters).
 ///
-/// The unescaped text is appended to the given byte vector.
+/// The unescaped text is appended to the given [`Sink`].
 ///
 /// # Panics
 ///
-/// Panics if the input `Buf` contains an invalid or unterminated JSON escape sequence.
+/// Panics if the input contains an invalid or unterminated JSON escape sequence.
 ///
 /// # Examples
 ///
 /// Unescape a string with surrounding double quote characters...
 ///
 /// ```
-/// use bufjson::{Buf, lexical::unescape};
+/// use bufjson::lexical::unescape;
 ///
 /// let mut dst = Vec::new();
 /// unescape(r#""foo\nbar""#, &mut dst);
@@ -1454,14 +1984,12 @@ pub(crate) fn hex2u16(b: u8) -> u16 {
 /// ...Or without them...
 ///
 /// ```
-/// use bufjson::{Buf, lexical::unescape};
+/// use bufjson::lexical::unescape;
 ///
 /// let mut dst = Vec::new();
 /// unescape(r#"hello\u002c\u0020world"#, &mut dst);
 /// assert_eq!(&b"hello, world"[..], &dst);
 /// ```
-///
-/// # Notes
 pub fn unescape(literal: impl IntoBuf, dst: &mut impl Sink) {
     let mut literal = literal.into_buf();
 
@@ -2156,5 +2684,398 @@ mod tests {
         let mut buf = Vec::new();
 
         unescape(literal, &mut buf);
+    }
+
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case::zero("0", 0)]
+    #[case::minus_zero("-0", 0)]
+    #[case::one("1", 1)]
+    #[case::minus_one("-1", -1)]
+    #[case::forty_two("42", 42)]
+    #[case::minus_forty_two("-42", -42)]
+    #[case::all_digits("9876543210", 9876543210)]
+    #[case::max_minus_1(format!("{}", i64::MAX-1), i64::MAX-1)]
+    #[case::max(format!("{}", i64::MAX), i64::MAX)]
+    #[case::min_plus_1(format!("{}", i64::MIN+1), i64::MIN+1)]
+    #[case::min(format!("{}", i64::MIN), i64::MIN)]
+    fn test_parse_i64_ok(#[case] input: impl AsRef<str>, #[case] expect: i64) {
+        let input = input.as_ref();
+
+        assert_eq!(Ok(expect), parse_i64(input));
+        for chunked_str in ChunkedStr::chunkify(input) {
+            assert_eq!(Ok(expect), parse_i64(chunked_str));
+
+            let content = chunked_str.into_content(false);
+            assert_eq!(Ok(expect), content.parse_i64());
+        }
+    }
+
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case::empty("", NumError::Format)]
+    #[case::token_arr_begin("[", NumError::Format)]
+    #[case::token_arr_end("]", NumError::Format)]
+    #[case::token_lit_false("false", NumError::Format)]
+    #[case::token_lit_null("null", NumError::Format)]
+    #[case::token_lit_true("true", NumError::Format)]
+    #[case::token_name_sep(":", NumError::Format)]
+    #[case::token_obj_begin("{", NumError::Format)]
+    #[case::token_obj_end("}", NumError::Format)]
+    #[case::token_str_empty(r#""""#, NumError::Format)]
+    #[case::token_str_one(r#""1""#, NumError::Format)]
+    #[case::token_value_sep(",", NumError::Format)]
+    #[case::token_white("   ", NumError::Format)]
+    #[case::space_prefix(" 1", NumError::Format)]
+    #[case::space_suffix("1 ", NumError::Format)]
+    #[case::decimal_zero("10.0", NumError::Format)]
+    #[case::decimal("3.14159", NumError::Format)]
+    #[case::exponent_zero("0e0", NumError::Format)]
+    #[case::exponent_positive("10E+1", NumError::Format)]
+    #[case::exponent_negative("1E-98", NumError::Format)]
+    #[case::range_i64_min_minus_1(format!("{}", i64::MIN as i128 - 1), NumError::Range)]
+    #[case::range_i128_min(format!("{}", i128::MIN), NumError::Range)]
+    #[case::range_i64_max_plus_1(format!("{}", i64::MAX as i128 + 1), NumError::Range)]
+    #[case::range_i128_max(format!("{}", i128::MAX), NumError::Range)]
+    fn test_parse_i64_err(#[case] input: impl AsRef<str>, #[case] expect: NumError) {
+        let input = input.as_ref();
+
+        assert_eq!(Err(expect), parse_i64(input));
+        for chunked_str in ChunkedStr::chunkify(input) {
+            assert_eq!(Err(expect), parse_i64(chunked_str));
+
+            let content = chunked_str.into_content(false);
+            assert_eq!(Err(expect), content.parse_i64());
+        }
+    }
+
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case::zero("0", 0)]
+    #[case::one("1", 1)]
+    #[case::forty_two("42", 42)]
+    #[case::all_digits("9876543210", 9876543210)]
+    #[case::max_minus_1(format!("{}", u64::MAX-1), u64::MAX-1)]
+    #[case::max(format!("{}", u64::MAX), u64::MAX)]
+    fn test_parse_u64_ok(#[case] input: impl AsRef<str>, #[case] expect: u64) {
+        let input = input.as_ref();
+
+        assert_eq!(Ok(expect), parse_u64(input));
+        for chunked_str in ChunkedStr::chunkify(input) {
+            assert_eq!(Ok(expect), parse_u64(chunked_str));
+
+            let content = chunked_str.into_content(false);
+            assert_eq!(Ok(expect), content.parse_u64());
+        }
+    }
+
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case::empty("", NumError::Format)]
+    #[case::token_arr_begin("[", NumError::Format)]
+    #[case::token_arr_end("]", NumError::Format)]
+    #[case::token_lit_false("false", NumError::Format)]
+    #[case::token_lit_null("null", NumError::Format)]
+    #[case::token_lit_true("true", NumError::Format)]
+    #[case::token_name_sep(":", NumError::Format)]
+    #[case::token_obj_begin("{", NumError::Format)]
+    #[case::token_obj_end("}", NumError::Format)]
+    #[case::token_str_empty(r#""""#, NumError::Format)]
+    #[case::token_str_one(r#""1""#, NumError::Format)]
+    #[case::token_value_sep(",", NumError::Format)]
+    #[case::token_white("   ", NumError::Format)]
+    #[case::space_prefix(" 1", NumError::Format)]
+    #[case::space_suffix("1 ", NumError::Format)]
+    #[case::minus_zero("-0", NumError::Format)]
+    #[case::minus_one("-1", NumError::Format)]
+    #[case::minus_forty_two("-42", NumError::Format)]
+    #[case::decimal_zero("10.0", NumError::Format)]
+    #[case::decimal("3.14159", NumError::Format)]
+    #[case::exponent_zero("0e0", NumError::Format)]
+    #[case::exponent_positive("10E+1", NumError::Format)]
+    #[case::exponent_negative("1E-98", NumError::Format)]
+    #[case::range_u64_max_plus_1(format!("{}", u64::MAX as i128 + 1), NumError::Range)]
+    #[case::range_i128_max(format!("{}", i128::MAX), NumError::Range)]
+    fn test_parse_u64_err(#[case] input: impl AsRef<str>, #[case] expect: NumError) {
+        let input = input.as_ref();
+
+        assert_eq!(Err(expect), parse_u64(input));
+        for chunked_str in ChunkedStr::chunkify(input) {
+            assert_eq!(Err(expect), parse_u64(chunked_str));
+
+            let content = chunked_str.into_content(false);
+            assert_eq!(Err(expect), content.parse_u64());
+        }
+    }
+
+    #[cfg(feature = "num_ext")]
+    #[rstest]
+    #[case::zero("0", 0)]
+    #[case::minus_zero("-0", 0)]
+    #[case::one("1", 1)]
+    #[case::minus_one("-1", -1)]
+    #[case::forty_two("42", 42)]
+    #[case::minus_forty_two("-42", -42)]
+    #[case::all_digits("9876543210", 9876543210)]
+    #[case::i64_max(format!("{}", i64::MAX), i64::MAX as i128)]
+    #[case::i64_min(format!("{}", i64::MIN), i64::MIN as i128)]
+    #[case::beyond_i64_max(format!("{}", i64::MAX as i128 + 1), i64::MAX as i128 + 1)]
+    #[case::beyond_i64_min(format!("{}", i64::MIN as i128 - 1), i64::MIN as i128 - 1)]
+    #[case::pow10_38(format!("{}", 10_i128.pow(38)), 10_i128.pow(38))]
+    #[case::neg_pow10_38(format!("{}", -10_i128.pow(38)), -10_i128.pow(38))]
+    #[case::max_minus_1(format!("{}", i128::MAX - 1), i128::MAX - 1)]
+    #[case::max(format!("{}", i128::MAX), i128::MAX)]
+    #[case::min_plus_1(format!("{}", i128::MIN + 1), i128::MIN + 1)]
+    #[case::min(format!("{}", i128::MIN), i128::MIN)]
+    fn test_parse_i128_ok(#[case] input: impl AsRef<str>, #[case] expect: i128) {
+        let input = input.as_ref();
+
+        assert_eq!(Ok(expect), parse_i128(input));
+        for chunked_str in ChunkedStr::chunkify(input) {
+            assert_eq!(Ok(expect), parse_i128(chunked_str));
+
+            let content = chunked_str.into_content(false);
+            assert_eq!(Ok(expect), content.parse_i128());
+        }
+    }
+
+    #[cfg(feature = "num_ext")]
+    #[rstest]
+    #[case::empty("", NumError::Format)]
+    #[case::token_arr_begin("[", NumError::Format)]
+    #[case::token_arr_end("]", NumError::Format)]
+    #[case::token_lit_false("false", NumError::Format)]
+    #[case::token_lit_null("null", NumError::Format)]
+    #[case::token_lit_true("true", NumError::Format)]
+    #[case::token_name_sep(":", NumError::Format)]
+    #[case::token_obj_begin("{", NumError::Format)]
+    #[case::token_obj_end("}", NumError::Format)]
+    #[case::token_str_empty(r#""""#, NumError::Format)]
+    #[case::token_str_one(r#""1""#, NumError::Format)]
+    #[case::token_value_sep(",", NumError::Format)]
+    #[case::token_white("   ", NumError::Format)]
+    #[case::space_prefix(" 1", NumError::Format)]
+    #[case::space_suffix("1 ", NumError::Format)]
+    #[case::decimal_zero("10.0", NumError::Format)]
+    #[case::decimal("3.14159", NumError::Format)]
+    #[case::exponent_zero("0e0", NumError::Format)]
+    #[case::exponent_positive("10E+1", NumError::Format)]
+    #[case::exponent_negative("1E-98", NumError::Format)]
+    #[case::range_i128_min_minus_1("−170141183460469231731687303715884105729", NumError::Format)]
+    #[case::range_i128_max_plus_1(format!("{}", i128::MAX as u128 + 1), NumError::Range)]
+    #[case::range_u128_max(format!("{}", u128::MAX), NumError::Range)]
+    fn test_parse_i128_err(#[case] input: impl AsRef<str>, #[case] expect: NumError) {
+        let input = input.as_ref();
+
+        assert_eq!(Err(expect), parse_i128(input));
+        for chunked_str in ChunkedStr::chunkify(input) {
+            assert_eq!(Err(expect), parse_i128(chunked_str));
+
+            let content = chunked_str.into_content(false);
+            assert_eq!(Err(expect), content.parse_i128());
+        }
+    }
+
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case::zero("0", 0.0)]
+    #[case::minus_zero("-0", 0.0)]
+    #[case::one("1", 1.0)]
+    #[case::minus_one("-1", -1.0)]
+    #[case::forty_two("42", 42.0)]
+    #[case::pi("3.14159", 3.14159)]
+    #[case::negative_decimal("-2.5", -2.5)]
+    #[case::exponent_zero("0e0", 0.0)]
+    #[case::exponent_positive("1e2", 100.0)]
+    #[case::exponent_negative("1e-2", 0.01)]
+    #[case::exponent_upper("1E2", 100.0)]
+    #[case::exponent_plus_sign("1e+2", 100.0)]
+    #[case::decimal_and_exponent("1.5e2", 150.0)]
+    #[case::large_integer("9876543210", 9876543210.0)]
+    #[case::f64_max(format!("{}", f64::MAX), f64::MAX)]
+    #[case::f64_min_positive(format!("{}", f64::MIN_POSITIVE), f64::MIN_POSITIVE)]
+    #[case::subnormal("5e-324", 5e-324)]
+    fn test_parse_f64_ok(#[case] input: impl AsRef<str>, #[case] expect: f64) {
+        let input = input.as_ref();
+
+        let result = parse_f64(input);
+        assert_eq!(Ok(expect), result);
+        // Only test ChunkedStr for short inputs; in test mode the inline buffer is 7 bytes, so
+        // multi-chunk inputs longer than that exercise the heap fallback which panics in
+        // InlineSink::reserve. Short inputs cover the multi-chunk paths adequately.
+        if input.len() <= 7 {
+            for chunked_str in ChunkedStr::chunkify(input) {
+                assert_eq!(Ok(expect), parse_f64(chunked_str));
+
+                let content = chunked_str.into_content(false);
+                assert_eq!(Ok(expect), content.parse_f64());
+            }
+        }
+    }
+
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case::empty("", NumError::Format)]
+    #[case::token_lit_false("false", NumError::Format)]
+    #[case::token_lit_null("null", NumError::Format)]
+    #[case::token_lit_true("true", NumError::Format)]
+    #[case::token_str_empty(r#""""#, NumError::Format)]
+    #[case::token_str_one(r#""1""#, NumError::Format)]
+    #[case::space_prefix(" 1", NumError::Format)]
+    #[case::space_suffix("1 ", NumError::Format)]
+    #[case::range_positive_overflow("1e309", NumError::Range)]
+    #[case::range_negative_overflow("-1e309", NumError::Range)]
+    fn test_parse_f64_err(#[case] input: impl AsRef<str>, #[case] expect: NumError) {
+        let input = input.as_ref();
+
+        assert_eq!(Err(expect), parse_f64(input));
+        for chunked_str in ChunkedStr::chunkify(input) {
+            assert_eq!(Err(expect), parse_f64(chunked_str));
+
+            let content = chunked_str.into_content(false);
+            assert_eq!(Err(expect), content.parse_f64());
+        }
+    }
+
+    #[cfg(feature = "num")]
+    #[derive(Debug)]
+    struct ChunkedContent<'a> {
+        lit: ChunkedStr<'a>,
+        esc: bool,
+    }
+
+    #[cfg(feature = "num")]
+    impl<'a> Content for ChunkedContent<'a> {
+        type Literal<'b>
+            = ChunkedStr<'a>
+        where
+            Self: 'b;
+
+        fn literal<'b>(&'b self) -> Self::Literal<'b> {
+            self.lit
+        }
+
+        fn literal_len(&self) -> usize {
+            self.lit.buf.len()
+        }
+
+        fn is_escaped(&self) -> bool {
+            self.esc
+        }
+
+        fn unescaped<'b>(&'b self) -> Unescaped<Self::Literal<'b>> {
+            if !self.esc {
+                Unescaped::Literal(self.lit)
+            } else {
+                let mut buf = Vec::new();
+                unescape(self.lit, &mut buf);
+
+                // SAFETY: `r` was valid UTF-8 before it was de-escaped, and the de-escaping process
+                //         maintains UTF-8 safety.
+                let s = unsafe { String::from_utf8_unchecked(buf) };
+
+                Unescaped::Expanded(s)
+            }
+        }
+    }
+
+    #[cfg(feature = "num")]
+    #[derive(Clone, Copy, Debug)]
+    struct ChunkedStr<'a> {
+        buf: &'a [u8],
+        pos: usize,
+        n: usize,
+    }
+
+    #[cfg(feature = "num")]
+    impl<'a> ChunkedStr<'a> {
+        fn new(s: &'a str, n: usize) -> Self {
+            Self {
+                buf: s.as_bytes(),
+                pos: 0,
+                n,
+            }
+        }
+
+        fn chunkify(s: &'a str) -> Vec<Self> {
+            let mut v = vec![Self::new(s, 1)];
+
+            if s.len() >= 2 {
+                v.push(Self::new(s, 2));
+            }
+
+            if s.len() >= 4 {
+                v.push(Self::new(s, s.len() - 1));
+                v.push(Self::new(s, s.len()));
+            }
+
+            v
+        }
+
+        fn into_content(&self, escaped: bool) -> ChunkedContent<'a> {
+            ChunkedContent {
+                lit: *self,
+                esc: escaped,
+            }
+        }
+    }
+
+    #[cfg(feature = "num")]
+    impl<'a> IntoBuf for ChunkedStr<'a> {
+        type Buf = Self;
+
+        fn into_buf(self) -> Self::Buf {
+            self
+        }
+    }
+
+    #[cfg(feature = "num")]
+    impl<'a> Buf for ChunkedStr<'a> {
+        fn advance(&mut self, n: usize) {
+            let len = self.buf.len();
+            let pos = self.pos;
+
+            if len < pos + n {
+                panic!(
+                    "{}",
+                    &crate::BufUnderflow {
+                        requested: n,
+                        remaining: len - pos,
+                    }
+                );
+            } else {
+                self.pos = pos + n;
+            }
+        }
+
+        fn chunk(&self) -> &[u8] {
+            let end = self.buf.len().min(self.pos + self.n);
+
+            &self.buf[self.pos..end]
+        }
+
+        fn remaining(&self) -> usize {
+            let len = self.buf.len();
+            let pos = self.pos;
+
+            len - pos
+        }
+
+        fn try_copy_to_slice(&mut self, dst: &mut [u8]) -> Result<(), crate::BufUnderflow> {
+            let len = self.buf.len();
+            let pos = self.pos;
+
+            if len < pos + dst.len() {
+                Err(crate::BufUnderflow {
+                    requested: dst.len(),
+                    remaining: len - pos,
+                })
+            } else {
+                dst.copy_from_slice(&self.buf[pos..pos + dst.len()]);
+                self.pos = pos + dst.len();
+
+                Ok(())
+            }
+        }
     }
 }

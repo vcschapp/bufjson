@@ -755,6 +755,19 @@ pub trait Sink {
     fn push(&mut self, value: u8);
 }
 
+/// Sends all bytes from a [`Buf`] to a [`Sink`], consuming the `Buf` in the process.
+pub fn sink(mut src: impl Buf, dst: &mut impl Sink) {
+    dst.reserve(src.remaining());
+    loop {
+        let chunk = src.chunk();
+        if chunk.is_empty() {
+            break;
+        }
+        dst.extend_from_slice(chunk);
+        src.advance(chunk.len());
+    }
+}
+
 impl Sink for Vec<u8> {
     #[inline(always)]
     fn reserve(&mut self, additional: usize) {
@@ -769,6 +782,114 @@ impl Sink for Vec<u8> {
     #[inline(always)]
     fn push(&mut self, value: u8) {
         Vec::push(self, value);
+    }
+}
+
+#[cfg(any(feature = "num", feature = "pointer"))]
+pub(crate) mod sink {
+    use core::mem::MaybeUninit;
+
+    pub struct InlineSink<const N: usize> {
+        buf: [MaybeUninit<u8>; N],
+        len: usize,
+    }
+
+    impl<const N: usize> InlineSink<N> {
+        #[inline(always)]
+        pub const fn new() -> Self {
+            Self {
+                buf: [const { MaybeUninit::uninit() }; N],
+                len: 0,
+            }
+        }
+
+        #[inline(always)]
+        pub const fn as_slice(&self) -> &[u8] {
+            unsafe { core::slice::from_raw_parts(self.buf.as_ptr().cast(), self.len) }
+        }
+    }
+
+    impl<const N: usize> super::Sink for InlineSink<N> {
+        #[inline(always)]
+        fn reserve(&mut self, additional: usize) {
+            if self.len + additional > N {
+                unreachable!(
+                    "can't expand inline capacity beyond {N}, but adding {additional} to {} will do so",
+                    self.len
+                );
+            }
+        }
+
+        #[inline(always)]
+        fn extend_from_slice(&mut self, other: &[u8]) {
+            let new_len = self.len + other.len();
+            debug_assert!(new_len <= N);
+            unsafe {
+                self.buf
+                    .as_mut_ptr()
+                    .cast::<u8>()
+                    .add(self.len)
+                    .copy_from_nonoverlapping(other.as_ptr(), other.len());
+            }
+            self.len = new_len;
+        }
+
+        #[inline(always)]
+        fn push(&mut self, value: u8) {
+            debug_assert!(self.len < N);
+            self.buf[self.len] = MaybeUninit::new(value);
+            self.len += 1;
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::Sink;
+
+        #[test]
+        fn test_zero() {
+            let mut zero = InlineSink::<0>::new();
+            zero.reserve(0);
+            zero.extend_from_slice(&[]);
+
+            assert_eq!(b"", zero.as_slice());
+        }
+
+        #[test]
+        #[should_panic(expected = "unreachable")]
+        fn test_zero_reserve_unreachable() {
+            let mut zero = InlineSink::<0>::new();
+            zero.reserve(1);
+        }
+
+        #[test]
+        fn test_one_push() {
+            let mut one = InlineSink::<1>::new();
+            one.push(b'a');
+
+            assert_eq!(&[b'a'], one.as_slice());
+        }
+
+        #[test]
+        fn test_one_extend_from_slice() {
+            let mut one = InlineSink::<1>::new();
+            one.extend_from_slice(&[b'c']);
+
+            assert_eq!(&[b'c'], one.as_slice());
+        }
+
+        #[test]
+        fn test_six_four() {
+            let mut six_four = InlineSink::<6>::new();
+            six_four.reserve(3);
+            six_four.push(b'b');
+            six_four.extend_from_slice(&[b'a', b'r']);
+            six_four.reserve(2);
+            six_four.push(b'k');
+
+            assert_eq!(&[b'b', b'a', b'r', b'k'], six_four.as_slice());
+        }
     }
 }
 

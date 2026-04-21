@@ -30,6 +30,7 @@ readonly no_std_target=thumbv7m-none-eabi # no_std but has `alloc::sync::Arc`
 readonly -A feature_mix_args=(
   [default]=""
   [all]="--all-features"
+  [smoke]="--features,pipe num"
   [no_std]="--target,$no_std_target,--no-default-features"
   [no_std_all]="--target,$no_std_target,--no-default-features,--features,pipe pointer read"
 )
@@ -39,7 +40,7 @@ readonly -A tool_feature_mixes=(
     [doc]="default all"
     [fmt]="default"
     [build]="default all"
-    [test]="default all"
+    [test]="default smoke all"
     [bench]="default all"
 )
 

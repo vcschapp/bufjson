@@ -22,6 +22,8 @@ debug = true
 [features]
 default = ["std"]
 ignore_case = ["dep:caseless"]
+num = []
+num_ext = ["num"]
 pipe = ["dep:bytes", "dep:smallvec"]
 pointer = ["dep:smallvec"]
 read = []

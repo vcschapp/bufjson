@@ -1,5 +1,7 @@
 //! Convert a fixed-size in-memory buffer into a stream of JSON lexical tokens.
 
+#[cfg(feature = "num")]
+use crate::lexical::{NumError, parse_f64_result, parse_int_err};
 use crate::{
     Pos,
     lexical::{
@@ -8,6 +10,8 @@ use crate::{
     syntax,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
+#[cfg(feature = "num")]
+use core::str::FromStr;
 use core::{
     fmt,
     ops::{Deref, Range},
@@ -156,6 +160,134 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
             }
         }
     }
+
+    /// Converts the token content to a 64-bit signed integer.
+    ///
+    /// This is an inherent implementation of [`lexical::Content::parse_i64`] for convenience, so it
+    /// is available even when you don't have the trait imported.
+    ///
+    /// # Performance considerations
+    ///
+    /// This implementation is faster than [`lexical::parse_i64`] because it is optimized for the
+    /// fixed-size buffer case and does not need to handle the possibility that the number text
+    /// might be split across multiple buffers. It never allocates or copies.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    ///
+    /// let mut an = FixedAnalyzer::new(&b"[123]"[..]);
+    ///
+    /// assert_eq!(Token::ArrBegin, an.next());
+    /// assert_eq!(Token::Num, an.next());
+    /// assert_eq!(Ok(123), an.content().parse_i64());
+    /// assert_eq!(Token::ArrEnd, an.next());
+    /// ```
+    #[cfg(feature = "num")]
+    #[inline]
+    pub fn parse_i64(&self) -> Result<i64, NumError> {
+        let chunk = self.literal().as_bytes();
+
+        parse_int!(one_slice, chunk, i64, 1, i64::MIN)
+    }
+
+    /// Converts the token content to a 64-bit unsigned integer.
+    ///
+    /// This is an inherent implementation of [`lexical::Content::parse_u64`] for convenience, so it
+    /// is available even when you don't have the trait imported.
+    ///
+    /// # Performance considerations
+    ///
+    /// This implementation is faster than [`lexical::parse_u64`] because it is optimized for the
+    /// fixed-size buffer case and does not need to handle the possibility that the number text
+    /// might be split across multiple buffers. It never allocates or copies.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    ///
+    /// let mut an = FixedAnalyzer::new(&b"[123]"[..]);
+    ///
+    /// assert_eq!(Token::ArrBegin, an.next());
+    /// assert_eq!(Token::Num, an.next());
+    /// assert_eq!(Ok(123), an.content().parse_u64());
+    /// assert_eq!(Token::ArrEnd, an.next());
+    /// ```
+    #[cfg(feature = "num")]
+    #[inline]
+    pub fn parse_u64(&self) -> Result<u64, NumError> {
+        let chunk = self.literal().as_bytes();
+
+        parse_int!(one_slice, chunk, u64, 0, u64::MAX)
+    }
+
+    /// Converts the token content to a 128-bit signed integer.
+    ///
+    /// This is an inherent implementation of [`lexical::Content::parse_i128`] for convenience, so
+    /// it is available even when you don't have the trait imported.
+    ///
+    /// # Performance considerations
+    ///
+    /// This method is faster than [`lexical::parse_i128`] because it is optimized for the
+    /// fixed-size buffer case and does not need to handle the possibility that the number text
+    /// might be split across multiple buffers. It never allocates or copies.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    ///
+    /// const TEXT: &str = r#"{"10^38":100000000000000000000000000000000000000}"#;
+    ///
+    /// let mut an = FixedAnalyzer::new(TEXT.as_bytes());
+    ///
+    /// assert_eq!(Token::ObjBegin, an.next());
+    /// assert_eq!(Token::Str, an.next());
+    /// assert_eq!(Token::NameSep, an.next());
+    /// assert_eq!(Token::Num, an.next());
+    /// assert_eq!(Ok(10_i128.pow(38)), an.content().parse_i128());
+    /// assert_eq!(Token::ObjEnd, an.next());
+    /// ```
+    #[cfg(feature = "num_ext")]
+    #[inline]
+    pub fn parse_i128(&self) -> Result<i128, NumError> {
+        let chunk = self.literal().as_bytes();
+
+        parse_int!(one_slice, chunk, i128, 1, i128::MIN)
+    }
+
+    /// Converts the token content to a 64-bit IEEE double precision floating point number.
+    ///
+    /// This is an inherent implementation of [`lexical::Content::parse_f64`] for convenience, so it
+    /// is available even when you don't have the trait imported.
+    ///
+    /// # Performance considerations
+    ///
+    /// This method is faster than [`lexical::parse_f64`] because it is optimized for the fixed-size
+    /// buffer case and does not need to handle the possibility that the number text might be split
+    /// across multiple buffers. It never allocates or copies.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    ///
+    /// let mut an = FixedAnalyzer::new(&br#"{"pi":3.14159}"#[..]);
+    ///
+    /// assert_eq!(Token::ObjBegin, an.next());
+    /// assert_eq!(Token::Str, an.next());
+    /// assert_eq!(Token::NameSep, an.next());
+    /// assert_eq!(Token::Num, an.next());
+    /// assert_eq!(Ok(3.14159), an.content().parse_f64());
+    /// assert_eq!(Token::ObjEnd, an.next());
+    /// ```
+    #[cfg(feature = "num")]
+    #[inline]
+    pub fn parse_f64(&self) -> Result<f64, NumError> {
+        parse_f64_result(f64::from_str(self.literal()))
+    }
 }
 
 impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
@@ -222,6 +354,30 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> super::Content for Content<B> {
     #[inline(always)]
     fn unescaped<'a>(&'a self) -> Unescaped<Self::Literal<'a>> {
         Content::unescaped(self)
+    }
+
+    #[cfg(feature = "num")]
+    #[inline(always)]
+    fn parse_i64(&self) -> Result<i64, NumError> {
+        Content::parse_i64(self)
+    }
+
+    #[cfg(feature = "num")]
+    #[inline(always)]
+    fn parse_u64(&self) -> Result<u64, NumError> {
+        Content::parse_u64(self)
+    }
+
+    #[cfg(feature = "num_ext")]
+    #[inline(always)]
+    fn parse_i128(&self) -> Result<i128, NumError> {
+        Content::parse_i128(self)
+    }
+
+    #[cfg(feature = "num")]
+    #[inline(always)]
+    fn parse_f64(&self) -> Result<f64, NumError> {
+        Content::parse_f64(self)
     }
 }
 
@@ -781,6 +937,165 @@ mod tests {
         assert_eq!(literal.len(), content.literal_len());
         assert_eq!(literal.len(), lexical::Content::literal_len(&content));
         assert_eq!(unescaped, content.unescaped());
+    }
+
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case::zero("0", 0)]
+    #[case::minus_zero("-0", 0)]
+    #[case::one("1", 1)]
+    #[case::minus_one("-1", -1)]
+    #[case::forty_two("42", 42)]
+    #[case::minus_forty_two("-42", -42)]
+    #[case::all_digits("9876543210", 9876543210)]
+    #[case::max_minus_1(format!("{}", i64::MAX-1), i64::MAX-1)]
+    #[case::max(format!("{}", i64::MAX), i64::MAX)]
+    #[case::min_plus_1(format!("{}", i64::MIN+1), i64::MIN+1)]
+    #[case::min(format!("{}", i64::MIN), i64::MIN)]
+    fn test_content_parse_i64_ok(#[case] input: impl AsRef<str>, #[case] expect: i64) {
+        let mut an = FixedAnalyzer::new(input.as_ref().as_bytes().to_vec());
+        assert_eq!(Token::Num, an.next());
+        let content = an.content();
+        assert_eq!(Ok(expect), content.parse_i64());
+        assert_eq!(Ok(expect), lexical::Content::parse_i64(&content));
+    }
+
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case::decimal_zero("10.0", NumError::Format)]
+    #[case::decimal("3.14159", NumError::Format)]
+    #[case::exponent_zero("0e0", NumError::Format)]
+    #[case::exponent_positive("10E+1", NumError::Format)]
+    #[case::exponent_negative("1E-98", NumError::Format)]
+    #[case::range_i64_min_minus_1(format!("{}", i64::MIN as i128 - 1), NumError::Range)]
+    #[case::range_i128_min(format!("{}", i128::MIN), NumError::Range)]
+    #[case::range_i64_max_plus_1(format!("{}", i64::MAX as i128 + 1), NumError::Range)]
+    #[case::range_i128_max(format!("{}", i128::MAX), NumError::Range)]
+    fn test_content_parse_i64_err(#[case] input: impl AsRef<str>, #[case] expect: NumError) {
+        let mut an = FixedAnalyzer::new(input.as_ref().as_bytes().to_vec());
+        assert_eq!(Token::Num, an.next());
+        let content = an.content();
+        assert_eq!(Err(expect), content.parse_i64());
+        assert_eq!(Err(expect), lexical::Content::parse_i64(&content));
+    }
+
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case::zero("0", 0)]
+    #[case::one("1", 1)]
+    #[case::forty_two("42", 42)]
+    #[case::all_digits("9876543210", 9876543210)]
+    #[case::max_minus_1(format!("{}", u64::MAX-1), u64::MAX-1)]
+    #[case::max(format!("{}", u64::MAX), u64::MAX)]
+    fn test_content_parse_u64_ok(#[case] input: impl AsRef<str>, #[case] expect: u64) {
+        let mut an = FixedAnalyzer::new(input.as_ref().as_bytes().to_vec());
+        assert_eq!(Token::Num, an.next());
+        let content = an.content();
+        assert_eq!(Ok(expect), content.parse_u64());
+        assert_eq!(Ok(expect), lexical::Content::parse_u64(&content));
+    }
+
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case::minus_zero("-0", NumError::Format)]
+    #[case::minus_one("-1", NumError::Format)]
+    #[case::minus_forty_two("-42", NumError::Format)]
+    #[case::decimal_zero("10.0", NumError::Format)]
+    #[case::decimal("3.14159", NumError::Format)]
+    #[case::exponent_zero("0e0", NumError::Format)]
+    #[case::exponent_positive("10E+1", NumError::Format)]
+    #[case::exponent_negative("1E-98", NumError::Format)]
+    #[case::range_u64_max_plus_1(format!("{}", u64::MAX as i128 + 1), NumError::Range)]
+    #[case::range_i128_max(format!("{}", i128::MAX), NumError::Range)]
+    fn test_content_parse_u64_err(#[case] input: impl AsRef<str>, #[case] expect: NumError) {
+        let mut an = FixedAnalyzer::new(input.as_ref().as_bytes().to_vec());
+        assert_eq!(Token::Num, an.next());
+        let content = an.content();
+        assert_eq!(Err(expect), content.parse_u64());
+        assert_eq!(Err(expect), lexical::Content::parse_u64(&content));
+    }
+
+    #[cfg(feature = "num_ext")]
+    #[rstest]
+    #[case::zero("0", 0)]
+    #[case::minus_zero("-0", 0)]
+    #[case::one("1", 1)]
+    #[case::minus_one("-1", -1)]
+    #[case::forty_two("42", 42)]
+    #[case::minus_forty_two("-42", -42)]
+    #[case::all_digits("9876543210", 9876543210)]
+    #[case::i64_max(format!("{}", i64::MAX), i64::MAX as i128)]
+    #[case::i64_min(format!("{}", i64::MIN), i64::MIN as i128)]
+    #[case::beyond_i64_max(format!("{}", i64::MAX as i128 + 1), i64::MAX as i128 + 1)]
+    #[case::beyond_i64_min(format!("{}", i64::MIN as i128 - 1), i64::MIN as i128 - 1)]
+    #[case::pow10_38(format!("{}", 10_i128.pow(38)), 10_i128.pow(38))]
+    #[case::neg_pow10_38(format!("{}", -10_i128.pow(38)), -10_i128.pow(38))]
+    #[case::max_minus_1(format!("{}", i128::MAX - 1), i128::MAX - 1)]
+    #[case::max(format!("{}", i128::MAX), i128::MAX)]
+    #[case::min_plus_1(format!("{}", i128::MIN + 1), i128::MIN + 1)]
+    #[case::min(format!("{}", i128::MIN), i128::MIN)]
+    fn test_content_parse_i128_ok(#[case] input: impl AsRef<str>, #[case] expect: i128) {
+        let mut an = FixedAnalyzer::new(input.as_ref().as_bytes().to_vec());
+        assert_eq!(Token::Num, an.next());
+        let content = an.content();
+        assert_eq!(Ok(expect), content.parse_i128());
+        assert_eq!(Ok(expect), lexical::Content::parse_i128(&content));
+    }
+
+    #[cfg(feature = "num_ext")]
+    #[rstest]
+    #[case::decimal_zero("10.0", NumError::Format)]
+    #[case::decimal("3.14159", NumError::Format)]
+    #[case::exponent_zero("0e0", NumError::Format)]
+    #[case::exponent_positive("10E+1", NumError::Format)]
+    #[case::exponent_negative("1E-98", NumError::Format)]
+    #[case::range_i128_max_plus_1(format!("{}", i128::MAX as u128 + 1), NumError::Range)]
+    #[case::range_u128_max(format!("{}", u128::MAX), NumError::Range)]
+    fn test_content_parse_i128_err(#[case] input: impl AsRef<str>, #[case] expect: NumError) {
+        let mut an = FixedAnalyzer::new(input.as_ref().as_bytes().to_vec());
+        assert_eq!(Token::Num, an.next());
+        let content = an.content();
+        assert_eq!(Err(expect), content.parse_i128());
+        assert_eq!(Err(expect), lexical::Content::parse_i128(&content));
+    }
+
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case::zero("0", 0.0)]
+    #[case::minus_zero("-0", 0.0)]
+    #[case::one("1", 1.0)]
+    #[case::minus_one("-1", -1.0)]
+    #[case::forty_two("42", 42.0)]
+    #[case::pi("3.14159", 3.14159)]
+    #[case::negative_decimal("-2.5", -2.5)]
+    #[case::exponent_zero("0e0", 0.0)]
+    #[case::exponent_positive("1e2", 100.0)]
+    #[case::exponent_negative("1e-2", 0.01)]
+    #[case::exponent_upper("1E2", 100.0)]
+    #[case::exponent_plus_sign("1e+2", 100.0)]
+    #[case::decimal_and_exponent("1.5e2", 150.0)]
+    #[case::large_integer("9876543210", 9876543210.0)]
+    #[case::f64_max(format!("{}", f64::MAX), f64::MAX)]
+    #[case::f64_min_positive(format!("{}", f64::MIN_POSITIVE), f64::MIN_POSITIVE)]
+    #[case::subnormal("5e-324", 5e-324)]
+    fn test_content_parse_f64_ok(#[case] input: impl AsRef<str>, #[case] expect: f64) {
+        let mut an = FixedAnalyzer::new(input.as_ref().as_bytes().to_vec());
+        assert_eq!(Token::Num, an.next());
+        let content = an.content();
+        assert_eq!(Ok(expect), content.parse_f64());
+        assert_eq!(Ok(expect), lexical::Content::parse_f64(&content));
+    }
+
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case::range_positive_overflow("1e309", NumError::Range)]
+    #[case::range_negative_overflow("-1e309", NumError::Range)]
+    fn test_content_parse_f64_err(#[case] input: impl AsRef<str>, #[case] expect: NumError) {
+        let mut an = FixedAnalyzer::new(input.as_ref().as_bytes().to_vec());
+        assert_eq!(Token::Num, an.next());
+        let content = an.content();
+        assert_eq!(Err(expect), content.parse_f64());
+        assert_eq!(Err(expect), lexical::Content::parse_f64(&content));
     }
 
     #[rstest]

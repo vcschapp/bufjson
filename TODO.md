@@ -1,13 +1,8 @@
 Path to 1.0
 ===========
 
-- Add number parse methods into `Content`, with provided implementations.
-    - Basic algorithm is: if one chunk, use `str::parse`-ish functions directly. If multiple
-      chunks but would fit in a reasonable stack buffer, copy it there and `str::parse`, otherwise
-      put in heap buffer and `str::parse`. Obviously `str::parse` is a placeholder for whatever the
-      real function name is.
-    - Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
-      strings without allocating to unescape. This should be a provided method on the trait.
+- Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
+  strings without allocating to unescape. This should be a provided method on the trait.
 - Go over the various key `Content`/`Literal` methods like `len()` and into_buf()` to make sure the
   appropriate ones are inlined.
     - Duplicate: ~~Replace `#[inline(always)]` with `#[inline]` except for methods that are just a reference return
@@ -45,3 +40,15 @@ improving string handling. The main ideas are:
 1. Refactor so the slow path (`lexical::state::Machine::str_slow()`) can return to the fast path,
    without increasing parameter count or complexity of the existing fast path start.
 2. Rewrite the fast path (`lexical::state::Machine::str()`) to use SIMD.
+
+
+TRAIT LOCKDOWN
+==============
+
+Open question: should certain key traits, `Content` and `Buf`, be sealed?
+
+Reason: So we can be 100% confident that every implementation satisfies the invariants?
+
+`Buf`'s invariants are explicit. `Content`'s invariants aren't yet as of 4/22/26. However, as of
+now you cannot create a *supported* `Content` value that's not a valid JSON token (although you can
+create `Literal` values that contain arbitrary content).
