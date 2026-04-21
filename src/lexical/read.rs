@@ -892,6 +892,18 @@ impl Content {
         Literal(self.0.clone().into())
     }
 
+    /// Returns the number of bytes in the [`literal`] value.
+    ///
+    /// [`literal`]: method@Self::literal
+    pub fn literal_len(&self) -> usize {
+        match &self.0 {
+            InnerContent::Static(s) => s.len(),
+            InnerContent::Inline(len, _) => *len as usize,
+            InnerContent::NotEscapedUni(r) | InnerContent::EscapedUni(r) => r.remaining(),
+            InnerContent::NotEscapedMulti(r) | InnerContent::EscapedMulti(r) => r.remaining(),
+        }
+    }
+
     /// Indicates whether the token content contains escape sequences.
     ///
     /// This is an inherent implementation of [`lexical::Content::is_escaped`] for convenience, so
@@ -1021,6 +1033,11 @@ impl super::Content for Content {
     #[inline(always)]
     fn literal<'a>(&'a self) -> Self::Literal<'a> {
         Content::literal(self)
+    }
+
+    #[inline(always)]
+    fn literal_len(&self) -> usize {
+        Content::literal_len(self)
     }
 
     #[inline(always)]
@@ -2420,7 +2437,10 @@ mod tests {
         #[case] expect_literal: &str,
         #[case] expect_unescaped: Option<&str>,
     ) {
+        assert_eq!(expect_literal, content.literal());
         assert_eq!(expect_literal, content.literal().into_string());
+        assert_eq!(expect_literal.len(), content.literal_len());
+        assert_eq!(expect_literal.len(), super::Content::literal_len(&content));
         assert_eq!(expect_unescaped.is_some(), content.is_escaped());
         if let Some(expect) = expect_unescaped {
             assert_eq!(expect, content.unescaped().into_string());

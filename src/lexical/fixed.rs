@@ -92,11 +92,24 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
     /// This is an inherent implementation of [`lexical::Content::literal`] for convenience, so it
     /// is available even when you don't have the trait imported. Refer to the trait documentation
     /// for conceptual details.
+    #[inline]
     pub fn literal(&self) -> &str {
         match &self.0 {
             InnerContent::Static(s) => s,
             InnerContent::Inline(len, buf) => Self::inline_str(*len, buf),
             InnerContent::NotEscaped(r) | InnerContent::Escaped(r) => r.as_str(),
+        }
+    }
+
+    /// Returns the number of bytes in the [`literal`] value.
+    ///
+    /// [`literal`]: method@Self::literal
+    #[inline]
+    pub fn literal_len(&self) -> usize {
+        match &self.0 {
+            InnerContent::Static(s) => s.len(),
+            InnerContent::Inline(len, _) => *len as usize,
+            InnerContent::NotEscaped(r) | InnerContent::Escaped(r) => r.rng.end - r.rng.start,
         }
     }
 
@@ -194,6 +207,11 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> super::Content for Content<B> {
     #[inline(always)]
     fn literal<'a>(&'a self) -> Self::Literal<'a> {
         Content::literal(self)
+    }
+
+    #[inline(always)]
+    fn literal_len(&self) -> usize {
+        Content::literal_len(self)
     }
 
     #[inline(always)]
@@ -729,11 +747,40 @@ mod tests {
         let c = Content::from_static(s);
 
         assert_eq!(s, c.literal());
+        assert_eq!(s, c.to_string());
+        assert_eq!(s.len(), c.literal_len());
+        assert_eq!(s.len(), lexical::Content::literal_len(&c));
 
         match unescaped {
             Some(u) => assert_eq!(u, c.unescaped()),
             None => assert!(!c.is_escaped()),
         };
+    }
+
+    #[rstest]
+    #[case::static_a(Content(InnerContent::Static("a")), "a", "a")]
+    #[case::inline_empty(Content(inline_buf(b"").into()), "", "")]
+    #[case::inline_a_1(Content(inline_buf(b"a").into()), "a", "a")]
+    #[case::inline_a_inline_len(Content(inline_buf(&[b'a'; INLINE_LEN]).into()), "a".repeat(INLINE_LEN), "a".repeat(INLINE_LEN))]
+    #[case::not_escaped_empty(Content(InnerContent::NotEscaped(Ref::new(Arc::new(b"".to_vec()), 0..0))), "", "")]
+    #[case::not_escaped_a(Content(InnerContent::NotEscaped(Ref::new(Arc::new(b"a".to_vec()), 0..1))), "a", "a")]
+    #[case::escaped_empty(Content(InnerContent::Escaped(Ref::new(Arc::new(b"".to_vec()), 0..0))), "", "")]
+    #[case::escaped_a(Content(InnerContent::Escaped(Ref::new(Arc::new(b"a".to_vec()), 0..1))), "a", "a")]
+    #[case::escaped_nl(Content(InnerContent::Escaped(Ref::new(Arc::new(b"\\n".to_vec()), 0..2))), "\\n", "\n")]
+    #[case::escaped_nul(Content(InnerContent::Escaped(Ref::new(Arc::new(b"\\u0000".to_vec()), 0..6))), "\\u0000", "\u{0000}")]
+    fn test_content(
+        #[case] content: Content<Vec<u8>>,
+        #[case] literal: impl AsRef<str>,
+        #[case] unescaped: impl AsRef<str>,
+    ) {
+        let literal = literal.as_ref();
+        let unescaped = unescaped.as_ref();
+
+        assert_eq!(literal, content.literal());
+        assert_eq!(literal, content.to_string());
+        assert_eq!(literal.len(), content.literal_len());
+        assert_eq!(literal.len(), lexical::Content::literal_len(&content));
+        assert_eq!(unescaped, content.unescaped());
     }
 
     #[rstest]
@@ -3596,6 +3643,20 @@ Praesent vel ex sed dolor fermentum lobortis.""#,
                 );
                 assert_eq!(*expect_literal, content.unescaped());
             }
+        }
+    }
+
+    fn inline_buf<const N: usize>(src: &[u8; N]) -> (u8, InlineBuf) {
+        assert!(N <= INLINE_LEN);
+        let mut dst = [0; INLINE_LEN];
+        dst[0..N].copy_from_slice(src);
+
+        (u8::try_from(N).unwrap(), dst)
+    }
+
+    impl From<(u8, InlineBuf)> for InnerContent<Vec<u8>> {
+        fn from(value: (u8, InlineBuf)) -> Self {
+            InnerContent::Inline(value.0, value.1)
         }
     }
 }

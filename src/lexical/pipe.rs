@@ -933,6 +933,14 @@ impl Content {
         Literal(self.0.clone())
     }
 
+    /// Returns the number of bytes in the [`literal`] value.
+    ///
+    /// [`literal`]: method@Self::literal
+    #[inline(always)]
+    pub fn literal_len(&self) -> usize {
+        self.0.len()
+    }
+
     /// Indicates whether the token content contains escape sequences.
     ///
     /// This is an inherent implementation of [`lexical::Content::is_escaped`] for convenience, so
@@ -978,6 +986,11 @@ impl super::Content for Content {
     #[inline(always)]
     fn literal<'a>(&'a self) -> Self::Literal<'a> {
         Content::literal(self)
+    }
+
+    #[inline(always)]
+    fn literal_len(&self) -> usize {
+        Content::literal_len(self)
     }
 
     #[inline(always)]
@@ -2115,9 +2128,6 @@ mod tests {
     #[case(Content(InnerLiteral::test_new_multi([""], 0, 0, true)), "", Some(""))]
     #[case(Content(InnerLiteral::test_new_multi(["tomf", "oo", "lery"], 3, 3, true)), "foo", Some("foo"))]
     #[case(Content(InnerLiteral::test_new_multi(["\\", "u", "006", "6\\u", "0", "06", "fox"], 0, 13, true)), "\\u0066\\u006fo", Some("foo"))]
-    // TODO: FIXME: Uncomment below after refactor, converting from the Read types to the relevant Pipe types.
-    // #[case(Content::from_bufs(&Bufs::new(Bufs::MIN_BUF_SIZE), 0..0, false), "", None)]
-    // #[case(Content::from_bufs(&Bufs::new(Bufs::MIN_BUF_SIZE), 0..0, true), "", Some(""))]
     fn test_content(
         #[case] content: Content,
         #[case] expect_literal: &str,
@@ -2125,6 +2135,8 @@ mod tests {
     ) {
         assert_eq!(expect_literal, content.literal().into_string());
         assert_eq!(expect_literal, content.to_string());
+        assert_eq!(expect_literal.len(), content.literal_len());
+        assert_eq!(expect_literal.len(), super::Content::literal_len(&content));
         assert_eq!(expect_unescaped.is_some(), content.is_escaped());
         if let Some(expect) = expect_unescaped {
             assert_eq!(expect, content.unescaped().into_string());

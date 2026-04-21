@@ -95,7 +95,7 @@
 //!
 //! [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 
-use crate::{Buf, EqStr, IntoBuf, OrdStr, Pos, StringBuf};
+use crate::{Buf, EqStr, IntoBuf, OrdStr, Pos, Sink, StringBuf};
 use std::{
     borrow::Borrow,
     cmp::{Ord, Ordering},
@@ -809,6 +809,13 @@ pub trait Content: fmt::Debug {
     /// For the pseudo-token [`Token::Eof`], the value is the empty string.
     fn literal<'a>(&'a self) -> Self::Literal<'a>;
 
+    /// Returns the number of bytes in the [`literal`] value.
+    ///
+    /// [`literal`]: method@Self::literal
+    fn literal_len(&self) -> usize {
+        self.literal().into_buf().remaining()
+    }
+
     /// Indicates whether the token content contains escape sequences.
     ///
     /// This method must always return `false` for all token types except [`Token::Str`]. For
@@ -1454,16 +1461,18 @@ pub(crate) fn hex2u16(b: u8) -> u16 {
 /// ```
 ///
 /// # Notes
-pub fn unescape(literal: impl IntoBuf, dst: &mut Vec<u8>) {
+pub fn unescape(literal: impl IntoBuf, dst: &mut impl Sink) {
     let mut literal = literal.into_buf();
 
     // Reserve bytes in the destination. If the incoming literal has at least one escape sequence,
-    // the length should shrink by one, but if called erroneously, it might not shrink, and might
-    // even be empty.
+    // the length should shrink by at least one byte. We therefore reserve this many bytes. If the
+    // function is called on an input that contains no escape sequences, this may result in a
+    // reallocation, but we're OK with this because we want to optimize for the case where the
+    // caller already knows there's an escape sequence.
     if !literal.has_remaining() {
         return;
     }
-    dst.reserve(literal.remaining());
+    dst.reserve(literal.remaining() - 1);
 
     #[derive(Default)]
     struct Esc {
@@ -1603,7 +1612,7 @@ pub fn unescape(literal: impl IntoBuf, dst: &mut Vec<u8>) {
     }
 }
 
-fn append_code_point(code_point: u32, dst: &mut Vec<u8>) {
+fn append_code_point(code_point: u32, dst: &mut impl Sink) {
     match char::from_u32(code_point) {
         Some(c) => {
             let mut seq = [0u8; 4];

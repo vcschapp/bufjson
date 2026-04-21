@@ -14,13 +14,8 @@ Path to 1.0
     - Duplicate: ~~Replace `#[inline(always)]` with `#[inline]` except for methods that are just a reference return
   or single method call.~~
     - One known location that needs `#[inline(always)] - `pointer::Event` accessors that just `match!`.
-- Instead of depending on a `&mut Vec<u8>` for `unescape` or waiting for that `Extend` or whatever
-  trait to land, just write our own trait for this.
-    - Do one implementation for `Vec<u8>`.
-    - Do one implementation for `<const N: usize> [u8; N]`
-    - With the `const` version in mind, update `pointer::Evaluator` to use stack based storage to
-      unescape into as long as `remaining` is less than `N`. (Currently it unescapes into a scratch
-      space that's always a `Vec`.)
+    - Another known one: `Content::is_escaped` for all `Content` implementations.
+- Address Arc/Vec/Arc/Vec FIXME in `read.rs` or remove it.
 - Update `README`:
   - De-emphasize "Architecture" (and maybe remove)
   - Add a Features section, maybe after Performance that emphasizes:

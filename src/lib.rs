@@ -725,6 +725,43 @@ pub(crate) mod buf {
     }
 }
 
+/// Accumulator for output bytes.
+///
+/// A `Sink` is a mutable, output-only, byte buffer. It can be provided as an argument to functions
+/// that produce an output sequence, for example the [`lexical::unescape`] function for expanding
+/// escape sequence. Implementations may use a fixed-size inline array, a heap-allocated buffer, or
+/// any other backing store.
+///
+/// The trait is modeled after the subset of [`Vec<u8>`] methods used for appending bytes, and an
+/// implementation is provided for `Vec<u8>`.
+pub trait Sink {
+    /// Reserves capacity for at least `additional` more bytes to be written to this sink.
+    fn reserve(&mut self, additional: usize);
+
+    /// Appends all bytes in `other` to the sink.
+    fn extend_from_slice(&mut self, other: &[u8]);
+
+    /// Appends a single byte to the sink.
+    fn push(&mut self, value: u8);
+}
+
+impl Sink for Vec<u8> {
+    #[inline(always)]
+    fn reserve(&mut self, additional: usize) {
+        Vec::reserve(self, additional)
+    }
+
+    #[inline(always)]
+    fn extend_from_slice(&mut self, other: &[u8]) {
+        Vec::extend_from_slice(self, other);
+    }
+
+    #[inline(always)]
+    fn push(&mut self, value: u8) {
+        Vec::push(self, value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
