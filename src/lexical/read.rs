@@ -104,15 +104,21 @@ impl IntoBuf for UniRef {
 
 #[derive(Clone, Debug)]
 struct MultiRef {
-    // FIXME: The Arc/Vec/Arc/Vec seems like madness for an edge case, keeping in mind that the
-    //        `MultiRef` is already boxed. Just use one level of indirection, and if we're already
-    //        in an allocation, consider a SmallVec.
-
-    // Method to the madness of the very nesty Arc/Vec/Arc/Vec:
-    // - Outer Arc allows MultiRef to be cloned without an allocation.
-    // - Inner Arc maintains a read-only ownership stake in the buffers, preventing them from
+    // Method to the madness of the very nesty Arc/Slice/Arc/Vec:
+    // - Outer `Arc` allows `MultiRef` to be cloned without an allocation.
+    // - Outer `Arc`'s slice is part of the `Arc`'s allocation, eliminating an allocation and level
+    //   of indirection that would occur if the outer Arc contained a Vec instead.
+    // - Inner `Arc` maintains a read-only ownership stake in the buffers, preventing them from
     //   dropping.
-    bufs: Arc<Vec<Arc<Vec<u8>>>>,
+    //
+    // This all seems even more mad when you consider that within `InnerLiteral` and `InnerContent`,
+    // `MultiRef` is boxed. There is a reason for this too. To keep the size of `Literal` and
+    // `Content` down, we have to hide `MultiRef` inside a heap allocation. But if you put it in an
+    // `Arc` (pushing the outer `Arc` outside of `MultiRef`) then you end up with shared `MultiRef`
+    // state on clone, which means it can't be mutable, but we need it to be mutable so that every
+    // `Literal` value can implement `IntoBuf` (because the `Buf`) state is stored directly in the
+    // member fields.
+    bufs: Arc<[Arc<Vec<u8>>]>,
     // Index into `bufs`.
     //   INVARIANT: `buf <= bufs.len()`; so it can be one past the end, hence invalid
     //   INVARIANT: `buf == bufs.len()` <=> rng.start == rng.end
@@ -122,7 +128,7 @@ struct MultiRef {
 }
 
 impl MultiRef {
-    fn new(bufs: Arc<Vec<Arc<Vec<u8>>>>, rng: Range<usize>) -> Self {
+    fn new(bufs: Arc<[Arc<Vec<u8>>]>, rng: Range<usize>) -> Self {
         #[cfg(debug_assertions)]
         {
             debug_assert!(rng.start <= rng.end);
@@ -155,12 +161,7 @@ impl MultiRef {
         I: IntoIterator<Item = T>,
         T: Into<Vec<u8>>,
     {
-        let bufs = Arc::new(
-            bufs.into_iter()
-                .map(Into::into)
-                .map(Arc::new)
-                .collect::<Vec<_>>(),
-        );
+        let bufs: Arc<[Arc<Vec<u8>>]> = bufs.into_iter().map(Into::into).map(Arc::new).collect();
 
         Self::new(bufs, rng)
     }
@@ -1010,11 +1011,14 @@ impl Content {
                 Self(InnerContent::NotEscapedUni(r))
             }
         } else {
-            let mut all = Vec::with_capacity(bufs.used.len() + 1);
-            all.extend(bufs.used.iter().cloned());
-            all.push(Arc::clone(&bufs.current));
+            let all: Arc<[Arc<Vec<u8>>]> = bufs
+                .used
+                .iter()
+                .cloned()
+                .chain(core::iter::once(Arc::clone(&bufs.current)))
+                .collect();
 
-            let r = MultiRef::new(Arc::new(all), rng);
+            let r = MultiRef::new(all, rng);
 
             if escaped {
                 Self(InnerContent::EscapedMulti(Box::new(r)))

@@ -14,7 +14,6 @@ Path to 1.0
   or single method call.~~
     - One known location that needs `#[inline(always)] - `pointer::Event` accessors that just `match!`.
     - Another known one: `Content::is_escaped` for all `Content` implementations.
-- Address Arc/Vec/Arc/Vec FIXME in `read.rs` or remove it.
 - Update `README`:
   - De-emphasize "Architecture" (and maybe remove)
   - Add a Features section, maybe after Performance that emphasizes:
