@@ -1,4 +1,4 @@
-//! Convert a [`std::io::Read`] into a stream of JSON lexical tokens.
+//! Convert a byte stream such as [`std::io::Read`] into a stream of JSON lexical tokens.
 
 use crate::{
     Buf, BufUnderflow, EqStr, IntoBuf, OrdStr, Pos,
@@ -7,17 +7,21 @@ use crate::{
     },
     syntax,
 };
-use std::{
+use alloc::{
     borrow::Cow,
-    cmp::{Ordering, min},
+    boxed::Box,
     collections::VecDeque,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
+use core::{
+    cmp::{Ordering, min},
     convert::Infallible,
     fmt,
     hash::{Hash, Hasher},
-    io::{self, Read},
     ops::Range,
     str::FromStr,
-    sync::Arc,
 };
 
 // Use a smaller inline buffer size in tests to push more test cases out of the inline
@@ -30,7 +34,7 @@ const INLINE_LEN: usize = 21;
 
 type InlineBuf = [u8; INLINE_LEN];
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct UniRef {
     buf: Arc<Vec<u8>>,
     rng: Range<u32>,
@@ -1053,23 +1057,23 @@ impl super::Content for Content {
 
 // Assert that `Literal` does not grow beyond 24 bytes (three 64-bit words).
 #[cfg(target_pointer_width = "64")]
-const _: [(); 24] = [(); std::mem::size_of::<Literal>()];
+const _: [(); 24] = [(); core::mem::size_of::<Literal>()];
 
 // Assert that `Content` does not grow beyond 24 bytes (three 64-bit words).
 #[cfg(target_pointer_width = "64")]
-const _: [(); 24] = [(); std::mem::size_of::<Content>()];
+const _: [(); 24] = [(); core::mem::size_of::<Content>()];
 
 /// Lexical analysis error detected by a [`ReadAnalyzer`].
 ///
 /// See the [`lexical::Error`] trait, implemented by this struct, for further documentation.
-#[derive(Clone, Debug)]
-pub struct Error {
+#[derive(Debug)]
+pub struct Error<E> {
     kind: ErrorKind,
     pos: Pos,
-    source: Option<Arc<io::Error>>,
+    source: Option<Arc<E>>,
 }
 
-impl Error {
+impl<E> Error<E> {
     /// Returns the category of error.
     ///
     /// This is an inherent implementation of [`lexical::Error::kind`] for convenience, so it is
@@ -1094,7 +1098,7 @@ impl Error {
         }
     }
 
-    fn io(source: io::Error, pos: Pos) -> Self {
+    fn read(source: E, pos: Pos) -> Self {
         Self {
             kind: ErrorKind::Read,
             pos,
@@ -1103,19 +1107,37 @@ impl Error {
     }
 }
 
-impl fmt::Display for Error {
+impl<E> Clone for Error<E> {
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind,
+            pos: self.pos,
+            source: self.source.as_ref().map(Arc::clone),
+        }
+    }
+}
+
+impl<E> fmt::Display for Error<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.kind.fmt_at(f, Some(&self.pos))
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|e| &**e as &dyn std::error::Error)
+impl<E> core::error::Error for Error<E>
+where
+    E: core::error::Error + 'static,
+{
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        self.source
+            .as_ref()
+            .map(|e| &**e as &dyn core::error::Error)
     }
 }
 
-impl lexical::Error for Error {
+impl<E> lexical::Error for Error<E>
+where
+    E: core::error::Error + Send + Sync + 'static,
+{
     fn kind(&self) -> ErrorKind {
         Error::kind(self)
     }
@@ -1192,7 +1214,7 @@ impl Bufs {
         self.k = self.j;
     }
 
-    fn read<R: Read>(&mut self, r: &mut R) -> io::Result<bool> {
+    fn read<R: Read>(&mut self, r: &mut R) -> Result<bool, R::Error> {
         debug_assert!(self.j == self.current.len());
 
         if self.eof {
@@ -1307,13 +1329,13 @@ impl Bufs {
 }
 
 #[derive(Debug)]
-enum StoredContent {
+enum StoredContent<E> {
     Literal(&'static str),
     Range(Range<usize>, bool),
-    Err(Error),
+    Err(Error<E>),
 }
 
-impl Default for StoredContent {
+impl<E> Default for StoredContent<E> {
     fn default() -> Self {
         StoredContent::Literal("")
     }
@@ -1321,10 +1343,55 @@ impl Default for StoredContent {
 
 type MachineBuf = state::DerefBuf<Vec<u8>, Arc<Vec<u8>>>;
 
-/// A [`lexical::Analyzer`] to tokenize JSON text read from a [`std::io::Read`].
+/// Byte-oriented reader to supply JSON text for a [`ReadAnalyzer`].
+///
+/// This is the `no_std`-compatible equivalent of [`std::io::Read`]. It provides a single method
+/// for pulling bytes from a source into a buffer.
+///
+/// When the `std` feature is enabled, a blanket implementation is provided for all types that
+/// implement [`std::io::Read`], so any standard reader (files, sockets, [`Cursor`], *etc.*) works
+/// automatically. In `no_std` environments, implement this trait directly for your byte source.
+///
+/// [`Cursor`]: std::io::Cursor
+pub trait Read {
+    /// The error type returned by [`read`](Self::read).
+    ///
+    /// For the blanket implementation that the `std` feature makes available on every
+    /// [`std::io::Read`], this is [`std::io::Error`].
+    type Error;
+
+    /// Pull some bytes from this source into the specified buffer, returning how many bytes
+    /// were read.
+    ///
+    /// Implementations of this method must meet all documented conditions for [the method of the
+    /// same name][std::io::Read::read] on `std::io::Read`. These conditions include, but may not be
+    /// limited to:
+    ///
+    /// - If the return value of this method is `Ok(n)`, then implementations must guarantee that
+    ///   `0 <= n <= buf.len()`. A nonzero `n` value indicates that the buffer has been filled in
+    ///   with `n` bytes of data from this source. If `n` is 0, either the end of input has been
+    ///   reached or `buf` has length 0.
+    /// - If an error is returned then it must be guaranteed that no bytes were read.
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error>;
+}
+
+#[cfg(feature = "std")]
+impl<R: std::io::Read> Read for R {
+    type Error = std::io::Error;
+
+    #[inline(always)]
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        std::io::Read::read(self, buf)
+    }
+}
+
+/// A [`lexical::Analyzer`] to tokenize JSON text read from a byte stream.
 ///
 /// Use `ReadAnalyzer` for low allocation, low-copy, stream-oriented lexical analysis of any stream
-/// of JSON text.
+/// of JSON text that implements this module's [`Read`] trait. The `Read` trait is similar to
+/// [`std::io::Read`] but can also be used in `no_std` environments. When the `std` feature is
+/// enabled, there is a blanket implementation of `Read` for `std::io::Read` so that you can plug in
+/// any of the standard stream types seamlessly.
 ///
 /// As with any [`lexical::Analyzer`] implementation, you can construct a [`syntax::Parser`] from a
 /// `ReadAnalyzer` to unlock richer stream-oriented syntactic analysis while retaining low overhead
@@ -1411,7 +1478,7 @@ type MachineBuf = state::DerefBuf<Vec<u8>, Arc<Vec<u8>>>;
 #[derive(Debug)]
 pub struct ReadAnalyzer<R: Read> {
     bufs: Bufs,
-    content: StoredContent,
+    content: StoredContent<R::Error>,
     content_pos: Pos,
     mach: state::Machine<MachineBuf>,
     read: R,
@@ -1420,8 +1487,7 @@ pub struct ReadAnalyzer<R: Read> {
 impl<R: Read> ReadAnalyzer<R> {
     /// Constructs a new lexer to tokenize JSON text streamed from a reader.
     ///
-    /// The reader can be anything that implements [`std::io::Read`], such as a file or network
-    /// connection.
+    /// The reader can be anything that implements [`Read`], such as a file or network connection.
     ///
     /// This method creates a `ReadAnalyzer` with a default buffer size of 8 KiB. To control the
     /// buffer size, construct using [`with_buf_size`] instead.
@@ -1508,7 +1574,7 @@ impl<R: Read> ReadAnalyzer<R> {
 
         macro_rules! io_err {
             ($source:ident) => {{
-                self.content = StoredContent::Err(Error::io($source, *self.mach.pos()));
+                self.content = StoredContent::Err(Error::read($source, *self.mach.pos()));
 
                 return Token::Err;
             }};
@@ -1630,7 +1696,7 @@ impl<R: Read> ReadAnalyzer<R> {
     ///
     /// [`next`]: method@Self::next
     #[inline]
-    pub fn err(&self) -> Error {
+    pub fn err(&self) -> Error<R::Error> {
         if let Err(err) = self.try_content() {
             err
         } else {
@@ -1718,7 +1784,7 @@ impl<R: Read> ReadAnalyzer<R> {
     /// assert_eq!(Token::Err, lexer.next());
     /// assert_eq!(Pos { offset: 1, line: 1, col: 2}, *lexer.try_content().unwrap_err().pos());
     /// ```
-    pub fn try_content(&self) -> Result<Content, Error> {
+    pub fn try_content(&self) -> Result<Content, Error<R::Error>> {
         match &self.content {
             StoredContent::Literal(s) => Ok(Content::from_static(s)),
             StoredContent::Range(rng, escaped) => {
@@ -1756,7 +1822,10 @@ impl<R: Read> ReadAnalyzer<R> {
     /// ```
     ///
     /// [`Parser::into_inner`]: syntax::Parser::into_inner
-    pub fn into_parser(self) -> syntax::Parser<ReadAnalyzer<R>> {
+    pub fn into_parser(self) -> syntax::Parser<ReadAnalyzer<R>>
+    where
+        R::Error: core::error::Error + Send + Sync + 'static,
+    {
         syntax::Parser::new(self)
     }
 
@@ -1764,8 +1833,7 @@ impl<R: Read> ReadAnalyzer<R> {
     ///
     /// The minimum buffer size is 512 bytes.
     ///
-    /// The reader can be anything that implements [`std::io::Read`], such as a file or network
-    /// connection.
+    /// The reader can be anything that implements [`Read`], such as a file or network connection.
     ///
     /// # Panics
     ///
@@ -1795,7 +1863,7 @@ impl<R: Read> ReadAnalyzer<R> {
                 state::Machine::new(MachineBuf::new(Arc::clone(&bufs.current))),
             ),
             Err(err) => (
-                StoredContent::Err(Error::io(err, content_pos)),
+                StoredContent::Err(Error::read(err, content_pos)),
                 state::Machine::default(),
             ),
         };
@@ -1810,7 +1878,7 @@ impl<R: Read> ReadAnalyzer<R> {
     }
 
     #[inline(always)]
-    fn literal_content(&mut self, content: &'static str, n: usize) -> StoredContent {
+    fn literal_content(&mut self, content: &'static str, n: usize) -> StoredContent<R::Error> {
         debug_assert!(n <= content.len());
         self.bufs.advance(n);
 
@@ -1818,16 +1886,19 @@ impl<R: Read> ReadAnalyzer<R> {
     }
 
     #[inline(always)]
-    fn range_content(&mut self, escaped: bool, n: usize) -> StoredContent {
+    fn range_content(&mut self, escaped: bool, n: usize) -> StoredContent<R::Error> {
         self.bufs.advance(n);
 
         StoredContent::Range(self.bufs.i..self.bufs.k, escaped)
     }
 }
 
-impl<R: Read> Analyzer for ReadAnalyzer<R> {
+impl<R: Read> Analyzer for ReadAnalyzer<R>
+where
+    R::Error: core::error::Error + Send + Sync + 'static,
+{
     type Content = Content;
-    type Error = Error;
+    type Error = Error<R::Error>;
 
     #[inline(always)]
     fn next(&mut self) -> Token {
@@ -1835,7 +1906,7 @@ impl<R: Read> Analyzer for ReadAnalyzer<R> {
     }
 
     #[inline(always)]
-    fn try_content(&self) -> Result<Self::Content, Error> {
+    fn try_content(&self) -> Result<Self::Content, Error<R::Error>> {
         ReadAnalyzer::try_content(self)
     }
 
@@ -1853,6 +1924,7 @@ mod tests {
     use std::{
         collections::{BTreeMap, HashMap},
         error::Error as _,
+        io,
     };
 
     #[test]
@@ -2570,7 +2642,7 @@ mod tests {
     fn test_bufs_read_too_much() {
         struct ReadTooMuch;
 
-        impl Read for ReadTooMuch {
+        impl io::Read for ReadTooMuch {
             fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
                 Ok(buf.len() + 1)
             }
@@ -2586,7 +2658,7 @@ mod tests {
     fn test_bufs_read_error() {
         struct ReadError;
 
-        impl Read for ReadError {
+        impl io::Read for ReadError {
             fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
                 Err(io::Error::new(io::ErrorKind::Other, "snafu"))
             }
@@ -2959,7 +3031,7 @@ mod tests {
     {
         struct ErrorRead<'a>(&'a [u8]);
 
-        impl<'a> Read for ErrorRead<'a> {
+        impl<'a> io::Read for ErrorRead<'a> {
             fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
                 let n = min(buf.len(), self.0.len());
                 if n == 0 {
@@ -3012,7 +3084,7 @@ mod tests {
 
         struct ReadOnly1(&'static [u8]);
 
-        impl Read for ReadOnly1 {
+        impl io::Read for ReadOnly1 {
             fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
                 let n = self.0.len().min(buf.len()).min(1);
                 buf[..n].copy_from_slice(&self.0[..n]);

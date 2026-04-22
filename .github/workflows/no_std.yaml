@@ -1,0 +1,29 @@
+name: no_std
+
+on:
+  pull_request:
+    types: [opened, synchronize, edited, enqueued]
+  push:
+  release:
+    types: [created, prereleased, published]
+
+jobs:
+  no-std:
+    runs-on: ubuntu-latest
+    name: no_std Check
+    steps:
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: thumbv7m-none-eabi
+      - uses: actions/checkout@v5
+      - run: cargo check --target thumbv7m-none-eabi --no-default-features
+
+  no-std-all-features:
+    runs-on: ubuntu-latest
+    name: no_std All Features Check
+    steps:
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: thumbv7m-none-eabi
+      - uses: actions/checkout@v5
+      - run: cargo check --target thumbv7m-none-eabi --no-default-features --features 'pipe pointer read'

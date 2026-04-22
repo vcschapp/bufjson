@@ -58,8 +58,9 @@ use crate::{
     Pos,
     lexical::{self, Error as _, Token},
 };
+use alloc::sync::Arc;
 use bitvec::prelude::*;
-use std::{fmt, iter::Take, sync::Arc};
+use core::{fmt, iter::Take};
 
 /// Type of structured JSON value: [`Arr`][Self::Arr] or [`Obj`][Self::Obj].
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -217,7 +218,7 @@ impl fmt::Display for Expect {
 const INLINE_LEN_BYTES: usize = 16;
 
 // Number of `usize` values that provide the "backing storage" for the bytes that inline the level.
-const INLINE_LEN_USIZES: usize = INLINE_LEN_BYTES / std::mem::size_of::<usize>();
+const INLINE_LEN_USIZES: usize = INLINE_LEN_BYTES / core::mem::size_of::<usize>();
 
 // Number of `StructKind` levels that can be inlined. Since `StructKind` level requires one bit of
 // bookkeeping, we can pack eight levels per byte.
@@ -648,7 +649,7 @@ impl fmt::Display for ErrorKind {
 pub struct Error {
     kind: ErrorKind,
     pos: Pos,
-    source: Option<Arc<dyn std::error::Error + Send + Sync + 'static>>,
+    source: Option<Arc<dyn core::error::Error + Send + Sync + 'static>>,
 }
 
 impl Error {
@@ -670,12 +671,12 @@ impl Error {
 
     /// Returns the lower-level source of this error, if any.
     ///
-    /// This is an inherent implementation of [`std::error::Error::source`] for convenience, so
+    /// This is an inherent implementation of [`core::error::Error::source`] for convenience, so
     /// it is available even when you don't have the trait imported.
-    pub fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    pub fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         self.source
             .as_ref()
-            .map(|arc| &**arc as &(dyn std::error::Error + 'static))
+            .map(|arc| &**arc as &(dyn core::error::Error + 'static))
     }
 }
 
@@ -685,8 +686,8 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for Error {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         Error::source(self)
     }
 }
@@ -1580,7 +1581,7 @@ where
             .try_content()
             .expect_err("lexer should have error");
         let kind = ErrorKind::Lexical(err.kind());
-        let source = Some(Arc::new(err) as Arc<dyn std::error::Error + Send + Sync + 'static>);
+        let source = Some(Arc::new(err) as Arc<dyn core::error::Error + Send + Sync + 'static>);
         self.state = State::Err;
         self.err = Some(Error {
             kind,
@@ -1861,7 +1862,7 @@ mod tests {
         assert!(err.source().is_some());
         assert!(StdErr::source(&err).is_some());
         let source = err.source().unwrap();
-        let read_err = source.downcast_ref::<read::Error>().unwrap();
+        let read_err = source.downcast_ref::<read::Error<io::Error>>().unwrap();
         let source = read_err.source().unwrap();
         let io_err = source.downcast_ref::<io::Error>().unwrap();
         assert_eq!(io::ErrorKind::BrokenPipe, io_err.kind());

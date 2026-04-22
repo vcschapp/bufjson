@@ -1,7 +1,8 @@
 use super::Pointer;
+use alloc::{borrow::Cow, collections::VecDeque, string::String, vec::Vec};
 #[cfg(feature = "ignore_case")]
-use std::cmp::Ordering;
-use std::{borrow::Cow, cmp::min, collections::VecDeque, num::NonZero};
+use core::cmp::Ordering;
+use core::{cmp::min, num::NonZero};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) enum InnerNode {
@@ -22,9 +23,11 @@ pub(crate) struct Node {
     pub(crate) match_index: Option<usize>,
 }
 
-// Assert that `Node` does not grow beyond 64 bytes, which is 1 cache line on most modern CPU
-// architectures.
-const _: [(); 64] = [(); std::mem::size_of::<Node>()];
+// Assert that `Node` does not grow beyond 1 cache line (64 bytes on 64-bit, 40 bytes on 32-bit).
+#[cfg(target_pointer_width = "64")]
+const _: [(); 64] = [(); core::mem::size_of::<Node>()];
+#[cfg(target_pointer_width = "32")]
+const _: [(); 40] = [(); core::mem::size_of::<Node>()];
 
 impl Node {
     fn new_name(name: impl Into<String>, match_index: Option<usize>) -> Self {
@@ -259,7 +262,7 @@ macro_rules! enqueue_trie_children {
             .into_iter()
             .skip(1)
             .map(Some)
-            .chain(std::iter::once(None));
+            .chain(core::iter::once(None));
         let mut lead_iter = $lead_iter.into_iter().peekable();
 
         if let Some((prev_index, prev)) = lead_iter.peek() {

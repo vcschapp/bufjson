@@ -25,18 +25,23 @@ use crate::{
     lexical::{self, ErrorKind, Token, Unescaped, state},
     syntax,
 };
-use bytes::{Buf as _, Bytes};
-use smallvec::{SmallVec, smallvec};
-use std::{
+use alloc::{
     borrow::Cow,
+    boxed::Box,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
+use bytes::{Buf as _, Bytes};
+use core::{
     cmp::Ordering,
     convert::Infallible,
     fmt,
     hash::{Hash, Hasher},
     mem::MaybeUninit,
     str::FromStr,
-    sync::Arc,
 };
+use smallvec::{SmallVec, smallvec};
 
 // Use a smaller inline buffer size in tests to push more test cases out of the inline
 // representation and into the more complex representations that contain references into the actual
@@ -1006,11 +1011,11 @@ impl super::Content for Content {
 
 // Assert that `Literal` does not grow beyond 40 bytes (five 64-bit words).
 #[cfg(target_pointer_width = "64")]
-const _: [(); 40] = [(); std::mem::size_of::<Literal>()];
+const _: [(); 40] = [(); core::mem::size_of::<Literal>()];
 
 // Assert that `Content` does not grow beyond 40 bytes (five 64-bit words).
 #[cfg(target_pointer_width = "64")]
-const _: [(); 40] = [(); std::mem::size_of::<Content>()];
+const _: [(); 40] = [(); core::mem::size_of::<Content>()];
 
 /// Lexical analysis error detected by a [`PipeAnalyzer`].
 ///
@@ -1072,18 +1077,20 @@ impl<E> fmt::Display for Error<E> {
     }
 }
 
-impl<E> std::error::Error for Error<E>
+impl<E> core::error::Error for Error<E>
 where
-    E: std::error::Error + 'static,
+    E: core::error::Error + 'static,
 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|e| &**e as &dyn std::error::Error)
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        self.source
+            .as_ref()
+            .map(|e| &**e as &dyn core::error::Error)
     }
 }
 
 impl<E> lexical::Error for Error<E>
 where
-    E: std::error::Error + Send + Sync + 'static,
+    E: core::error::Error + Send + Sync + 'static,
 {
     fn kind(&self) -> ErrorKind {
         Error::kind(self)
@@ -1165,7 +1172,7 @@ where
 /// ```
 pub trait Pipe {
     /// Error type returned when [`recv`][method@Self::recv] fails.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: core::error::Error + Send + Sync + 'static;
 
     /// Attempts to wait for the next chunk from this pipe, returning an error if the pipe's data
     /// source is in a failure state.
@@ -1191,6 +1198,7 @@ pub trait Pipe {
     }
 }
 
+#[cfg(feature = "std")]
 impl Pipe for std::sync::mpsc::Receiver<Bytes> {
     type Error = Infallible;
 
@@ -1658,7 +1666,7 @@ impl<P: Pipe> PipeAnalyzer<P> {
                     //         is within `src`.
                     unsafe {
                         let mut dst: MaybeUninit<InlineBuf> = MaybeUninit::uninit();
-                        std::ptr::copy_nonoverlapping(
+                        core::ptr::copy_nonoverlapping(
                             src.as_ptr().add(*start_pos),
                             dst.as_mut_ptr() as *mut u8,
                             *len,

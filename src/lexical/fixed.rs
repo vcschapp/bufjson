@@ -7,10 +7,10 @@ use crate::{
     },
     syntax,
 };
-use std::{
+use alloc::{string::String, sync::Arc, vec::Vec};
+use core::{
     fmt,
     ops::{Deref, Range},
-    sync::Arc,
 };
 
 #[derive(Clone, Debug)]
@@ -25,7 +25,7 @@ impl<B: Deref<Target = [u8]>> Ref<B> {
     }
 
     fn as_str(&self) -> &str {
-        unsafe { std::str::from_utf8_unchecked(&self.buf[self.rng.start..self.rng.end]) }
+        unsafe { core::str::from_utf8_unchecked(&self.buf[self.rng.start..self.rng.end]) }
     }
 }
 
@@ -182,7 +182,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
     }
 
     fn inline_str(len: u8, buf: &InlineBuf) -> &str {
-        unsafe { std::str::from_utf8_unchecked(&buf[0..len as usize]) }
+        unsafe { core::str::from_utf8_unchecked(&buf[0..len as usize]) }
     }
 }
 
@@ -227,7 +227,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> super::Content for Content<B> {
 
 // Assert that `Content` does not grow beyond 32 bytes (four 64-bit words).
 #[cfg(target_pointer_width = "64")]
-const _: [(); 32] = [(); std::mem::size_of::<Content<Vec<u8>>>()];
+const _: [(); 32] = [(); core::mem::size_of::<Content<Vec<u8>>>()];
 
 /// Lexical analysis error detected by a [`FixedAnalyzer`].
 ///
@@ -262,7 +262,7 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
 impl lexical::Error for Error {
     fn kind(&self) -> ErrorKind {

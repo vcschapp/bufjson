@@ -1,7 +1,6 @@
 Path to 1.0
 ===========
 
-- `no_std`
 - Add number parse methods into `Content`, with provided implementations.
     - Basic algorithm is: if one chunk, use `str::parse`-ish functions directly. If multiple
       chunks but would fit in a reasonable stack buffer, copy it there and `str::parse`, otherwise

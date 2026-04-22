@@ -96,7 +96,8 @@
 //! [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 
 use crate::{Buf, EqStr, IntoBuf, OrdStr, Pos, Sink, StringBuf};
-use std::{
+use alloc::string::String;
+use core::{
     borrow::Borrow,
     cmp::{Ord, Ordering},
     fmt,
@@ -1257,13 +1258,13 @@ impl fmt::Display for ErrorKind {
 }
 
 /// An error encountered during lexical analysis of JSON text.
-pub trait Error: std::error::Error + Send + Sync {
+pub trait Error: core::error::Error + Send + Sync {
     /// Returns the category of error.
     ///
     /// If the category is [`ErrorKind::Read`], the underlying I/O error is available from the
     /// [`source`] method.
     ///
-    /// [`source`]: method@std::error::Error::source
+    /// [`source`]: method@core::error::Error::source
     fn kind(&self) -> ErrorKind;
 
     /// Returns the position in the JSON text where the error was encountered.

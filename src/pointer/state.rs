@@ -14,10 +14,11 @@ use crate::{
         group::{InnerNode, Node},
     },
 };
+use alloc::vec::Vec;
 #[cfg(feature = "ignore_case")]
 use caseless::Caseless;
+use core::{cmp::Ordering, iter::Peekable, mem::MaybeUninit, ops::Range};
 use smallvec::{SmallVec, smallvec};
-use std::{cmp::Ordering, iter::Peekable, mem::MaybeUninit, ops::Range};
 
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
 enum State {
@@ -103,7 +104,7 @@ impl InlineSink {
 
     #[inline(always)]
     const fn as_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.buf.as_ptr().cast(), self.len) }
+        unsafe { core::slice::from_raw_parts(self.buf.as_ptr().cast(), self.len) }
     }
 }
 

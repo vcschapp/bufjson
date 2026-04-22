@@ -1,6 +1,10 @@
+#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use std::{cmp::Ordering, fmt, io::Cursor};
+extern crate alloc;
+
+use alloc::{string::String, vec::Vec};
+use core::{cmp::Ordering, fmt};
 
 pub mod lexical;
 #[cfg(feature = "pointer")]
@@ -94,7 +98,7 @@ impl fmt::Display for BufUnderflow {
     }
 }
 
-impl std::error::Error for BufUnderflow {}
+impl core::error::Error for BufUnderflow {}
 
 /// Valid UTF-8 sequence whose bytes may or may not be contiguous in memory.
 ///
@@ -428,12 +432,15 @@ impl<'a> IntoBuf for &'a str {
 /// assert_eq!(7, buf.remaining());
 /// ```
 #[derive(Debug)]
-pub struct StringBuf(Cursor<String>);
+pub struct StringBuf {
+    str: String,
+    pos: usize,
+}
 
 impl Buf for StringBuf {
     fn advance(&mut self, n: usize) {
-        let pos = self.0.position() as usize;
-        let len = self.0.get_ref().len();
+        let len = self.str.len();
+        let pos = self.pos;
 
         if len < pos + n {
             panic!(
@@ -444,29 +451,29 @@ impl Buf for StringBuf {
                 }
             );
         } else {
-            self.0.set_position((pos + n) as u64);
+            self.pos = pos + n;
         }
     }
 
     #[inline]
     fn chunk(&self) -> &[u8] {
-        let pos = self.0.position() as usize;
-        let buf = self.0.get_ref().as_bytes();
+        let buf = self.str.as_bytes();
+        let pos = self.pos;
 
         &buf[pos..]
     }
 
     #[inline]
     fn remaining(&self) -> usize {
-        let pos = self.0.position() as usize;
-        let len = self.0.get_ref().len();
+        let len = self.str.len();
+        let pos = self.pos;
 
         len - pos
     }
 
     fn try_copy_to_slice(&mut self, dst: &mut [u8]) -> Result<(), BufUnderflow> {
-        let pos = self.0.position() as usize;
-        let len = self.0.get_ref().len();
+        let len = self.str.len();
+        let pos = self.pos;
 
         if len < pos + dst.len() {
             Err(BufUnderflow {
@@ -474,8 +481,8 @@ impl Buf for StringBuf {
                 remaining: len - pos,
             })
         } else {
-            dst.copy_from_slice(&self.0.get_ref().as_bytes()[pos..pos + dst.len()]);
-            self.0.set_position((pos + dst.len()) as u64);
+            dst.copy_from_slice(&self.str.as_bytes()[pos..pos + dst.len()]);
+            self.pos = pos + dst.len();
 
             Ok(())
         }
@@ -486,13 +493,16 @@ impl IntoBuf for String {
     type Buf = StringBuf;
 
     fn into_buf(self) -> Self::Buf {
-        StringBuf(Cursor::new(self))
+        let str = self;
+        let pos = 0;
+
+        Self::Buf { str, pos }
     }
 }
 
 /// Trait for types that form an [equivalence relation] together with `str`.
 ///
-/// This trait without methods is equivalent in all respects to [`std::cmp::Eq`] excepting that it
+/// This trait without methods is equivalent in all respects to [`core::cmp::Eq`] excepting that it
 /// indicates that the type implementing it can be compared for equality with `str`.
 ///
 /// [equivalence relation]: https://en.wikipedia.org/wiki/Equivalence_relation
@@ -504,7 +514,7 @@ impl EqStr for &'_ str {}
 ///
 /// This trait may be implemented by a type that is comparable to `str` such that the values of that
 /// type and `str` can be placed in a single total ordering. It is equivalent in all respects to
-/// [`std::cmp::Ord`] excepting that it indicates that the type implementing it joins together in a
+/// [`core::cmp::Ord`] excepting that it indicates that the type implementing it joins together in a
 /// total ordering with `str`.
 ///
 /// [total ordering]: https://en.wikipedia.org/wiki/Total_order
@@ -620,7 +630,7 @@ macro_rules! stringify_known_utf8 {
 #[cfg(any(feature = "pipe", feature = "read"))]
 pub(crate) mod buf {
     use super::*;
-    use std::hash::Hasher;
+    use core::hash::Hasher;
 
     // Convert UTF-8 string content of a trusted `Buf` to a `String`.
     //

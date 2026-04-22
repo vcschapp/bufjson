@@ -17,7 +17,7 @@ readonly -A profile_args=(
 )
 
 readonly -A tool_profiles=(
-  [clippy]="default release"
+  [clippy]="default"
   [doc]="default"
   [fmt]="default"
   [build]="default release"
@@ -25,13 +25,17 @@ readonly -A tool_profiles=(
   [bench]="default"
 )
 
+readonly no_std_target=thumbv7m-none-eabi # no_std but has `alloc::sync::Arc`
+
 readonly -A feature_mix_args=(
   [default]=""
   [all]="--all-features"
+  [no_std]="--target,$no_std_target,--no-default-features"
+  [no_std_all]="--target,$no_std_target,--no-default-features,--features,pipe pointer read"
 )
 
 readonly -A tool_feature_mixes=(
-    [clippy]="default all"
+    [clippy]="default all no_std no_std_all"
     [doc]="default all"
     [fmt]="default"
     [build]="default all"
@@ -53,7 +57,9 @@ function run_tool_quiet() {
     args+=("${profile_args[$profile]}")
   fi
   if [ -n "${feature_mix_args[$feature_mix]}" ]; then
-    args+=("${feature_mix_args[$feature_mix]}")
+    local -a mix_args
+    IFS=, read -r -a mix_args <<<"${feature_mix_args[$feature_mix]}"
+    args+=("${mix_args[@]}")
   fi
 
   printf "  profile: %s, feature mix: %s ... " "$profile" "$feature_mix"
@@ -73,6 +79,8 @@ function run_tool_quiet() {
     return 1
   fi
 }
+
+rustup --quiet target add "${no_std_target}"
 
 num_failures=0
 

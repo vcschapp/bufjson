@@ -11,7 +11,7 @@ use crate::{
     Pos,
     lexical::{ErrorKind, Token},
 };
-use std::{fmt, ops::Deref};
+use core::{fmt, ops::Deref};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum Num {
@@ -155,7 +155,7 @@ pub enum End {
 }
 
 // Assert that `Next` does not grow beyond 16 bytes (two 64-bit words).
-const _: [(); 16] = [(); std::mem::size_of::<Next>()];
+const _: [(); 16] = [(); core::mem::size_of::<Next>()];
 
 #[derive(Clone, Copy, Debug)]
 #[repr(u8)]

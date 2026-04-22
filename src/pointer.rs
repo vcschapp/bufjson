@@ -11,12 +11,8 @@ pub mod state;
 pub use eval::{Evaluator, Event};
 pub use group::Group;
 
-use std::{
-    borrow::{Borrow, Cow},
-    fmt,
-    ops::Deref,
-    str::FromStr,
-};
+use alloc::{borrow::Cow, string::String};
+use core::{borrow::Borrow, fmt, ops::Deref, str::FromStr};
 
 /// A JSON Pointer syntax error detected when creating a [`Pointer`] from an input string.
 ///
@@ -53,7 +49,7 @@ impl fmt::Display for PointerError {
     }
 }
 
-impl std::error::Error for PointerError {}
+impl core::error::Error for PointerError {}
 
 /// A JSON Pointer, as defined in [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901).
 ///
@@ -294,25 +290,25 @@ impl PartialEq<Pointer> for String {
 }
 
 impl PartialOrd<&str> for Pointer {
-    fn partial_cmp(&self, other: &&str) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &&str) -> Option<core::cmp::Ordering> {
         Some(self.0.as_ref().cmp(*other))
     }
 }
 
 impl PartialOrd<Pointer> for &str {
-    fn partial_cmp(&self, other: &Pointer) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Pointer) -> Option<core::cmp::Ordering> {
         Some(self.cmp(&other.0.as_ref()))
     }
 }
 
 impl PartialOrd<String> for Pointer {
-    fn partial_cmp(&self, other: &String) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &String) -> Option<core::cmp::Ordering> {
         Some(self.0.as_ref().cmp(other))
     }
 }
 
 impl PartialOrd<Pointer> for String {
-    fn partial_cmp(&self, other: &Pointer) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Pointer) -> Option<core::cmp::Ordering> {
         Some(other.0.as_ref().cmp(self).reverse())
     }
 }
