@@ -739,7 +739,7 @@ pub(crate) mod buf {
 ///
 /// A `Sink` is a mutable, output-only, byte buffer. It can be provided as an argument to functions
 /// that produce an output sequence, for example the [`lexical::unescape`] function for expanding
-/// escape sequence. Implementations may use a fixed-size inline array, a heap-allocated buffer, or
+/// escape sequences. Implementations may use a fixed-size inline array, a heap-allocated buffer, or
 /// any other backing store.
 ///
 /// The trait is modeled after the subset of [`Vec<u8>`] methods used for appending bytes, and an

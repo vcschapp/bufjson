@@ -1437,7 +1437,7 @@ impl<R: std::io::Read> Read for R {
 /// case, if values referencing into every internal buffer are kept alive, the `ReadAnalyzer` can
 /// use memory proportionate to the length of the JSON text being analyzed. Since this type of usage
 /// reduces the value proposition of a truly streaming JSON processor, it is recommended that you
-/// drop `Content` values soon after inspecting them; and when, a longer lifetime is required,
+/// drop `Content` values soon after inspecting them; and, when a longer lifetime is required,
 /// convert them into some other convenient owned value.
 ///
 /// # Examples
@@ -1506,7 +1506,7 @@ impl<R: Read> ReadAnalyzer<R> {
         Self::with_buf_size(read, Bufs::DEFAULT_BUF_SIZE)
     }
 
-    /// Recognizes the next lexical token in the buffer without allocating or copying.
+    /// Recognizes the next lexical token in the input stream.
     ///
     /// This is an inherent implementation of [`lexical::Analyzer::next`] for convenience, so it is
     /// available even when you don't have the trait imported.

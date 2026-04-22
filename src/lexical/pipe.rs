@@ -1189,7 +1189,7 @@ pub trait Pipe {
     ///
     /// This function will never block the caller in order to wait for a chunk to become available.
     ///
-    /// The return value can not represent an error state. If the pipe is in an error state, it
+    /// The return value cannot represent an error state. If the pipe is in an error state, it
     /// should return `None` and wait for a call to [`recv`][method@Self::recv] to return the error.
     ///
     /// The provided implementation simply returns `None`.

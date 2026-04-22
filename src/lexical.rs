@@ -957,7 +957,7 @@ pub enum Expect {
     /// One of:
     /// - A decimal digit character ([`Digit`])
     /// - An uppercase letter `'A'`..`'F'` (U+0041..U+0046)
-    /// - A lowercase letter `'a'`..`'f'` (U+0061..0066)
+    /// - A lowercase letter `'a'`..`'f'` (U+0061..U+0066)
     ///
     /// [`Digit`]: Expect::Digit
     UnicodeEscHexDigit,
