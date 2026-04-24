@@ -13,6 +13,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 #[cfg(feature = "num")]
 use core::str::FromStr;
 use core::{
+    cmp::Ordering,
     fmt,
     ops::{Deref, Range},
 };
@@ -157,6 +158,80 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
                 let s = unsafe { String::from_utf8_unchecked(buf) };
 
                 Unescaped::Expanded(s)
+            }
+        }
+    }
+
+    /// Compares the token content to another string, expanding embedded escape sequences.
+    ///
+    /// For non-string tokens, and string tokens for which [`is_escaped`] returns `false`, this
+    /// method returns the equivalent of `self.literal().cmp(other)`.
+    ///
+    /// For string tokens with one or more escape sequences, this method compares a normalized
+    /// version of the string value with escape sequences expanded to `other`. It gives the same
+    /// result as `self.unescaped().cmp(other)`, but is faster because it avoids the accompanying
+    /// allocations and copying.
+    ///
+    /// Note two important details. First, no unescaping is done on `other`, which is assumed to
+    /// contain a string with escape sequences fully expanded. Second, apart from expanding escape
+    /// sequences, `self` is compared byte-for-byte against `other`, so if `self` contains the
+    /// content of a string token, then `other` will need to begin and end with a quotation mark
+    /// character, `"` (U+0022) in order to compare equal.
+    ///
+    /// # Performance considerations
+    ///
+    /// Does not allocate.
+    ///
+    /// Since this method is marginally less efficient than comparing directly against the literal
+    /// value, it is preferable to use it only when `is_escaped` returns `true`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    /// use std::cmp::Ordering;
+    ///
+    /// let mut an = FixedAnalyzer::new(&br#""hello\nworld! \ud83c\udf0d""#[..]);
+    ///
+    /// assert_eq!(Token::Str, an.next());
+    /// assert_eq!(
+    ///     Ordering::Equal, an.content().unescaped_cmp(r#""hello
+    /// world! 🌍""#));
+    /// ```
+    ///
+    /// [`is_escaped`]: method@Self::is_escaped
+    pub fn unescaped_cmp(&self, other: &str) -> Ordering {
+        let mut a = self.literal().as_bytes();
+        let mut b = other.as_bytes();
+        loop {
+            match a.iter().position(|&b| b == b'\\') {
+                None => return a.cmp(b),
+                Some(i) => {
+                    let o = a[..i].cmp(&b[..i.min(b.len())]);
+                    if o != Ordering::Equal {
+                        return o;
+                    } else if i >= b.len() {
+                        return Ordering::Greater;
+                    }
+                    let y = b[i];
+                    match lexical::unescape_byte(a[i + 1]) {
+                        lexical::UnescapeByte::Byte(x) if x != y => return x.cmp(&y),
+                        lexical::UnescapeByte::Byte(_) => {
+                            a = &a[i + 2..];
+                            b = &b[i + 1..];
+                        }
+                        lexical::UnescapeByte::Unicode => {
+                            a = &a[i + 2..];
+                            let (x, n) = lexical::unescape_unicode(&mut a);
+                            let n = n as usize;
+                            let o = x[..n].cmp(&b[i..i + n.min(b.len() - i)]);
+                            if o != Ordering::Equal {
+                                return o;
+                            }
+                            b = &b[i + n..];
+                        }
+                    }
+                }
             }
         }
     }
@@ -354,6 +429,11 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> super::Content for Content<B> {
     #[inline(always)]
     fn unescaped<'a>(&'a self) -> Unescaped<Self::Literal<'a>> {
         Content::unescaped(self)
+    }
+
+    #[inline(always)]
+    fn unescaped_cmp(&self, other: &str) -> Ordering {
+        Content::unescaped_cmp(self, other)
     }
 
     #[cfg(feature = "num")]
@@ -937,6 +1017,116 @@ mod tests {
         assert_eq!(literal.len(), content.literal_len());
         assert_eq!(literal.len(), lexical::Content::literal_len(&content));
         assert_eq!(unescaped, content.unescaped());
+        assert_eq!(unescaped, lexical::Content::unescaped(&content));
+        assert_eq!(Ordering::Equal, content.unescaped_cmp(unescaped));
+    }
+
+    #[rstest]
+    #[case::arr_begin("[")]
+    #[case::arr_end("]")]
+    #[case::empty("")]
+    #[case::lit_false("false")]
+    #[case::lit_false("null")]
+    #[case::lit_false("true")]
+    #[case::name_sep(":")]
+    #[case::num_0("1")]
+    #[case::num_1("1")]
+    #[case::num_pi("3.14159")]
+    #[case::num_minus_1("-1")]
+    #[case::num_big1("1234567890.1234567890")]
+    #[case::num_big2("1e100")]
+    #[case::num_big3("10.000e+99")]
+    #[case::str_empty(r#""""#)]
+    #[case::str_a(r#""a""#)]
+    #[case::str_utf8_2_bytes(r#""è""#)]
+    #[case::str_utf8_3_bytes(r#""€""#)]
+    #[case::str_utf8_4_bytes(r#""🇮🇹""#)]
+    #[case::str_utf8_all(r#""🇮🇹 Questo caffè costa 3€. ☕""#)]
+    #[case::obj_begin("{")]
+    #[case::obj_end("}")]
+    #[case::value_sep(",")]
+    #[case::white1(" ")]
+    #[case::white2("\t")]
+    #[case::white3("\r")]
+    #[case::white4("\n")]
+    #[case::white5("   \t\r\n \n\t\t\r \r\n\r")]
+    fn test_content_unescaped_cmp_identity(#[case] input: &'static str) {
+        let content = Content::from_static(input);
+
+        assert_eq!(
+            Ordering::Equal,
+            lexical::unescaped_cmp(content.literal(), input)
+        );
+        assert_eq!(Ordering::Equal, content.unescaped_cmp(input));
+        assert_eq!(
+            Ordering::Equal,
+            lexical::Content::unescaped_cmp(&content, input)
+        );
+    }
+
+    #[rstest]
+    #[case::empty_str_empty("", r#""""#, Ordering::Less)]
+    #[case::empty_num("", "1", Ordering::Less)]
+    #[case::empty_white("", " ", Ordering::Less)]
+    #[case::num_empty("0", "", Ordering::Greater)]
+    #[case::str_a_str_b(r#""a""#, r#""b""#, Ordering::Less)]
+    #[case::str_a_str_empty(r#""a""#, r#""""#, Ordering::Greater)]
+    #[case::str_b_str_a(r#""b""#, r#""a""#, Ordering::Greater)]
+    #[case::str_bar_str_bard(r#""bar""#, r#""bard""#, Ordering::Less)]
+    #[case::str_bar_str_bark(r#""bar""#, r#""bark""#, Ordering::Less)]
+    #[case::str_bard_str_bar(r#""bard""#, r#""bar""#, Ordering::Greater)]
+    #[case::str_bard_str_bark(r#""bard""#, r#""bark""#, Ordering::Less)]
+    #[case::str_bark_str_bar(r#""bark""#, r#""bar""#, Ordering::Greater)]
+    #[case::str_bark_str_bard(r#""bark""#, r#""bard""#, Ordering::Greater)]
+    #[case::str_empty_empty(r#""""#, "", Ordering::Greater)]
+    #[case::str_empty_str_a(r#""""#, r#""a""#, Ordering::Less)]
+    #[case::str_esc_quot_str_quot(r#""\"""#, "\"\"\"", Ordering::Equal)]
+    #[case::str_esc_bsol_str_bsol(r#""\\""#, "\"\\\"", Ordering::Equal)]
+    #[case::str_esc_sol_str_sol(r#""\/""#, "\"/\"", Ordering::Equal)]
+    #[case::str_esc_bs_str_bs(r#""\b""#, "\"\x08\"", Ordering::Equal)]
+    #[case::str_esc_ff_str_ff(r#""\f""#, "\"\x0c\"", Ordering::Equal)]
+    #[case::str_esc_nl_str_nl(r#""\n""#, "\"\n\"", Ordering::Equal)]
+    #[case::str_esc_nl_str_cr(r#""\n""#, "\"\r\"", Ordering::Less)]
+    #[case::str_esc_cr_str_cr(r#""\r""#, "\"\r\"", Ordering::Equal)]
+    #[case::str_esc_cr_str_nl(r#""\r""#, "\"\n\"", Ordering::Greater)]
+    #[case::str_esc_tab_str_tab(r#""\t""#, "\"\t\"", Ordering::Equal)]
+    #[case::str_esc_u_0008_str_bs(r#""\u0008""#, "\"\x08\"", Ordering::Equal)]
+    #[case::str_esc_u_0009_str_tab(r#""\u0009""#, "\"\t\"", Ordering::Equal)]
+    #[case::str_esc_u_000a_str_nl(r#""\u000a""#, "\"\n\"", Ordering::Equal)]
+    #[case::str_esc_u_000c_str_ff(r#""\u000c""#, "\"\x0c\"", Ordering::Equal)]
+    #[case::str_esc_u_000d_str_cr(r#""\u000d""#, "\"\r\"", Ordering::Equal)]
+    #[case::str_esc_u_0022_str_quot(r#""\u0022""#, "\"\"\"", Ordering::Equal)]
+    #[case::str_esc_u_002f_str_sol(r#""\u002f""#, "\"/\"", Ordering::Equal)]
+    #[case::str_esc_u_005c_str_bsol(r#""\u005c""#, "\"\\\"", Ordering::Equal)]
+    #[case::str_esc_u_0062_str_a(r#""\u0063""#, r#""a""#, Ordering::Greater)]
+    #[case::str_esc_u_00e8_str_e_grave(r#""\u00e8""#, "\"\u{00e8}\"", Ordering::Equal)]
+    #[case::str_esc_u_20ac_str_euro(r#""\u20ac""#, "\"\u{20ac}\"", Ordering::Equal)]
+    #[case::str_esc_u_surrogate_str_globe(r#""\ud83c\udf0d""#, "\"\u{1f30d}\"", Ordering::Equal)]
+    #[case::str_esc_at_end_of_longer_str(r#""abcde\n""#, r#""abc""#, Ordering::Greater)]
+    #[case::str_esc_consecutive(r#""\n\t""#, "\"\n\t\"", Ordering::Equal)]
+    #[case::str_where_other_terminates_early(r#""\n""#, "\"", Ordering::Greater)]
+    #[case::white_empty(" ", "", Ordering::Greater)]
+    #[case::smoke_1(
+        r#""Path: C:\\Users\\alice\/docs""#,
+        "\"Path: C:\\Users\\alice/docs\"",
+        Ordering::Equal
+    )]
+    #[case::smoke_2(
+        r#""At the caff\u00e8 counter, he paid the 10,50\u00a0\u20ac and\nquickly downed the cappucino. Then,\r\n\twith a quick\"ciao\u0022, he turned and walked out.""#,
+        "\"At the caffè counter, he paid the 10,50\u{00a0}€ and\nquickly downed the cappucino. Then,\r\n\twith a quick\"ciao\", he turned and walked out.\"",
+        Ordering::Equal,
+    )]
+    #[case::smoke_3(
+        r#""At the caff\u00e8 counter, he paid the 10,50\u00a0\u20ac and\nquickly downed the cappucino. Then,\r\n\twith a quick\"ciao\u0022, he turned and ran out.""#,
+        "\"At the caffè counter, he paid the 10,50\u{00a0}€ and\nquickly downed the cappucino. Then,\r\n\twith a quick\"ciao\", he turned and walked out.\"",
+        Ordering::Less,
+    )]
+    fn test_unescaped_cmp_ok(#[case] a: &'static str, #[case] b: &str, #[case] expect: Ordering) {
+        let content = Content::from_static(a);
+
+        assert_eq!(expect, lexical::unescaped_cmp(content.literal(), b));
+        assert_eq!(expect, content.unescaped_cmp(b));
+        assert_eq!(expect, lexical::Content::unescaped_cmp(&content, b));
     }
 
     #[cfg(feature = "num")]

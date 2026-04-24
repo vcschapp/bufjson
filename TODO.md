@@ -1,8 +1,6 @@
 Path to 1.0
 ===========
 
-- Add `Content::cmp_unescaped -> Ordering` to `Content` to allow it to compare content to other
-  strings without allocating to unescape. This should be a provided method on the trait.
 - Go over the various key `Content`/`Literal` methods like `len()` and into_buf()` to make sure the
   appropriate ones are inlined.
     - Duplicate: ~~Replace `#[inline(always)]` with `#[inline]` except for methods that are just a reference return

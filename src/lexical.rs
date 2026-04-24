@@ -1314,12 +1314,41 @@ pub trait Content: fmt::Debug {
     /// | `\r` | Carriage return, U+000d |
     /// | `\t` | Horizontal tab, U+0009 |
     /// | `\uXXXX` | Any Unicode character in basic multilingual plane, U+0000 through U+ffff |
-    /// | `\uHHHH\uLLLL` | Unicode characters outside the basic multilingual plane represented as a high/low surrogate pair |
+    /// | `\uHHHH\uLLLL` | Unicode character outside the basic multilingual plane represented as a high/low surrogate pair |
     ///
     /// [`literal`]: method@Self::literal
     /// [`is_escaped`]: method@Self::is_escaped
     /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
     fn unescaped<'a>(&'a self) -> Unescaped<Self::Literal<'a>>;
+
+    /// Compares the token content to another string, expanding embedded escape sequences.
+    ///
+    /// For non-string tokens, and string tokens for which [`is_escaped`] returns `false`, this
+    /// method returns the equivalent of `self.literal().cmp(other)`.
+    ///
+    /// For string tokens with one or more escape sequences, this method compares a normalized
+    /// version of the string value with escape sequences expanded to `other`. It gives the same
+    /// result as `self.unescaped().cmp(other)`, but is faster because it avoids the accompanying
+    /// allocations and copying.
+    ///
+    /// Note two important details. First, no unescaping is done on `other`, which is assumed to
+    /// contain a string with escape sequences fully expanded. Second, apart from expanding escape
+    /// sequences, `self` is compared byte-for-byte against `other`, so if `self` contains the
+    /// content of a string token, then `other` will need to begin and end with a quotation mark
+    /// character, `"` (U+0022) in order to compare equal.
+    ///
+    /// # Performance considerations
+    ///
+    /// Implementations should never allocate.
+    ///
+    /// Since this method is marginally less efficient than comparing directly against the literal
+    /// value, it is preferable to use it only when `is_escaped` returns `true`.
+    ///
+    /// [`is_escaped`]: method@Self::is_escaped
+    #[inline(always)]
+    fn unescaped_cmp(&self, other: &str) -> Ordering {
+        unescaped_cmp(self.literal(), other)
+    }
 
     /// Converts the token content to a 64-bit signed integer.
     ///
@@ -1946,13 +1975,13 @@ pub trait Analyzer {
     fn try_content(&self) -> Result<Self::Content, Self::Error>;
 }
 
-pub(crate) fn hex2u16(b: u8) -> u16 {
-    match b {
-        b'0'..=b'9' => (b - b'0') as u16,
-        b'a'..=b'f' => (10 + b - b'a') as u16,
-        b'A'..=b'F' => (10 + b - b'A') as u16,
-        _ => panic!("invalid hex character: 0x{b:02x}"),
+#[inline(always)]
+fn hex2u32(b: u8) -> u32 {
+    if !b.is_ascii_hexdigit() {
+        panic!("byte 0x{b:02x?} is not an ASCII hex digit")
     }
+
+    ((b & 0xF) + (b >> 6) * 9) as u32
 }
 
 /// Expands escape sequences in the content of a valid JSON string.
@@ -2053,7 +2082,7 @@ pub fn unescape(literal: impl IntoBuf, dst: &mut impl Sink) {
 
                 Some(e) if (1..=4).contains(&e.len) => {
                     let shift = 4 * (4 - e.len);
-                    e.hi |= (hex2u16(b) as u32) << shift;
+                    e.hi |= hex2u32(b) << shift;
                     e.len += 1;
                     if e.len == 5 {
                         match e.hi {
@@ -2098,7 +2127,7 @@ pub fn unescape(literal: impl IntoBuf, dst: &mut impl Sink) {
 
                 Some(e) if (7..=10).contains(&e.len) => {
                     let shift = 4 * (10 - e.len);
-                    e.lo |= (hex2u16(b) as u32) << shift;
+                    e.lo |= hex2u32(b) << shift;
                     e.len += 1;
                     if e.len == 11 {
                         match e.lo {
@@ -2141,6 +2170,113 @@ pub fn unescape(literal: impl IntoBuf, dst: &mut impl Sink) {
     }
 }
 
+/// Compares valid JSON token content with a string, expanding escapes in the token content.
+///
+/// For non-string tokens, and string tokens that do not contain escape sequences, this method is
+/// equivalent to comparing the literal bytes of the content directly with `other`.
+///
+/// For string tokens with one or more escape sequences, this method compares a normalized
+/// version of the string value with escape sequences expanded to `other`. It gives the same
+/// result as first rendering the token content as a string using the [`unescape`] function, and
+/// then comparing it against `other`.
+///
+/// Note two important details. First, no unescaping is done on `other`, which is assumed to
+/// contain a string with escape sequences fully expanded. Second, apart from expanding escape
+/// sequences, `literal` is compared byte-for-byte against `other`, so if `literal` contains the
+/// content of a string token, then `other` will need to begin and end with a quotation mark
+/// character, `"` (U+0022) in order to compare equal.
+///
+/// # Performance considerations
+///
+/// Does not allocate.
+///
+/// # Panics
+///
+/// Panics if `literal` contains an invalid escape sequence.
+///
+/// # Example
+///
+/// ```
+/// use bufjson::{IntoBuf, lexical::unescaped_cmp};
+/// use std::cmp::Ordering;
+///
+/// assert_eq!(Ordering::Less, unescaped_cmp(r#""hello""#, r#""jello""#));
+/// assert_eq!(
+///     Ordering::Equal, unescaped_cmp(r#""hello\nworld! \ud83c\udf0d""#, r#""hello
+/// world! 🌍""#));
+/// assert_eq!(Ordering::Greater, unescaped_cmp(r#""foo""#, r#""bar""#));
+/// ```
+pub fn unescaped_cmp(literal: impl IntoBuf, other: &str) -> Ordering {
+    let mut literal = literal.into_buf();
+    let mut a = literal.chunk();
+    let mut b = other.as_bytes();
+    loop {
+        match a.iter().position(|&b| b == b'\\') {
+            // No escape sequences detected in the current chunk of `literal`.
+            None => {
+                let n = a.len();
+                let o = a.cmp(&b[..n.min(b.len())]);
+                if o != Ordering::Equal {
+                    return o;
+                }
+                literal.advance(n);
+                a = literal.chunk();
+                b = &b[n..];
+            }
+
+            // Found an escape sequence at position `j` in the current chunk of `literal`.
+            Some(j) => {
+                // Compare the bytes up, and not including, the `\` that starts the escape sequence.
+                let o = a[..j].cmp(&b[..j.min(b.len())]);
+                if o != Ordering::Equal {
+                    return o;
+                } else if j >= b.len() {
+                    return Ordering::Greater;
+                }
+
+                // Make sure we have the next byte following the `\` available in `a`.
+                let i = if j + 1 < a.len() {
+                    j + 1
+                } else {
+                    literal.advance(j + 1);
+                    a = literal.chunk();
+                    if a.is_empty() {
+                        panic!("unterminated escape sequence");
+                    }
+
+                    0
+                };
+
+                // Evaluate the escape sequence.
+                let y = b[j];
+                match unescape_byte(a[i]) {
+                    UnescapeByte::Byte(x) if x != y => return x.cmp(&y),
+                    UnescapeByte::Byte(_) => {
+                        literal.advance(i + 1);
+                        a = literal.chunk();
+                        b = &b[j + 1..];
+                    }
+                    UnescapeByte::Unicode => {
+                        literal.advance(i + 1);
+                        let (x, n) = unescape_unicode(&mut literal);
+                        let n = n as usize;
+                        let o = x[..n].cmp(&b[j..j + n.min(b.len() - j)]);
+                        if o != Ordering::Equal {
+                            return o;
+                        }
+                        a = literal.chunk();
+                        b = &b[j + n..];
+                    }
+                }
+            }
+        }
+
+        if a.is_empty() {
+            return 0.cmp(&b.len());
+        }
+    }
+}
+
 fn append_code_point(code_point: u32, dst: &mut impl Sink) {
     match char::from_u32(code_point) {
         Some(c) => {
@@ -2150,6 +2286,82 @@ fn append_code_point(code_point: u32, dst: &mut impl Sink) {
         }
 
         None => unreachable!(),
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum UnescapeByte {
+    Byte(u8),
+    Unicode,
+}
+
+#[inline]
+pub(crate) fn unescape_byte(b: u8) -> UnescapeByte {
+    match b {
+        b'"' | b'\\' | b'/' => UnescapeByte::Byte(b),
+        b'b' => UnescapeByte::Byte(b'\x08'),
+        b't' => UnescapeByte::Byte(b'\t'),
+        b'f' => UnescapeByte::Byte(b'\x0c'),
+        b'n' => UnescapeByte::Byte(b'\n'),
+        b'r' => UnescapeByte::Byte(b'\r'),
+        b'u' => UnescapeByte::Unicode,
+        _ => panic!("invalid escape sequence: byte 0x{b:02x} cannot follow '\\'"),
+    }
+}
+
+pub(crate) fn unescape_unicode(buf: &mut impl Buf) -> ([u8; 4], u32) {
+    let mut digits = [0u8; 4];
+
+    // Consume the four hex digits that are immediately part of the escape sequence.
+    if buf.remaining() < 4 {
+        panic!(
+            "at least 4 hex digits are required to complete Unicode escape sequence, but only {} bytes remain",
+            buf.remaining()
+        );
+    }
+    buf.copy_to_slice(&mut digits);
+    let mut code_point = digits.iter().fold(0u32, |acc, &b| acc << 4 | hex2u32(b));
+
+    // If the code point is a high surrogate, then a low surrogate is expected afterward.
+    if code_point & 0xfc00 == 0xd800 {
+        if buf.remaining() < 6 {
+            panic!(
+                r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\u{}", but only {} bytes remain"#,
+                str::from_utf8(&digits).unwrap(),
+                buf.remaining(),
+            )
+        }
+        let mut second = [0u8; 6];
+        buf.copy_to_slice(&mut second);
+        if second[0] != b'\\' || second[1] != b'u' {
+            panic!(
+                r#"low surrogate Unicode escape sequence must start with "\u", but {second:02x?} does not"#
+            );
+        }
+        let lo = second
+            .iter()
+            .skip(2)
+            .take(4)
+            .fold(0u32, |acc, &b| acc << 4 | hex2u32(b));
+        if !(0xdc00..=0xdfff).contains(&lo) {
+            panic!(
+                r#"high surrogate \u{} followed by invalid low surrogate \u{}"#,
+                str::from_utf8(&digits).unwrap(),
+                str::from_utf8(&second[2..]).unwrap()
+            );
+        }
+        code_point = ((code_point - 0xd800) << 10 | (lo - 0xdc00)) + 0x10000;
+    }
+
+    // Convert the code point to a UTF-8 byte sequence.
+    if let Some(c) = char::from_u32(code_point) {
+        let mut buf = [0u8; 4];
+        let s = c.encode_utf8(&mut buf);
+        let n = s.len() as u32;
+
+        (buf, n)
+    } else {
+        panic!("invalid Unicode escape sequence(s) produced invalid code point 0x{code_point:04x}");
     }
 }
 
@@ -2686,6 +2898,213 @@ mod tests {
         unescape(literal, &mut buf);
     }
 
+    #[rstest]
+    #[case::arr_begin("[")]
+    #[case::arr_end("]")]
+    #[case::empty("")]
+    #[case::lit_false("false")]
+    #[case::lit_false("null")]
+    #[case::lit_false("true")]
+    #[case::name_sep(":")]
+    #[case::num_0("1")]
+    #[case::num_1("1")]
+    #[case::num_pi("3.14159")]
+    #[case::num_minus_1("-1")]
+    #[case::num_big1("1234567890.1234567890")]
+    #[case::num_big2("1e100")]
+    #[case::num_big3("10.000e+99")]
+    #[case::str_empty(r#""""#)]
+    #[case::str_a(r#""a""#)]
+    #[case::str_utf8_2_bytes(r#""è""#)]
+    #[case::str_utf8_3_bytes(r#""€""#)]
+    #[case::str_utf8_4_bytes(r#""🇮🇹""#)]
+    #[case::str_utf8_all(r#""🇮🇹 Questo caffè costa 3€. ☕""#)]
+    #[case::obj_begin("{")]
+    #[case::obj_end("}")]
+    #[case::value_sep(",")]
+    #[case::white1(" ")]
+    #[case::white2("\t")]
+    #[case::white3("\r")]
+    #[case::white4("\n")]
+    #[case::white5("   \t\r\n \n\t\t\r \r\n\r")]
+    fn test_unescaped_cmp_identity(#[case] input: &str) {
+        assert_eq!(Ordering::Equal, unescaped_cmp(input, input));
+
+        for chunked_str in ChunkedStr::chunkify(input) {
+            assert_eq!(Ordering::Equal, unescaped_cmp(chunked_str, input));
+
+            let content = chunked_str.into_content(false);
+            assert_eq!(Ordering::Equal, content.unescaped_cmp(input));
+        }
+    }
+
+    #[rstest]
+    #[case::empty_str_empty("", r#""""#, Ordering::Less)]
+    #[case::empty_num("", "1", Ordering::Less)]
+    #[case::empty_white("", " ", Ordering::Less)]
+    #[case::num_empty("0", "", Ordering::Greater)]
+    #[case::str_a_str_b(r#""a""#, r#""b""#, Ordering::Less)]
+    #[case::str_a_str_empty(r#""a""#, r#""""#, Ordering::Greater)]
+    #[case::str_b_str_a(r#""b""#, r#""a""#, Ordering::Greater)]
+    #[case::str_bar_str_bard(r#""bar""#, r#""bard""#, Ordering::Less)]
+    #[case::str_bar_str_bark(r#""bar""#, r#""bark""#, Ordering::Less)]
+    #[case::str_bard_str_bar(r#""bard""#, r#""bar""#, Ordering::Greater)]
+    #[case::str_bard_str_bark(r#""bard""#, r#""bark""#, Ordering::Less)]
+    #[case::str_bark_str_bar(r#""bark""#, r#""bar""#, Ordering::Greater)]
+    #[case::str_bark_str_bard(r#""bark""#, r#""bard""#, Ordering::Greater)]
+    #[case::str_empty_empty(r#""""#, "", Ordering::Greater)]
+    #[case::str_empty_str_a(r#""""#, r#""a""#, Ordering::Less)]
+    #[case::str_esc_quot_str_quot(r#""\"""#, "\"\"\"", Ordering::Equal)]
+    #[case::str_esc_bsol_str_bsol(r#""\\""#, "\"\\\"", Ordering::Equal)]
+    #[case::str_esc_sol_str_sol(r#""\/""#, "\"/\"", Ordering::Equal)]
+    #[case::str_esc_bs_str_bs(r#""\b""#, "\"\x08\"", Ordering::Equal)]
+    #[case::str_esc_ff_str_ff(r#""\f""#, "\"\x0c\"", Ordering::Equal)]
+    #[case::str_esc_nl_str_nl(r#""\n""#, "\"\n\"", Ordering::Equal)]
+    #[case::str_esc_nl_str_cr(r#""\n""#, "\"\r\"", Ordering::Less)]
+    #[case::str_esc_cr_str_cr(r#""\r""#, "\"\r\"", Ordering::Equal)]
+    #[case::str_esc_cr_str_nl(r#""\r""#, "\"\n\"", Ordering::Greater)]
+    #[case::str_esc_tab_str_tab(r#""\t""#, "\"\t\"", Ordering::Equal)]
+    #[case::str_esc_u_0008_str_bs(r#""\u0008""#, "\"\x08\"", Ordering::Equal)]
+    #[case::str_esc_u_0009_str_tab(r#""\u0009""#, "\"\t\"", Ordering::Equal)]
+    #[case::str_esc_u_000a_str_nl(r#""\u000a""#, "\"\n\"", Ordering::Equal)]
+    #[case::str_esc_u_000c_str_ff(r#""\u000c""#, "\"\x0c\"", Ordering::Equal)]
+    #[case::str_esc_u_000d_str_cr(r#""\u000d""#, "\"\r\"", Ordering::Equal)]
+    #[case::str_esc_u_0022_str_quot(r#""\u0022""#, "\"\"\"", Ordering::Equal)]
+    #[case::str_esc_u_002f_str_sol(r#""\u002f""#, "\"/\"", Ordering::Equal)]
+    #[case::str_esc_u_005c_str_bsol(r#""\u005c""#, "\"\\\"", Ordering::Equal)]
+    #[case::str_esc_u_0062_str_a(r#""\u0063""#, r#""a""#, Ordering::Greater)]
+    #[case::str_esc_u_00e8_str_e_grave(r#""\u00e8""#, "\"\u{00e8}\"", Ordering::Equal)]
+    #[case::str_esc_u_20ac_str_euro(r#""\u20ac""#, "\"\u{20ac}\"", Ordering::Equal)]
+    #[case::str_esc_u_surrogate_str_globe(r#""\ud83c\udf0d""#, "\"\u{1f30d}\"", Ordering::Equal)]
+    #[case::str_esc_at_end_of_longer_str(r#""abcde\n""#, r#""abc""#, Ordering::Greater)]
+    #[case::str_esc_consecutive(r#""\n\t""#, "\"\n\t\"", Ordering::Equal)]
+    #[case::str_where_other_terminates_early(r#""\n""#, "\"", Ordering::Greater)]
+    #[case::white_empty(" ", "", Ordering::Greater)]
+    #[case::smoke_1(
+        r#""Path: C:\\Users\\alice\/docs""#,
+        "\"Path: C:\\Users\\alice/docs\"",
+        Ordering::Equal
+    )]
+    #[case::smoke_2(
+        r#""At the caff\u00e8 counter, he paid the 10,50\u00a0\u20ac and\nquickly downed the cappucino. Then,\r\n\twith a quick\"ciao\u0022, he turned and walked out.""#,
+        "\"At the caffè counter, he paid the 10,50\u{00a0}€ and\nquickly downed the cappucino. Then,\r\n\twith a quick\"ciao\", he turned and walked out.\"",
+        Ordering::Equal,
+    )]
+    #[case::smoke_3(
+        r#""At the caff\u00e8 counter, he paid the 10,50\u00a0\u20ac and\nquickly downed the cappucino. Then,\r\n\twith a quick\"ciao\u0022, he turned and ran out.""#,
+        "\"At the caffè counter, he paid the 10,50\u{00a0}€ and\nquickly downed the cappucino. Then,\r\n\twith a quick\"ciao\", he turned and walked out.\"",
+        Ordering::Less,
+    )]
+    fn test_unescaped_cmp_ok(#[case] a: &str, #[case] b: &str, #[case] expect: Ordering) {
+        assert_eq!(expect, unescaped_cmp(a, b));
+
+        for chunked_str in ChunkedStr::chunkify(a) {
+            assert_eq!(expect, unescaped_cmp(chunked_str, b));
+
+            let content = chunked_str.into_content(false);
+            assert_eq!(expect, content.unescaped_cmp(b));
+        }
+    }
+
+    #[rstest]
+    #[case::unterminated_1(r#"\"#, r#"\"#, "unterminated escape sequence")]
+    #[case::unterminated_2(r#""\"#, r#""\"#, "unterminated escape sequence")]
+    #[case::unterminated_3(r#""hello\"#, r#""hello\"#, "unterminated escape sequence")]
+    #[case::invalid_single_byte_1(
+        r#"\0"#,
+        r#"a"#,
+        r#"invalid escape sequence: byte 0x30 cannot follow '\'"#
+    )]
+    #[case::invalid_single_byte_2(
+        r#""\a""#,
+        r#""a"#,
+        r#"invalid escape sequence: byte 0x61 cannot follow '\'"#
+    )]
+    #[case::invalid_unicode_need_4(
+        r#""\u"#,
+        r#""a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 0 bytes remain"
+    )]
+    #[case::invalid_unicode_need_3(
+        r#""\u0"#,
+        r#""a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 1 bytes remain"
+    )]
+    #[case::invalid_unicode_need_2(
+        r#""\u00"#,
+        r#""a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 2 bytes remain"
+    )]
+    #[case::invalid_unicode_need_1(
+        r#""\u000"#,
+        r#""a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 3 bytes remain"
+    )]
+    #[case::invalid_unicode_not_hex_1(r#""\uG000"#, r#""a"#, "byte 0x47 is not an ASCII hex digit")]
+    #[case::invalid_unicode_not_hex_2(r#""\u0H00"#, r#""a"#, "byte 0x48 is not an ASCII hex digit")]
+    #[case::invalid_unicode_not_hex_3(r#""\u00I0"#, r#""a"#, "byte 0x49 is not an ASCII hex digit")]
+    #[case::invalid_unicode_not_hex_4(r#""\u000J"#, r#""a"#, "byte 0x4a is not an ASCII hex digit")]
+    #[case::lo_surrogate_incomplete_1(r#"\ud800"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\ud800", but only 0 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_2(r#"\uD801x"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD801", but only 1 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_3(r#"\uD802xx"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD802", but only 2 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_4(r#"\uD803xxx"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD803", but only 3 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_5(r#"\udbfdxxxx"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\udbfd", but only 4 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_6(r#"\uDBFExxxxx"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uDBFE", but only 5 bytes remain"#)]
+    #[case::lo_surrogate_no_leading_bsol_u_1(
+        r#"\udbFFxxxxxx"#,
+        "a",
+        r#"low surrogate Unicode escape sequence must start with "\u""#
+    )]
+    #[case::lo_surrogate_no_leading_bsol_u_2(
+        r#"\ud800\Uxxxx"#,
+        "a",
+        r#"low surrogate Unicode escape sequence must start with "\u""#
+    )]
+    #[case::lo_surrogate_no_leading_bsol_u_2(
+        r#"\ud800\Uxxxx"#,
+        "a",
+        r#"low surrogate Unicode escape sequence must start with "\u""#
+    )]
+    #[case::lo_surrogate_not_hex_1(
+        r#""\ud800\uK000""#,
+        r#""a""#,
+        "byte 0x4b is not an ASCII hex digit"
+    )]
+    #[case::lo_surrogate_not_hex_1(
+        r#""\ud800\u0L00""#,
+        r#""a""#,
+        "byte 0x4c is not an ASCII hex digit"
+    )]
+    #[case::lo_surrogate_not_hex_1(
+        r#""\ud800\u00M0""#,
+        r#""a""#,
+        "byte 0x4d is not an ASCII hex digit"
+    )]
+    #[case::lo_surrogate_not_hex_1(
+        r#""\ud800\u000N""#,
+        r#""a""#,
+        "byte 0x4e is not an ASCII hex digit"
+    )]
+    #[case::lo_surrogate_alone(
+        r#""\udc00""#,
+        r#""a""#,
+        "invalid Unicode escape sequence(s) produced invalid code point 0xdc00"
+    )]
+    #[case::invalid_surrogate_pair(
+        r#""\ud800\u0041""#,
+        r#""a""#,
+        r#"high surrogate \ud800 followed by invalid low surrogate \u0041"#
+    )]
+    fn test_unescaped_cmp_panic(#[case] a: &str, #[case] b: &str, #[case] expect: &str) {
+        assert_panic(|| unescaped_cmp(a, b), expect);
+        for chunked_str in ChunkedStr::chunkify(a) {
+            assert_panic(|| unescaped_cmp(chunked_str, b), expect);
+
+            let content = chunked_str.into_content(false);
+            assert_panic(|| content.unescaped_cmp(b), expect);
+        }
+    }
+
     #[cfg(feature = "num")]
     #[rstest]
     #[case::zero("0", 0)]
@@ -2937,14 +3356,12 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "num")]
     #[derive(Debug)]
     struct ChunkedContent<'a> {
         lit: ChunkedStr<'a>,
         esc: bool,
     }
 
-    #[cfg(feature = "num")]
     impl<'a> Content for ChunkedContent<'a> {
         type Literal<'b>
             = ChunkedStr<'a>
@@ -2979,7 +3396,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "num")]
     #[derive(Clone, Copy, Debug)]
     struct ChunkedStr<'a> {
         buf: &'a [u8],
@@ -2987,7 +3403,6 @@ mod tests {
         n: usize,
     }
 
-    #[cfg(feature = "num")]
     impl<'a> ChunkedStr<'a> {
         fn new(s: &'a str, n: usize) -> Self {
             Self {
@@ -3020,7 +3435,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "num")]
     impl<'a> IntoBuf for ChunkedStr<'a> {
         type Buf = Self;
 
@@ -3029,7 +3443,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "num")]
     impl<'a> Buf for ChunkedStr<'a> {
         fn advance(&mut self, n: usize) {
             let len = self.buf.len();
@@ -3077,5 +3490,23 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    fn assert_panic<F, T>(f: F, expect: &str)
+    where
+        F: FnOnce() -> T,
+        T: fmt::Debug,
+    {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        let err = result.unwrap_err();
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap();
+        assert!(
+            msg.contains(expect),
+            "expected panic containing {expect:?}, got {msg:?}"
+        );
     }
 }

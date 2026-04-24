@@ -351,7 +351,7 @@ pub trait Buf {
 ///     let buf = input.into_buf();
 ///     let mut v = Vec::with_capacity(buf.remaining());
 ///     while buf.remaining() > 0 {
-///         v.copy_from_slice(buf.chunk());
+///         v.extend_from_slice(buf.chunk());
 ///     }
 ///
 ///     v.try_into()
@@ -361,7 +361,7 @@ pub trait Buf {
 ///
 /// [`into_buf`]: method@Self::into_buf
 pub trait IntoBuf {
-    // Type of `Buf` produced by this conversion.
+    /// Type of `Buf` produced by this conversion.
     type Buf: Buf;
 
     /// Converts `self` into a `Buf`.
