@@ -1440,7 +1440,7 @@ pub enum Expect {
     /// [`Digit`]: Expect::Digit
     DigitOrExpSign,
 
-    // The dot or period character `'.'` (U+002E); one of the two exponent indicator characters 'E'
+    /// The dot or period character `'.'` (U+002E); one of the two exponent indicator characters 'E'
     /// (U+0045) or 'e' (U+0065); or any token boundary character ([`Boundary`]).
     ///
     /// [`Boundary`]: Expect::Boundary
