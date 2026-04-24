@@ -1,6 +1,5 @@
 
-**`bufjson`**. A low-level, low-allocation, low-copy JSON tokenizer and parser geared toward
-efficient stream processing at scale.
+**`bufjson`**. Fast streaming JSON parser and lexer | Process JSON without allocating or copying.
 
 ----------------------------------------------------------------------------------------------------
 
@@ -8,74 +7,40 @@ efficient stream processing at scale.
 
 Add `bufjson` to your `Cargo.toml` or run `$ cargo add bufjson`.
 
-Here's a simple example that parses a JSON text for syntax validity and prints it with the
-insignificant whitespace stripped out.
+Find simple getting started examples below, with further examples available in the
+[API reference docs](https://docs.rs/bufjson/latest/bufjson/).
 
-```rust
-use bufjson::{lexical::{Token, fixed::FixedAnalyzer}, syntax::Parser};
+## Features
 
-fn strip_whitespace(json_text: &str) {
-    let mut parser = Parser::new(FixedAnalyzer::new(json_text.as_bytes()));
-    loop {
-        match parser.next_non_white() {
-            Token::Eof => break,
-            Token::Err => panic!("{}", parser.err()),
-            _ => print!("{}", parser.content().literal()),
-        };
-    }
-}
+- Streaming pull parser (lower level, does not "map" data into a data structure).
+- Best in class speed, second only to `simd-json` (but with [more flexibility and features](./COMPARE.md#simd-json))
+- Minimizes allocations and data copying.
+- Idiomatic, friendly, API with intuitive layered architecture.
+- Clear structured error messages with pinpoint locations.
+- Fast streaming JSON Pointer evaluation.
+- `no_std` support.
 
-fn main() {
-    // Prints `{"foo":"bar","baz":[null,123]}`
-    strip_whitespace(r#"{ "foo": "bar", "baz": [null, 123] }"#);
-}
-```
+## Use cases
 
-## Architecture
+- Scan or parse JSON with minimal CPU and memory pressure.
+- Handle arbitrary sized JSON text, essentially unlimited length streams supported with consistent
+  high performance.
+- Incrementally parse large documents in pieces as they become available (no big bang).
+- Zero-copy network programming.
+- Async JSON parsing.
+- Handle concatenated JSON formats like JSONL, NDJSON, JSON Text Sequences (RFC 7464) and
+  delimiter-free concatenated JSON.
 
-The `bufjson` crate provides a stream-oriented JSON tokenizer through the `lexical::Analyzer` trait,
-with these implementations:
+## Comparison to other crates
 
-- `FixedAnalyzer` tokenizes fixed-size buffers;
-- `ReadAnalyzer` tokenizes sync input streams implementing `io::Read`; and
-- `PipeAnalyzer` tokenizes streams that yield `Bytes` buffers, useful for zero-copy network
-  programming use cases.
+Click the links below to see how `bufjson` compares to other JSON parsing crates. Includes feature
+comparisons and benchmark numbers.
 
-The remainder of the library builds on the lexical analyzer trait.
+1. [`serde_json`](./COMPARE.md#serde-json)
+2. [`simd_json`](./COMPARE.md#simd-json)
+3. [`json-streaming`](./COMPARE.md#json-streaming)
 
-- The `syntax` module provides concrete stream-oriented parser types that can wrap any lexical
-  analyzer.
-- The `pointer` module enables fast stream-oriented evaluation of
-  [JSON Pointers](https://www.rfc-editor.org/rfc/rfc6901).
-
-Refer to the [API reference docs](https://docs.rs/bufjson/latest/bufjson/) for more detail.
-
-## When to use
-
-Choose `bufjson` when you need to:
-
-- Control and limit allocations or copying.
-- Process JSON text larger than available memory.
-- Extract specific values without parsing an entire JSON text.
-- Edit a stream of JSON tokens (add/remove/change values in the stream).
-- Access token content exactly as it appears in the JSON text (*e.g.* without unescaping strings).
-- Protect against malicious or degenerate inputs.
-- Implement custom parsing with precise behavior control.
-
-Other libraries are more suitable for:
-
-- Deserializing JSON text straight into in-memory data structures (use `serde_json` or `simd-json`).
-- Serializing in-memory data structures to JSON (use `serde_json`).
-- Writing JSON text in a stream-oriented manner (use `serde_json` or `json-writer`).
-
-## Performance
-
-- Zero-copy string processing where possible.
-- Minimal allocations, which are explicit and optional wherever possible.
-- Streaming design handles arbitrarily long JSON text without loading into memory.
-- Suitable for high-throughput applications.
-
-## Benchmarks
+## Performance & benchmarks
 
 The table below shows JSON text throughput benchmark results.<sup>1</sup>
 
@@ -100,6 +65,49 @@ The table below shows JSON text throughput benchmark results.<sup>1</sup>
 2 <code>ReadAnalyzer</code> is fed with an in-memory <code>std::io::Read</code> implementation
   (<code>&[u8]</code>) to eliminate the confounding effect of I/O.
 </sup>
+
+## Example
+
+This example uses all layers of the `bufjson` stack (lexical analyzer, syntax parser, streaming JSON
+Pointer evaluator) to redact designated paths from the JSON text, leaving everything else intact.
+
+```
+use bufjson::{
+    lexical::{Token, fixed::FixedAnalyzer},
+    pointer::{Evaluator, Event, Group, Pointer},
+};
+
+fn redact(input_json: &str, ptrs: &[&'static str]) -> String {
+    let parser = FixedAnalyzer::new(input_json.as_bytes()).into_parser();
+    let ptr_group = Group::from_pointers(ptrs.iter().map(|p| Pointer::from_static(p)));
+    let mut ev = Evaluator::new(parser, ptr_group, true /* expand escape seqs in object keys */);
+    let mut output_json = String::new();
+    loop {
+        let event = ev.next();
+        match event {
+            Event::Match(..) => { output_json.push_str(r#""***""#); continue; },
+            Event::Enter(..) => { output_json.push_str(r#""***""#); ev.next_end(); continue; },
+            _ => {},
+        }
+        match event.token() {
+            Token::Eof => return output_json,
+            Token::Err => panic!("{}", ev.err()),
+            _ => output_json.push_str(ev.content().literal()),
+        }
+    }
+}
+
+fn main() {
+    let r = redact(
+      r#"{"user": "alice", "ssn": "123-45-6789", "prefs": {"theme": "dark"}}"#,
+      &["/ssn", "/prefs"],
+    );
+    assert_eq!(r, r#"{"user": "alice", "ssn": "***", "prefs": "***"}"#);
+}
+```
+
+A more sophisticated version of this example that streams its output with minimal allocation and
+copying can be written using zero-copy `Bytes` structures and the `PipeAnalyzer` lexical analyzer.
 
 ## License
 

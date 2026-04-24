@@ -9,19 +9,7 @@ Path to 1.0
   or single method call.~~
     - One known location that needs `#[inline(always)] - `pointer::Event` accessors that just `match!`.
     - Another known one: `Content::is_escaped` for all `Content` implementations.
-- Update `README`:
-  - De-emphasize "Architecture" (and maybe remove)
-  - Add a Features section, maybe after Performance that emphasizes:
-      - Fast performance
-      - Streaming and what that might mean, including that you don't need to see the whole input
-        at once and can handle JSON split across input buffers
-      - Precise error positions (line, column, and offset)
-      - Low memory pressure and low allocator pressure
-      - Simple, idiomatic API that is easy to work with
-      - Incremental parsing
-   - Add a Comparison section that lists other crates and hyperlinks out to separate short
-     comparison docs so it doesn't clutter main doc but is available.
-   - Add a use cases section but have it link out to a separate doc.
+- `llms.txt` - todo - https://docs.astral.sh/uv/llms.txt
 
 Post 1.0
 ========
