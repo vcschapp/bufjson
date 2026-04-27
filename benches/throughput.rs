@@ -160,10 +160,18 @@ fn bench_throughput_compare(c: &mut Criterion) {
     });
 
     // `simd-json` parse into schemaless in-memory value.
-    group.bench_function("simd-json", |b| {
+    group.bench_function("simd-json: to owned value", |b| {
         b.iter(|| {
             let mut data = buf.clone();
             let _: simd_json::OwnedValue = simd_json::to_owned_value(&mut data).unwrap();
+        })
+    });
+
+    // `simd-json` parse to tape only (no DOM construction).
+    group.bench_function("simd-json: to tape", |b| {
+        b.iter(|| {
+            let mut data = buf.clone();
+            let _ = simd_json::to_tape(&mut data).unwrap();
         })
     });
 
