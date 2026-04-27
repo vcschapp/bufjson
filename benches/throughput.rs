@@ -159,6 +159,14 @@ fn bench_throughput_compare(c: &mut Criterion) {
         })
     });
 
+    // `simd-json` parse into schemaless in-memory value.
+    group.bench_function("simd-json", |b| {
+        b.iter(|| {
+            let mut data = buf.clone();
+            let _: simd_json::OwnedValue = simd_json::to_owned_value(&mut data).unwrap();
+        })
+    });
+
     // `json-streaming` blocking reader, consuming all tokens.
     group.bench_function("json-streaming: blocking", |b| {
         b.iter(|| {
