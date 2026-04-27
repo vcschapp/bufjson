@@ -9,7 +9,7 @@ documentation = "https://docs.rs/bufjson"
 homepage = "https://github.com/vcschapp/bufjson"
 description = "No frills, low-alloc, low-copy JSON lexer/parser for fast stream-oriented parsing"
 keywords = ["json", "parser", "low-allocation", "zero-copy", "performance"]
-categories = ["parsing", "encoding", "network-programming", "web-programming"]
+categories = ["parsing", "encoding", "network-programming", "no-std", "web-programming"]
 
 [package.metadata.docs.rs]
 all-features = true
