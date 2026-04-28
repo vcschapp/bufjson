@@ -9,7 +9,6 @@ Path to 1.0
   or single method call.~~
     - One known location that needs `#[inline(always)] - `pointer::Event` accessors that just `match!`.
     - Another known one: `Content::is_escaped` for all `Content` implementations.
-- `llms.txt` - todo - https://docs.astral.sh/uv/llms.txt
 
 Post 1.0
 ========
