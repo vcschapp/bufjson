@@ -36,7 +36,7 @@ on the specific application.
 | Schemaless in-memory tree (`Value`)             | ✅           | ❌        |
 | Map JSON into Rust types                        | ✅           | ❌        |
 | Write/serialize                                 | ✅           | ❌        |
-| `no-std`                                        | ✅           | ✅        |
+| `no_std`                                        | ✅           | ✅        |
 
 ## Notes
 
@@ -83,7 +83,7 @@ Some limitations of `simd-json` are:
 | Schemaless in-memory tree (`Value`)                | ✅          | ❌        |
 | Map JSON into Rust types                           | ✅          | ❌        |
 | Write/serialize                                    | ❌          | ❌        |
-| `no-std`                                           | ❌          | ✅        |
+| `no_std`                                           | ❌          | ✅        |
 
 ## Notes
 
@@ -106,7 +106,7 @@ Some limitations of `simd-json` are:
 The `json-streaming` crate appeared around the same time as the first versions of `bufjson`. It
 targets the same use cases. However, `bufjson` is the superior alternative because it has: markedly
 better performance in all scenarios, a more correct implementation<sup>1</sup>, and a more flexible
-API. The one exception is for `no-alloc` use cases, since `bufjson` has a `no-std` configuration
+API. The one exception is for `no-alloc` use cases, since `bufjson` has a `no_std` configuration
 but does not support `no-alloc`.
 
 In parsing performance, `bufjson` is a notable 3.8X faster than the `json-streaming` ordinary
@@ -135,7 +135,7 @@ overhead.<sup>2</sup>
 | Schemaless in-memory tree (`Value`)                         | ❌               | ❌        |
 | Map JSON into Rust types                                    | ❌               | ❌        |
 | Write/serialize                                             | ✅               | ❌        |
-| `no-std`                                                    | ✅               | ✅        |
+| `no_std`                                                    | ✅               | ✅        |
 
 ## Notes
 
@@ -188,7 +188,7 @@ throughput is important, `bufjson` is the preferable alternative.
 | Schemaless in-memory tree (`Value`)             | ❌        | ❌        |
 | Map JSON into Rust types                        | ✅        | ❌        |
 | Write/serialize                                 | ✅        | ❌        |
-| `no-std`                                        | ❌        | ✅        |
+| `no_std`                                        | ❌        | ✅        |
 
 ### Notes
 
