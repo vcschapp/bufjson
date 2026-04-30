@@ -15,7 +15,7 @@ Find a simple getting started example below, with further examples available in 
 - Streaming pull parser (lower level, does not "map" data into a data structure).
 - Best in class speed, second only to `simd-json` (but with [more flexibility and features](./COMPARE.md#simd-json))
 - Minimizes allocations and data copying.
-- Idiomatic, friendly, API with intuitive layered architecture.
+- Idiomatic, friendly API with intuitive layered architecture.
 - Clear structured error messages with pinpoint locations.
 - Fast streaming JSON Pointer evaluation.
 - `no_std` support.
@@ -26,10 +26,10 @@ Find a simple getting started example below, with further examples available in 
 - Handle arbitrary sized JSON text, essentially unlimited length streams supported with consistent
   high performance.
 - Incrementally parse large documents in pieces as they become available (no big bang).
-- Zero-copy network programming.
+- Zero-copy network programming with frameworks such as `hyper`, reading directly from the `Bytes`.
 - Async JSON parsing.
-- Handle concatenated JSON formats like JSONL, NDJSON, JSON Text Sequences (RFC 7464) and
-  delimiter-free concatenated JSON.
+- Handle concatenated JSON formats like JSONL, NDJSON, JSON Text Sequences
+  ([RFC 7464](https://www.rfc-editor.org/rfc/rfc7464.txt)) and delimiter-free concatenated JSON.
 
 ## Comparison to other crates
 
@@ -113,7 +113,10 @@ fn main() {
 }
 ```
 
-A more sophisticated version of this example that streams its output with minimal allocation and
+In the above example, the entire parsing and JSON Pointer evaluation process of the *input* is done
+without any allocation whatsoever.
+
+A more sophisticated version of the same code that streams its *output* with minimal allocation and
 copying can be written using zero-copy `Bytes` structures and the `PipeAnalyzer` lexical analyzer.
 
 ## License
