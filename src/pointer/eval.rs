@@ -85,6 +85,7 @@ impl<P> Event<P> {
     ///
     /// assert_eq!(Token::Num, event.token());
     /// ```
+    #[inline(always)]
     pub fn token(&self) -> Token {
         match self {
             Self::Nil(t) | Self::Enter(t, _) | Self::Exit(t, _) | Self::Match(t, _) => *t,
@@ -113,6 +114,7 @@ impl<P> Event<P> {
     /// ```
     ///
     /// [`Nil`]: Self::Nil
+    #[inline(always)]
     pub fn is_nil(&self) -> bool {
         matches!(self, Self::Nil(_))
     }
@@ -138,6 +140,7 @@ impl<P> Event<P> {
     /// ```
     ///
     /// [`Enter`]: Self::Enter
+    #[inline(always)]
     pub fn is_enter(&self) -> bool {
         matches!(self, Self::Enter(_, _))
     }
@@ -164,6 +167,7 @@ impl<P> Event<P> {
     /// ```
     ///
     /// [`Exit`]: Self::Exit
+    #[inline(always)]
     pub fn is_exit(&self) -> bool {
         matches!(self, Self::Exit(_, _))
     }
@@ -189,6 +193,7 @@ impl<P> Event<P> {
     /// ```
     ///
     /// [`Match`]: Self::Match
+    #[inline(always)]
     pub fn is_match(&self) -> bool {
         matches!(self, Self::Match(_, _))
     }
@@ -232,6 +237,7 @@ impl Event<&Pointer> {
     /// [`Enter`]: Self::Enter
     /// [`Exit`]: Self::Exit
     /// [`Match`]: Self::Match
+    #[inline(always)]
     pub fn pointer(&self) -> Option<&Pointer> {
         match self {
             Self::Enter(_, p) | Self::Exit(_, p) | Self::Match(_, p) => Some(p),
@@ -279,6 +285,7 @@ impl Event<Pointer> {
     /// [`Enter`]: Self::Enter
     /// [`Exit`]: Self::Exit
     /// [`Match`]: Self::Match
+    #[inline(always)]
     pub fn pointer(&self) -> Option<&Pointer> {
         match self {
             Self::Enter(_, p) | Self::Exit(_, p) | Self::Match(_, p) => Some(p),
@@ -307,6 +314,7 @@ impl Event<Pointer> {
     /// ```
     ///
     /// [`to_owned`]: method@Self::to_owned
+    #[inline]
     pub fn as_ref(&self) -> Event<&Pointer> {
         match self {
             Self::Nil(t) => Event::Nil(*t),
@@ -539,6 +547,7 @@ where
     /// assert_eq!(r#"{"bar":true}"#, extract);
     /// ```
     #[allow(clippy::should_implement_trait)]
+    #[inline]
     pub fn next(&mut self) -> Event<&Pointer> {
         let token = self.parser.next();
 
@@ -574,6 +583,7 @@ where
     ///
     /// [`next`]: method@Self::next
     /// [`next_meaningful`]: method@Self::next_meaningful
+    #[inline]
     pub fn next_non_white(&mut self) -> Event<&Pointer> {
         let token = self.parser.next_non_white();
 
@@ -621,6 +631,7 @@ where
     ///
     /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
     /// [`next_non_white`]: method@Self::next_non_white
+    #[inline]
     pub fn next_meaningful(&mut self) -> Event<&Pointer> {
         let token = self.parser.next_meaningful();
 

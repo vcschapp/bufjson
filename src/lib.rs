@@ -438,6 +438,7 @@ pub struct StringBuf {
 }
 
 impl Buf for StringBuf {
+    #[inline]
     fn advance(&mut self, n: usize) {
         let len = self.str.len();
         let pos = self.pos;
@@ -455,7 +456,7 @@ impl Buf for StringBuf {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn chunk(&self) -> &[u8] {
         let buf = self.str.as_bytes();
         let pos = self.pos;
@@ -463,7 +464,7 @@ impl Buf for StringBuf {
         &buf[pos..]
     }
 
-    #[inline]
+    #[inline(always)]
     fn remaining(&self) -> usize {
         let len = self.str.len();
         let pos = self.pos;
@@ -492,6 +493,7 @@ impl Buf for StringBuf {
 impl IntoBuf for String {
     type Buf = StringBuf;
 
+    #[inline(always)]
     fn into_buf(self) -> Self::Buf {
         let str = self;
         let pos = 0;

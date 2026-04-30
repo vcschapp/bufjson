@@ -624,7 +624,7 @@ impl Token {
     ///
     /// assert!(!Token::Num.is_eof());
     /// assert!(!Token::Err.is_eof());
-    #[inline]
+    #[inline(always)]
     pub const fn is_eof(&self) -> bool {
         matches!(self, Token::Eof)
     }
@@ -645,7 +645,7 @@ impl Token {
     ///
     /// assert!(!Token::Num.is_err());
     /// assert!(!Token::Eof.is_err());
-    #[inline]
+    #[inline(always)]
     pub const fn is_err(&self) -> bool {
         matches!(self, Token::Err)
     }
@@ -668,7 +668,7 @@ impl Token {
     /// assert!(!Token::Str.is_literal());
     /// assert!(!Token::Eof.is_literal());
     /// ```
-    #[inline]
+    #[inline(always)]
     pub const fn is_literal(&self) -> bool {
         matches!(self, Self::LitFalse | Self::LitNull | Self::LitTrue)
     }
@@ -693,7 +693,7 @@ impl Token {
     /// assert!(!Token::ObjEnd.is_primitive());
     /// assert!(!Token::White.is_primitive());
     /// ```
-    #[inline]
+    #[inline(always)]
     pub const fn is_primitive(&self) -> bool {
         matches!(
             self,
@@ -720,7 +720,7 @@ impl Token {
     /// assert!(!Token::LitNull.is_pseudo());
     /// assert!(!Token::Num.is_pseudo());
     /// ```
-    #[inline]
+    #[inline(always)]
     pub const fn is_pseudo(&self) -> bool {
         matches!(self, Self::Eof | Self::Err | Self::White)
     }
@@ -744,7 +744,7 @@ impl Token {
     /// assert!(!Token::White.is_punct());
     /// assert!(!Token::Err.is_punct());
     /// ```
-    #[inline]
+    #[inline(always)]
     pub const fn is_punct(&self) -> bool {
         matches!(self, Self::NameSep | Self::ValueSep)
     }
@@ -769,7 +769,7 @@ impl Token {
     /// assert!(!Token::ValueSep.is_struct());
     /// assert!(!Token::White.is_struct());
     /// ```
-    #[inline]
+    #[inline(always)]
     pub const fn is_struct(&self) -> bool {
         matches!(
             self,
@@ -795,7 +795,7 @@ impl Token {
     /// assert!(!Token::ObjBegin.is_terminal());
     /// assert!(!Token::White.is_terminal());
     /// ```
-    #[inline]
+    #[inline(always)]
     pub const fn is_terminal(&self) -> bool {
         matches!(self, Self::Eof | Self::Err)
     }
@@ -812,7 +812,7 @@ impl Token {
     /// assert_eq!(None, Token::Str.static_content());
     /// assert_eq!(None, Token::White.static_content());
     /// ```
-    #[inline]
+    #[inline(always)]
     pub const fn static_content(&self) -> Option<&'static str> {
         match self {
             Self::ArrBegin => Some("["),
@@ -894,6 +894,7 @@ impl<T> Unescaped<T> {
     /// The return value is `Some(...)` if `self` is [`Literal`], and `None` otherwise.
     ///
     /// [`Literal`]: Self::Literal
+    #[inline(always)]
     pub fn literal(&self) -> Option<&T> {
         match self {
             Self::Literal(t) => Some(t),
@@ -906,6 +907,7 @@ impl<T> Unescaped<T> {
     /// The return value is `Some(...)` if `self` is [`Expanded`], and `None` otherwise.
     ///
     /// [`Expanded`]: Self::Expanded
+    #[inline(always)]
     pub fn expanded(&self) -> Option<&str> {
         match self {
             Self::Literal(_) => None,
@@ -916,6 +918,7 @@ impl<T> Unescaped<T> {
     /// Returns `true` if `self` is [`Literal`], and `false` otherwise.
     ///
     /// [`Literal`]: Self::Literal
+    #[inline(always)]
     pub fn is_literal(&self) -> bool {
         matches!(self, Self::Literal(_))
     }
@@ -923,6 +926,7 @@ impl<T> Unescaped<T> {
     /// Returns `true` if `self` is [`Expanded`], and `false` otherwise.
     ///
     /// [`Expanded`]: Self::Expanded
+    #[inline(always)]
     pub fn is_expanded(&self) -> bool {
         matches!(self, Self::Expanded(_))
     }
@@ -931,6 +935,7 @@ impl<T> Unescaped<T> {
 impl<T: IntoBuf> IntoBuf for Unescaped<T> {
     type Buf = UnescapedBuf<T::Buf>;
 
+    #[inline]
     fn into_buf(self) -> Self::Buf {
         match self {
             Self::Literal(t) => UnescapedBuf(UnescapedBufInner::Literal(t.into_buf())),
@@ -940,6 +945,7 @@ impl<T: IntoBuf> IntoBuf for Unescaped<T> {
 }
 
 impl AsRef<str> for Unescaped<&str> {
+    #[inline]
     fn as_ref(&self) -> &str {
         match self {
             Unescaped::Literal(t) => t,
@@ -949,6 +955,7 @@ impl AsRef<str> for Unescaped<&str> {
 }
 
 impl AsRef<[u8]> for Unescaped<&str> {
+    #[inline]
     fn as_ref(&self) -> &[u8] {
         match self {
             Unescaped::Literal(t) => t.as_bytes(),
@@ -960,6 +967,7 @@ impl AsRef<[u8]> for Unescaped<&str> {
 impl Deref for Unescaped<&str> {
     type Target = str;
 
+    #[inline]
     fn deref(&self) -> &str {
         match self {
             Unescaped::Literal(t) => t,
@@ -969,6 +977,7 @@ impl Deref for Unescaped<&str> {
 }
 
 impl Borrow<str> for Unescaped<&str> {
+    #[inline]
     fn borrow(&self) -> &str {
         match self {
             Unescaped::Literal(t) => t,
@@ -1168,6 +1177,7 @@ enum UnescapedBufInner<B> {
 pub struct UnescapedBuf<B>(UnescapedBufInner<B>);
 
 impl<B: Buf> Buf for UnescapedBuf<B> {
+    #[inline]
     fn advance(&mut self, n: usize) {
         match &mut self.0 {
             UnescapedBufInner::Literal(b) => b.advance(n),
@@ -1175,6 +1185,7 @@ impl<B: Buf> Buf for UnescapedBuf<B> {
         }
     }
 
+    #[inline]
     fn chunk(&self) -> &[u8] {
         match &self.0 {
             UnescapedBufInner::Literal(b) => b.chunk(),
@@ -1182,6 +1193,7 @@ impl<B: Buf> Buf for UnescapedBuf<B> {
         }
     }
 
+    #[inline]
     fn remaining(&self) -> usize {
         match &self.0 {
             UnescapedBufInner::Literal(b) => b.remaining(),
@@ -1189,6 +1201,7 @@ impl<B: Buf> Buf for UnescapedBuf<B> {
         }
     }
 
+    #[inline]
     fn try_copy_to_slice(&mut self, dst: &mut [u8]) -> Result<(), crate::BufUnderflow> {
         match &mut self.0 {
             UnescapedBufInner::Literal(b) => b.try_copy_to_slice(dst),

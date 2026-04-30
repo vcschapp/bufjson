@@ -474,6 +474,7 @@ impl Literal {
     /// let fancy = Literal::from_static("ƒoo"); // fancy f!
     /// assert_eq!(fancy.len(), 4);
     /// ```
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -486,6 +487,7 @@ impl Literal {
     /// # use bufjson::lexical::read::Literal;
     /// assert_eq!(true, Literal::from_static("").is_empty());
     /// ```
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -893,6 +895,7 @@ impl Content {
     /// This is an inherent implementation of [`lexical::Content::literal`] for convenience, so it
     /// is available even when you don't have the trait imported. Refer to the trait documentation
     /// for conceptual details.
+    #[inline]
     pub fn literal(&self) -> Literal {
         Literal(self.0.clone().into())
     }
@@ -900,6 +903,7 @@ impl Content {
     /// Returns the number of bytes in the [`literal`] value.
     ///
     /// [`literal`]: method@Self::literal
+    #[inline]
     pub fn literal_len(&self) -> usize {
         match &self.0 {
             InnerContent::Static(s) => s.len(),
@@ -914,6 +918,7 @@ impl Content {
     /// This is an inherent implementation of [`lexical::Content::is_escaped`] for convenience, so
     /// it is available even when you don't have the trait imported. Refer to the trait
     /// documentation for conceptual details.
+    #[inline(always)]
     pub fn is_escaped(&self) -> bool {
         matches!(
             self.0,
@@ -1082,6 +1087,7 @@ impl<E> Error<E> {
     ///
     /// This is an inherent implementation of [`lexical::Error::kind`] for convenience, so it is
     /// available even when you don't have the trait imported.
+    #[inline(always)]
     pub fn kind(&self) -> ErrorKind {
         self.kind
     }
@@ -1090,6 +1096,7 @@ impl<E> Error<E> {
     ///
     /// This is an inherent implementation of [`lexical::Error::pos`] for convenience, so it is
     /// available even when you don't have the trait imported.
+    #[inline(always)]
     pub fn pos(&self) -> &Pos {
         &self.pos
     }
@@ -1142,10 +1149,12 @@ impl<E> lexical::Error for Error<E>
 where
     E: core::error::Error + Send + Sync + 'static,
 {
+    #[inline(always)]
     fn kind(&self) -> ErrorKind {
         Error::kind(self)
     }
 
+    #[inline(always)]
     fn pos(&self) -> &Pos {
         Error::pos(self)
     }
@@ -1788,6 +1797,7 @@ impl<R: Read> ReadAnalyzer<R> {
     /// assert_eq!(Token::Err, lexer.next());
     /// assert_eq!(Pos { offset: 1, line: 1, col: 2}, *lexer.try_content().unwrap_err().pos());
     /// ```
+    #[inline]
     pub fn try_content(&self) -> Result<Content, Error<R::Error>> {
         match &self.content {
             StoredContent::Literal(s) => Ok(Content::from_static(s)),
@@ -1826,6 +1836,7 @@ impl<R: Read> ReadAnalyzer<R> {
     /// ```
     ///
     /// [`Parser::into_inner`]: syntax::Parser::into_inner
+    #[inline(always)]
     pub fn into_parser(self) -> syntax::Parser<ReadAnalyzer<R>>
     where
         R::Error: core::error::Error + Send + Sync + 'static,

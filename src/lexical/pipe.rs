@@ -585,6 +585,7 @@ impl Literal {
     /// let fancy = Literal::from_static("ƒoo"); // fancy f!
     /// assert_eq!(fancy.len(), 4);
     /// ```
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -597,6 +598,7 @@ impl Literal {
     /// # use bufjson::lexical::pipe::Literal;
     /// assert_eq!(true, Literal::from_static("").is_empty());
     /// ```
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -1032,6 +1034,7 @@ impl<E> Error<E> {
     ///
     /// This is an inherent implementation of [`lexical::Error::kind`] for convenience, so it is
     /// available even when you don't have the trait imported.
+    #[inline(always)]
     pub fn kind(&self) -> ErrorKind {
         self.kind
     }
@@ -1040,6 +1043,7 @@ impl<E> Error<E> {
     ///
     /// This is an inherent implementation of [`lexical::Error::pos`] for convenience, so it is
     /// available even when you don't have the trait imported.
+    #[inline(always)]
     pub fn pos(&self) -> &Pos {
         &self.pos
     }
@@ -1092,10 +1096,12 @@ impl<E> lexical::Error for Error<E>
 where
     E: core::error::Error + Send + Sync + 'static,
 {
+    #[inline(always)]
     fn kind(&self) -> ErrorKind {
         Error::kind(self)
     }
 
+    #[inline(always)]
     fn pos(&self) -> &Pos {
         Error::pos(self)
     }

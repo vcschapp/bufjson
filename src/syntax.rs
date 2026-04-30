@@ -360,6 +360,7 @@ pub struct Context {
 
 impl Context {
     /// Returns what the parser expects the next non-whitespace lexical token to be.
+    #[inline(always)]
     pub fn expect(&self) -> Expect {
         self.expect
     }
@@ -433,6 +434,7 @@ impl Context {
     /// assert!(!ctx.is_struct());
     /// assert!(ctx.struct_kind().is_none());
     /// ```
+    #[inline(always)]
     pub fn level(&self) -> usize {
         self.inner.level()
     }
@@ -443,6 +445,7 @@ impl Context {
     /// a positive value. See the examples on the [`level`] method.
     ///
     /// [`level`]: method@Self::level
+    #[inline(always)]
     pub fn is_struct(&self) -> bool {
         self.inner.is_struct()
     }
@@ -455,6 +458,7 @@ impl Context {
     ///
     /// [`is_struct`]: method@Self::is_struct
     /// [`level`]: method@Self::level
+    #[inline(always)]
     pub fn struct_kind(&self) -> Option<StructKind> {
         self.inner.peek()
     }
@@ -496,6 +500,7 @@ impl Context {
     ///     ctx.iter().collect::<Vec<_>>(),
     /// );
     /// ```
+    #[inline]
     pub fn iter(&self) -> StructIter<bitvec::slice::Iter<'_, usize, Lsb0>> {
         self.inner.iter()
     }
@@ -919,6 +924,7 @@ where
     /// );
     /// ```
     #[allow(clippy::should_implement_trait)]
+    #[inline]
     pub fn next(&mut self) -> Token {
         #[repr(u8)]
         #[rustfmt::skip]
@@ -1113,6 +1119,7 @@ where
     ///
     /// [`next`]: method@Self::next
     /// [`next_meaningful`]: method@Self::next_meaningful
+    #[inline]
     pub fn next_non_white(&mut self) -> Token {
         let token = self.next();
 
@@ -1159,6 +1166,7 @@ where
     ///
     /// [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
     /// [`next_non_white`]: method@Self::next_non_white
+    #[inline]
     pub fn next_meaningful(&mut self) -> Token {
         let mut token = self.next();
 
@@ -1251,7 +1259,7 @@ where
     /// [`next_non_white`]: method@Self::next_non_white
     /// [`next_meaningful`]: method@Self::next_meaningful
     /// [`try_content`]: lexical::Analyzer::try_content
-    #[inline(always)]
+    #[inline]
     pub fn content(&self) -> L::Content {
         match self.state {
             State::Ok => match self.lexer.try_content() {
@@ -1352,6 +1360,7 @@ where
     /// [`next_non_white`]: method@Self::next_non_white
     /// [`next_meaningful`]: method@Self::next_meaningful
     /// [`try_content`]: lexical::Analyzer::try_content
+    #[inline]
     pub fn try_content(&self) -> Result<L::Content, Error> {
         match self.state {
             State::Ok => Ok(self
@@ -1392,6 +1401,7 @@ where
     /// assert_eq!(StructKind::Obj, parser.context().struct_kind().unwrap());
     /// assert_eq!(Expect::ObjNameOrEnd, parser.context().expect());
     /// ```
+    #[inline(always)]
     pub fn context(&self) -> &Context {
         &self.context
     }
@@ -1456,6 +1466,7 @@ where
     ///
     /// [`with_max_level`]: method@Self::with_max_level
     /// [`set_max_level`]: method@Self::set_max_level
+    #[inline(always)]
     pub fn max_level(&self) -> usize {
         self.max_level
     }
@@ -1545,6 +1556,7 @@ where
     /// // parser).
     /// assert_eq!(Token::ArrEnd, lexer.next());
     /// ```
+    #[inline]
     pub fn into_inner(self) -> L {
         self.lexer
     }

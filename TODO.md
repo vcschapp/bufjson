@@ -1,17 +1,8 @@
-Path to 1.0
-===========
-
-- Go over the various key `Content`/`Literal` methods like `len()` and into_buf()` to make sure the
-  appropriate ones are inlined.
-    - Duplicate: ~~Replace `#[inline(always)]` with `#[inline]` except for methods that are just a reference return
-  or single method call.~~
-    - One known location that needs `#[inline(always)] - `pointer::Event` accessors that just `match!`.
-    - Another known one: `Content::is_escaped` for all `Content` implementations.
-
 Post 1.0
 ========
 - Re-export the following into the root: `Token`, `FixedAnalyzer`, `Parser`.
 - Add overall crate documentation (`lib.rs`).
+- Make a specific note about contributions.
 
 
 PERFORMANCE

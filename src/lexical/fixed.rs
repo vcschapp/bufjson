@@ -123,6 +123,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
     /// This is an inherent implementation of [`lexical::Content::is_escaped`] for convenience, so
     /// it is available even when you don't have the trait imported. Refer to the trait
     /// documentation for conceptual details.
+    #[inline(always)]
     pub fn is_escaped(&self) -> bool {
         matches!(self.0, InnerContent::Escaped(_))
     }
@@ -479,6 +480,7 @@ impl Error {
     ///
     /// This is an inherent implementation of [`lexical::Error::kind`] for convenience, so it is
     /// available even when you don't have the trait imported.
+    #[inline(always)]
     pub fn kind(&self) -> ErrorKind {
         self.kind
     }
@@ -487,6 +489,7 @@ impl Error {
     ///
     /// This is an inherent implementation of [`lexical::Error::pos`] for convenience, so it is
     /// available even when you don't have the trait imported.
+    #[inline(always)]
     pub fn pos(&self) -> &Pos {
         &self.pos
     }
@@ -501,10 +504,12 @@ impl fmt::Display for Error {
 impl core::error::Error for Error {}
 
 impl lexical::Error for Error {
+    #[inline(always)]
     fn kind(&self) -> ErrorKind {
         Error::kind(self)
     }
 
+    #[inline(always)]
     fn pos(&self) -> &Pos {
         Error::pos(self)
     }
