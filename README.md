@@ -1,5 +1,5 @@
 
-**`bufjson`**. Fast streaming JSON parser and lexer | Process JSON without allocating or copying.
+**`bufjson`**. Fast streaming JSON parser / Read JSON without allocation or copy.
 
 ----------------------------------------------------------------------------------------------------
 
@@ -7,7 +7,7 @@
 
 Add `bufjson` to your `Cargo.toml` or run `$ cargo add bufjson`.
 
-Find simple getting started examples below, with further examples available in the
+Find a simple getting started example below, with further examples available in the
 [API reference docs](https://docs.rs/bufjson/latest/bufjson/).
 
 ## Features
@@ -72,38 +72,44 @@ The table below shows JSON text throughput benchmark results.<sup>1</sup>
 This example uses all layers of the `bufjson` stack (lexical analyzer, syntax parser, streaming JSON
 Pointer evaluator) to redact designated paths from the JSON text, leaving everything else intact.
 
-```
+```rust
 use bufjson::{
     lexical::{Token, fixed::FixedAnalyzer},
     pointer::{Evaluator, Event, Group, Pointer},
 };
 
-fn redact(input_json: &str, ptrs: &[&'static str]) -> String {
-    let parser = FixedAnalyzer::new(input_json.as_bytes()).into_parser();
-    let ptr_group = Group::from_pointers(ptrs.iter().map(|p| Pointer::from_static(p)));
-    let mut ev = Evaluator::new(parser, ptr_group, true /* expand escape seqs in object keys */);
-    let mut output_json = String::new();
+fn redact(json: &str, ptrs: &[&'static str]) -> String {
+    let parser = FixedAnalyzer::new(json.as_bytes()).into_parser();
+    let ptr_group = Group::from_pointers(
+        ptrs.iter().map(|p| Pointer::from_static(p))
+    );
+    let mut ev = Evaluator::new(parser, ptr_group, true);
+    let mut out = String::new();
+    const MASK: &str = r#""***""#;
     loop {
         let event = ev.next();
         match event {
-            Event::Match(..) => { output_json.push_str(r#""***""#); continue; },
-            Event::Enter(..) => { output_json.push_str(r#""***""#); ev.next_end(); continue; },
+            Event::Match(..) => { out.push_str(MASK); continue; },
+            Event::Enter(..) => { out.push_str(MASK); ev.next_end(); continue; },
             _ => {},
         }
         match event.token() {
-            Token::Eof => return output_json,
-            Token::Err => panic!("{}", ev.err()),
-            _ => output_json.push_str(ev.content().literal()),
+          Token::Eof => return out,
+          Token::Err => panic!("{}", ev.err()),
+          _ => out.push_str(ev.content().literal()),
         }
     }
 }
 
 fn main() {
     let r = redact(
-      r#"{"user": "alice", "ssn": "123-45-6789", "prefs": {"theme": "dark"}}"#,
-      &["/ssn", "/prefs"],
+        r#"{"user": "alice", "ssn": "123-45-6789", "prefs": {"theme": "dark"}}"#,
+        &["/ssn", "/prefs"],
     );
-    assert_eq!(r, r#"{"user": "alice", "ssn": "***", "prefs": "***"}"#);
+    assert_eq!(
+        r,
+        r#"{"user": "alice", "ssn": "***", "prefs": "***"}"#
+    );
 }
 ```
 
