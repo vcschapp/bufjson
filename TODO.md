@@ -2,7 +2,8 @@ Post 1.0
 ========
 - Re-export the following into the root: `Token`, `FixedAnalyzer`, `Parser`.
 - Add overall crate documentation (`lib.rs`).
-- Make a specific note about contributions.
+- Make a specific note about contributions, and suggest performacne areas where a contribution would
+  be valued.
 
 
 PERFORMANCE
@@ -16,15 +17,3 @@ improving string handling. The main ideas are:
 1. Refactor so the slow path (`lexical::state::Machine::str_slow()`) can return to the fast path,
    without increasing parameter count or complexity of the existing fast path start.
 2. Rewrite the fast path (`lexical::state::Machine::str()`) to use SIMD.
-
-
-TRAIT LOCKDOWN
-==============
-
-Open question: should certain key traits, `Content` and `Buf`, be sealed?
-
-Reason: So we can be 100% confident that every implementation satisfies the invariants?
-
-`Buf`'s invariants are explicit. `Content`'s invariants aren't yet as of 4/22/26. However, as of
-now you cannot create a *supported* `Content` value that's not a valid JSON token (although you can
-create `Literal` values that contain arbitrary content).
