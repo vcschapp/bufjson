@@ -212,7 +212,14 @@ fn bench_throughput_compare(c: &mut Criterion) {
     // `struson` JsonStreamReader, consuming all tokens.
     group.bench_function("struson", |b| {
         b.iter(|| {
-            let mut jr = JsonStreamReader::new(buf.as_slice());
+            let mut jr = JsonStreamReader::new_custom(
+                buf.as_slice(),
+                struson::reader::ReaderSettings {
+                    track_path: false,
+                    restrict_number_values: false,
+                    ..Default::default()
+                },
+            );
             struson_consume_value(&mut jr);
             jr.consume_trailing_whitespace().unwrap();
         })

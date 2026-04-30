@@ -39,6 +39,7 @@ comparisons and benchmark numbers.
 1. [`serde_json`](./COMPARE.md#serde-json)
 2. [`simd_json`](./COMPARE.md#simd-json)
 3. [`json-streaming`](./COMPARE.md#json-streaming)
+4. [`struson`](./COMPARE.md#struson)
 
 ## Performance & benchmarks
 
@@ -46,8 +47,8 @@ The table below shows JSON text throughput benchmark results.<sup>1</sup>
 
 | Component                  | `.content()` fetched | Throughput |
 |----------------------------|----------------------|------------|
-| `FixedAnalyzer`            | Never                | 1 GiB/s    |
-| `FixedAnalyzer`            | Always               | 1 GiB/s    |
+| `FixedAnalyzer`            | Never                | 1.1 GiB/s  |
+| `FixedAnalyzer`            | Always               | 1.1 GiB/s  |
 | `Parser` + `FixedAnalyzer` | Never                | 1 GiB/s    |
 | `Parser` + `FixedAnalyzer` | Always               | 950 MiB/s  |
 | `PipeAnalyzer`             | Never                | 950 MiB/s  |

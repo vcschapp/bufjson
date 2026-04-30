@@ -49,10 +49,10 @@ on the specific application.
 # `simd-json`
 
 For pure blazing-fast JSON syntax parsing nothing beats the SIMD-accelerated `simd-json` crate.
-Parsing throughput is *the* one and only reason to pick this crate, as it performs about 1.74X
-faster than `bufjson` and 2.35X faster than `serde_json` on eligible pure-parsing use cases. (When
-`simd-json` is used to build an in-memory tree, which `bufjson` does not do, `bufjson` is 1.14X
-faster, though this comparison is admittedly apples-to-oranges.)
+Parsing throughput on a fixed-size buffer is *the* main to use this crate, as it performs about
+1.74X faster than `bufjson` and 2.35X faster than `serde_json` on eligible pure-parsing use cases.
+(When `simd-json` is used to build an in-memory tree, which `bufjson` does not do, `bufjson` is
+1.14X faster, though this comparison is admittedly apples-to-oranges.)
 
 Some limitations of `simd-json` are:
 
@@ -123,7 +123,7 @@ overhead.<sup>2</sup>
 | Faster parse                                                | ❌               | ✅        |
 | Concatenated JSON/JSONL                                     | ✅               | ✅        |
 | Minimize copy on read                                       | ❌               | ✅        |
-| Minimize allocation on read                                 | ✅               | ✅        |
+| Minimize allocation on read                                 | ❌               | ✅        |
 | Syntax validation without allocation                        | ✅               | ✅        |
 | Precise line, column, and offset of every token<sup>3</sup> | ❌               | ✅        |
 | Async/incremental input                                     | ✅               | ✅        |
@@ -155,3 +155,44 @@ overhead.<sup>2</sup>
 4. The `json-streaming` parser does not provide access to whitespace and eagerly unescapes strings.
 5. While `json-streaming` does give fairly accurate error locations, its errors are effectively
    "stringly-typed".
+
+
+# struson
+
+The `struson` crate has similar capabilities to `json-streaming` in a slightly different API. It
+targets similar use cases. One interesting `struson` parsing feature that isn't widely available is
+the ability to configure the parser to recognize and ignore end of line and block comments in JSON
+text of the type supported by VS Code; a second related feature is the ability to configure the
+parser to ignore trailing commas within object and array values.
+
+In parsing performance, `bufjson` is about 6X faster than `struson`. If pure streaming JSON
+throughput is important, `bufjson` is the preferable alternative.
+
+## Feature comparison
+
+| Feature                                         | `struson` | `bufjson` |
+|-------------------------------------------------|-----------|-----------|
+| Token-level pull parsing<sup>1</sup>            | ❌        | ✅        |
+| Faster parse                                    | ❌        | ✅        |
+| Concatenated JSON/JSONL                         | ✅        | ✅        |
+| Minimize copy on read                           | ❌        | ✅        |
+| Minimize allocation on read                     | ❌        | ✅        |
+| Syntax validation without allocation            | ❌        | ✅        |
+| Precise line, column, and offset of every token | ✅        | ✅        |
+| Async/incremental input                         | ❌        | ✅        |
+| Streaming JSON Pointer evaluation               | ❌        | ✅        |
+| Lossless parsing<sup>2</sup>                    | ❌        | ✅        |
+| Arbitrary number values                         | ✅        | ✅        |
+| Structured errors with source location          | ✅        | ✅        |
+| `serde` integration                             | ✅        | ❌        |
+| Schemaless in-memory tree (`Value`)             | ❌        | ❌        |
+| Map JSON into Rust types                        | ✅        | ❌        |
+| Write/serialize                                 | ✅        | ❌        |
+| `no-std`                                        | ❌        | ✅        |
+
+### Notes
+
+1. While `struson::reader::Reader::peek` can tell you what type of value comes next, this is at
+   *value* level, one step higher up than token level.
+2. The `struson` parser does not provide access to individual tokens or whitespace and eagerly
+   unescapes strings.
