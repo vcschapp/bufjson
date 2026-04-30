@@ -42,6 +42,7 @@ rand = "^0.10.0"
 rand_distr = "^0.6.0"
 rstest = "^0.26.1"
 json-streaming = { version = "^1.0.3", features = ["tokio"] }
+struson = "^0.7.2"
 serde_json = "^1.0.49"
 simd-json = "^0.17.0"
 smallvec = "^1.15.1"

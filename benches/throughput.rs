@@ -14,6 +14,7 @@ use rand::{SeedableRng, rngs::StdRng};
 use rand_distr::Normal;
 use serde_json::Value;
 use std::convert::Infallible;
+use struson::reader::{JsonReader, JsonStreamReader, ValueType};
 
 macro_rules! read_no_content {
     ($x:expr) => {{
@@ -207,10 +208,51 @@ fn bench_throughput_compare(c: &mut Criterion) {
             })
         })
     });
+
+    // `struson` JsonStreamReader, consuming all tokens.
+    group.bench_function("struson", |b| {
+        b.iter(|| {
+            let mut jr = JsonStreamReader::new(buf.as_slice());
+            struson_consume_value(&mut jr);
+            jr.consume_trailing_whitespace().unwrap();
+        })
+    });
 }
 
 criterion_group!(benches, bench_throughput_bufjson, bench_throughput_compare);
 criterion_main!(benches);
+
+fn struson_consume_value(jr: &mut JsonStreamReader<&[u8]>) {
+    match jr.peek().unwrap() {
+        ValueType::Object => {
+            jr.begin_object().unwrap();
+            while jr.has_next().unwrap() {
+                let _ = black_box(jr.next_name().unwrap());
+                struson_consume_value(jr);
+            }
+            jr.end_object().unwrap();
+        }
+        ValueType::Array => {
+            jr.begin_array().unwrap();
+            while jr.has_next().unwrap() {
+                struson_consume_value(jr);
+            }
+            jr.end_array().unwrap();
+        }
+        ValueType::String => {
+            let _ = black_box(jr.next_str().unwrap());
+        }
+        ValueType::Number => {
+            let _ = black_box(jr.next_number_as_str().unwrap());
+        }
+        ValueType::Boolean => {
+            let _ = black_box(jr.next_bool().unwrap());
+        }
+        ValueType::Null => {
+            jr.next_null().unwrap();
+        }
+    }
+}
 
 // A Pipe that provides a view of an input buffer as two `Bytes` values representing the first and
 // second halves.
