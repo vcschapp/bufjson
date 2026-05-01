@@ -1211,6 +1211,7 @@ impl<B: Buf> Buf for UnescapedBuf<B> {
 }
 
 /// An error encountered when converting the content of a JSON number token to a Rust numeric type.
+#[cfg(feature = "num")]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum NumError {
     /// The JSON token content is not formatted correctly to be converted to the target numeric
