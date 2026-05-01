@@ -7,9 +7,9 @@ authors = ["Victor Schappert <victor.schappert@protonmail.com>"]
 repository = "https://github.com/vcschapp/bufjson"
 documentation = "https://docs.rs/bufjson"
 homepage = "https://github.com/vcschapp/bufjson"
-description = "Fast streaming JSON parser and lexer | Process JSON without allocating or copying."
-keywords = ["json", "parser", "low-allocation", "zero-copy", "performance"]
-categories = ["parsing", "encoding", "network-programming", "no-std", "web-programming"]
+description = "Fast streaming JSON parser and lexer | Read JSON without allocating or copying."
+keywords = ["json", "parser", "streaming", "performance", "no-std"]
+categories = ["parser-implementations", "encoding", "network-programming", "no-std", "web-programming"]
 
 [package.metadata.docs.rs]
 all-features = true
