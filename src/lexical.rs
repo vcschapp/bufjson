@@ -16,7 +16,7 @@
 //!   buffers.
 #![cfg_attr(feature = "read", doc = "- [`read`][`crate::lexical::read`]")]
 #![cfg_attr(not(feature = "read"), doc = "- `read`")]
-//! contains an implementation of [`Analyzer`] for tokenizing streams that implement
+//! contains an implementation of [`Analyzer`] for tokenizing streams that can be read like a
 //! `std::io::Read`. Requires the `read` feature to be enabled.
 #![cfg_attr(feature = "pipe", doc = "- [`pipe`][`crate::lexical::pipe`]")]
 #![cfg_attr(not(feature = "pipe"), doc = "- `pipe`")]

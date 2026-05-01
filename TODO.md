@@ -2,8 +2,9 @@ Post 1.0
 ========
 - Re-export the following into the root: `Token`, `FixedAnalyzer`, `Parser`.
 - Add overall crate documentation (`lib.rs`).
-- Make a specific note about contributions, and suggest performacne areas where a contribution would
+- Make a specific note about contributions, and suggest performance areas where a contribution would
   be valued.
+- Delete this `TODO.md`.
 
 
 PERFORMANCE

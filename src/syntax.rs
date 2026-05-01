@@ -649,7 +649,7 @@ impl fmt::Display for ErrorKind {
     }
 }
 
-/// Parse error detected by [`Parser`].
+/// Parse error detected by a [`Parser`].
 #[derive(Debug, Clone)]
 pub struct Error {
     kind: ErrorKind,
