@@ -12,6 +12,8 @@ pub mod lexical;
 pub mod pointer;
 pub mod syntax;
 
+pub use lexical::Token;
+
 #[cfg(doctest)]
 use doc_comment::doctest;
 #[cfg(doctest)]
