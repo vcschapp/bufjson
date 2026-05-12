@@ -1,5 +1,8 @@
 Post 1.0
 ========
+- Discoverability.
+  - Open a PR to `https://github.com/rust-unofficial/awesome-rust` asking for inclusion in relevant
+    lists.
 - Add overall crate documentation (`lib.rs`).
 - Make a specific note about contributions, and suggest performance areas where a contribution would
   be valued.
