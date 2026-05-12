@@ -49,10 +49,10 @@ on the specific application.
 # `simd-json`
 
 For pure blazing-fast JSON syntax parsing nothing beats the SIMD-accelerated `simd-json` crate.
-Parsing throughput on a fixed-size buffer is *the* main to use this crate, as it performs about
-1.74X faster than `bufjson` and 2.35X faster than `serde_json` on eligible pure-parsing use cases.
-(When `simd-json` is used to build an in-memory tree, which `bufjson` does not do, `bufjson` is
-1.14X faster, though this comparison is admittedly apples-to-oranges.)
+Parsing throughput on a fixed-size buffer is *the* main reason to use this crate, as it performs
+about 1.74X faster than `bufjson` and 2.35X faster than `serde_json` on eligible pure-parsing use
+cases.  (When `simd-json` is used to build an in-memory tree, which `bufjson` does not do, `bufjson`
+is 1.14X faster, though this comparison is admittedly apples-to-oranges.)
 
 Some limitations of `simd-json` are:
 
@@ -104,10 +104,10 @@ Some limitations of `simd-json` are:
 # `json-streaming`
 
 The `json-streaming` crate appeared around the same time as the first versions of `bufjson`. It
-targets the same use cases. However, `bufjson` is the superior alternative because it has: markedly
-better performance in all scenarios, a more correct implementation<sup>1</sup>, and a more flexible
-API. The one exception is for `no-alloc` use cases, since `bufjson` has a `no_std` configuration
-but does not support `no-alloc`.
+targets some of the same use cases. However, `bufjson` is the superior alternative because it has:
+markedly better performance in all scenarios, a more correct implementation<sup>1</sup>, and a more
+flexible API. The one exception is for `no-alloc` use cases, since `bufjson` has a `no_std`
+configuration but does not support `no-alloc`.
 
 In parsing performance, `bufjson` is a notable 3.8X faster than the `json-streaming` ordinary
 blocking parser and a dramatic 36X faster than the `json-streaming` non-blocking parser which is

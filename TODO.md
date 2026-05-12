@@ -1,6 +1,5 @@
 Post 1.0
 ========
-- Add overall crate documentation (`lib.rs`).
 - Make a specific note about contributions, and suggest performance areas where a contribution would
   be valued.
 - Delete this `TODO.md`.

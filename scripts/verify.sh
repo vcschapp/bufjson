@@ -36,12 +36,12 @@ readonly -A feature_mix_args=(
 )
 
 readonly -A tool_feature_mixes=(
-    [clippy]="default all no_std no_std_all"
-    [doc]="default all"
-    [fmt]="default"
-    [build]="default all"
-    [test]="default smoke all"
-    [bench]="default all"
+  [clippy]="default all no_std no_std_all"
+  [doc]="all"
+  [fmt]="default"
+  [build]="default all"
+  [test]="default smoke all"
+  [bench]="default all"
 )
 
 function run_tool_quiet() {

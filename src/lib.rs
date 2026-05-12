@@ -1,3 +1,164 @@
+//! A fast, efficient, and correct streaming JSON parser for Rust that minimizes copies and
+//! allocations.
+//!
+//! The `bufjson` crate provides a very fast, resource-efficient, pull parser aimed at minimizing
+//! allocator and memory pressure. The design emphasizes work avoidance, work deferral, and
+//! generally giving the library user maximum control over the parsing process and the resources
+//! it uses. To make these features possible, the crate API is lower level than that of other
+//! crates, such as `serde_json`, which are more geared towards convenience in "typical" use cases.
+//! Despite being low-level, the `bufjson` API is designed and documented with care and, hopefully,
+//! very intuitive to work with.
+//!
+//! The crate design enables use cases that require scalability, either due to high levels of
+//! concurrent processing (in a web server, for example); or due to working with enormous JSON
+//! texts. As a streaming library, it also enables making progress in parsing JSON text that may not
+//! be complete yet, due to I/O latency or other reasons.
+//!
+//! # Features
+//!
+//! - Streaming pull parser (lower level, does not "map" data into a data structure).
+//! - Best in class speed, second only to `simd-json` (but with more flexibility and features).
+//! - Minimizes allocations and data copying.
+//! - Clear structured error messages with pinpoint locations.
+//! - Fast streaming JSON pointer evaluation.
+//! - `no_std` support.
+//!
+//! # Optional features
+//!
+//! Some `bufjson` features are off by default to balance enabling a powerful set of features out of
+//! the box while reducing the amount of compiled code.
+//!
+//! The following [`bufjson` feature flags](https://docs.rs/crate/bufjson/latest/features) can be
+//! turned on to enable specific use cases:
+//!
+//! ## `no_std` mode
+//!
+//! For convenience, the default feature set includes `std`. To enable `no_std` mode disable `std`
+//! by adding a dependency line like this in your `Cargo.toml`:
+//!
+//! ```toml
+//! bufjson = { version = "1", default-features = false }
+//! ```
+//!
+//! Note that while `std` can easily be turned off, `bufjson` currently has a permanent dependency
+//! on `alloc`.
+//!
+//! ## Advanced JSON parsing feature flags
+//!
+//! 1. The `pipe` feature powers zero-copy parsing of JSON text input from streams of `bytes::Bytes`
+//!    values. It enables the [`lexical::pipe`] module along with
+//!    [`PipeAnalyzer`][lexical::pipe::PipeAnalyzer] lexical analyzer.
+//! 2. The `read` feature unlocks low-to-zero copy parsing of JSON text provided by any input stream
+//!    that is compliant with the [`std::io::Read`] trait. It enables the [`lexical::read`] module
+//!    and the [`ReadAnalyzer`][lexical::read::ReadAnalyzer] lexical analyzer. (You can also combine
+//!    this feature with `no_std` mode to read this style of stream without actually introducing a
+//!    dependency on `std`.)
+//! 3. The `num` feature turns on builtin methods for parsing Rust native integer and floating point
+//!    values out of [`lexical::Content`] and [`Buf`] values. As well as being more convenient, the
+//!    `bufjson` builtin integer parsers are somewhat more efficient than the Rust core library; but
+//!    the `f64` parser currently just forwards to Rust core's `f64::from_str`.
+//! 4. The `num_ext` feature, which implicitly turns on `num`, adds native support for less
+//!    commonplace number parsing use cases, such as parsing `i128`.
+//!
+//! ## JSON pointer feature flags
+//!
+//! 1. The `pointer` feature activates streaming JSON Pointer evaluation by enabling the
+//!    [`pointer`][mod@pointer] module.
+//! 2. The `ignore_case` feature opts into a very narrow, but useful, use case: case-insensitive
+//!    JSON Pointer evaluation. This can be handy in scenarios such as backward-compatible parsing
+//!    of JSON that was previously handled by a case-insensitive parser like GoLang standard
+//!    library's `encoding/json`.
+//!
+//! # Stability
+//!
+//! The `bufjson` crate follows [SemVer](https://semver.org). Breaking changes will only ever be
+//! introduced in major versions, if at all. New additions to the API, such as new types, methods,
+//! or traits will only be added in minor versions.
+//!
+//! # Architecture
+//!
+//! The `bufjson` crate has three main top-level modules: [`lexical`], [`syntax`], and
+//! [`pointer`][mod@pointer]. These modules form a simple layered architecture where each layer
+//! builds on the previous one:
+//!
+//! 1. Module [`lexical`] provides a set of JSON lexical analysers, also known as scanners or
+//!    tokenizers, optimized for specific input modes. [`lexical::fixed::FixedAnalyzer`] is used to
+//!    tokenize JSON from a single fixed-length in-memory buffer; [`lexical::pipe::PipeAnalyzer`]
+//!    can scan JSON from a stream of `bytes::Bytes` values; and [`lexical::read::ReadAnalyzer`] can
+//!    tokenize any stream that looks like `std::io::Read`.
+//! 2. Module [`syntax`] provides a JSON [parser][syntax::Parser] that works with any JSON tokenizer
+//!    that satisfies the [`lexical::Analyzer`] trait. Most tokenizers will provide an
+//!    `into_parser()` convenience method to wrap themselves in a parser.
+//! 3. Module [`pointer`][mod@pointer] provides a streaming JSON Pointer
+//!    [evaluator][pointer::Evaluator] that can wrap a [`syntax::Parser`]. Since the parser can
+//!    operate on any use-case optimized lexical analyzer, so can the JSON Pointer evaluator.
+//!
+//! ## Core types
+//!
+//! - [`Token`] is a simple unit-only enum that enumerates the kinds of JSON lexical tokens. It
+//!   includes pseudo-tokens for error and end-of-file cases.
+//! - [`lexical::Content`] is a trait that represents the text content of a JSON token. For example,
+//!   the content of a [`Token::ObjBegin`] is always `{`, while the content of a [`Token::Str`]
+//!   might be `""`, `"foo"`, or an infinity of other possibilities.
+//! - [`lexical::Analyzer`] is a trait that represents the capability to tokenize a stream of JSON
+//!   text.
+//! - [`syntax::Parser`] wraps any lexical analyzer with the ability to parse JSON at the syntax
+//!   level.
+//! - [`Pos`] represents an exact position within a JSON text.
+//! - [`Buf`] and [`IntoBuf`] are special traits that allow `bufjson` to give zero-copy,
+//!   zero-allocation access to validated token content even if the token is not contiguous in
+//!   memory (split across input buffers). The [literal value][`lexical::Content::literal`] of a
+//!   token's text content is always `IntoBuf`, and some algorithms such as
+//!   [`unescape`][`lexical::unescape`] operate on `IntoBuf`. You likely won't notice these types
+//!   when tokenizing with `FixedAnalyzer` but they take on more importance when tokenizing with
+//!   `PipeAnalyzer` or `ReadAnalyzer`.
+//!
+//! ## Bonus features
+//!
+//! The layered architecture of `bufjson` comes with some bonus features.
+//!
+//! In particular, the lower-level state machines on which the lexical analyzers and the streaming
+//! JSON Pointer evaluator are based are available in modules [`lexical::state`] and
+//! [`pointer::state`]. You can use these state machines to build your own lower-level JSON
+//! features, such as custom lexical analyzers.
+//!
+//! # Nuances and design philosophy
+//!
+//! There are a few nuances to working with this crate that may be unexpected if you're coming to
+//! `bufjson` from a different JSON parsing ecosystem. Since these nuances are driven by the
+//! crate's philosophy, we begin by listing some of the design priorities that drive them:
+//!
+//! 1. Work should be avoided if possible and deferred if not.
+//! 2. The library user should have maximum control to decide what work gets done, and when.
+//! 3. Allocations and copies should be avoided.
+//! 4. The input text should always be provided to the library user as-is, byte-for-byte, without
+//!    modification.
+//! 5. Emitting the stream of parsed JSON token content should exactly reproduce the input JSON
+//!    text.
+//!
+//! These design principles lead to the following nuanced consequences:
+//!
+//! 1. Strings are quoted. If the JSON contains the string token `"foo"`, the token content returned
+//!    is `"foo"` including the opening and closing double quotes.
+//! 2. Escape sequence expansion is deferred until you ask for it. There are several ways to do
+//!    this, including [`Content::unescaped`][lexical::Content::unescaped] and
+//!    [`unescape`][lexical::unescape].
+//! 3. Numbers are recognized, but not interpreted. In other words, all
+//!    [`Token::Num`] tokens are lexically correct but `bufjson` does not try to convert them to
+//!    Rust types for you. You can convert them trivially using the `num` feature.
+//! 4. Strings and numbers can have infinite length.
+//!
+//! # Non-features
+//!
+//! A deliberate choice has been made not to support the following features:
+//!
+//! 1. JSON writing or serialization. Compared to the input side (parsing), the output side is
+//!    relatively trivial and is easy to do performantly. The Rust ecosystem is already well-served
+//!    by crates that solve this problem, and `bufjson` would add nothing of value by providing its
+//!    own me-too solution. You may find write-focused crates such as
+//!    [`json_in_type`](https://crates.io/crates/json_in_type) or
+//!    [`json-writer`](https://crates.io/crates/json-writer) work well for you here.
+
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
