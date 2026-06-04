@@ -871,6 +871,18 @@ pub struct Parser<L> {
     state: State,
 }
 
+impl<L: Clone> Clone for Parser<L> {
+    fn clone(&self) -> Self {
+        Self {
+            lexer: self.lexer.clone(),
+            context: self.context.clone(),
+            err: self.err.clone(),
+            max_level: self.max_level,
+            state: self.state,
+        }
+    }
+}
+
 impl<L> Parser<L>
 where
     L: lexical::Analyzer,
