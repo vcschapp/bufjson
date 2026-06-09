@@ -515,7 +515,7 @@ impl lexical::Error for Error {
     }
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 struct StoredContent {
     len: usize,
     escaped: bool,
@@ -609,6 +609,18 @@ pub struct FixedAnalyzer<B: Deref<Target = [u8]> + fmt::Debug> {
     err: Option<Error>,
     mach: state::Machine<state::DerefBuf<B, Arc<B>>>,
     pos: Pos,
+}
+
+impl<B: Deref<Target = [u8]> + fmt::Debug> Clone for FixedAnalyzer<B> {
+    fn clone(&self) -> Self {
+        Self {
+            buf: Arc::clone(&self.buf),
+            content: self.content,
+            err: self.err,
+            mach: self.mach.clone(),
+            pos: self.pos,
+        }
+    }
 }
 
 impl<B: Deref<Target = [u8]> + fmt::Debug> FixedAnalyzer<B> {
@@ -1350,6 +1362,27 @@ mod tests {
     )]
     fn test_analyzer_initial_state_err() {
         let _ = FixedAnalyzer::new(vec![]).err();
+    }
+
+    #[test]
+    fn test_analyzer_clone_forks_state() {
+        let mut analyzer = FixedAnalyzer::new(&b"[1,2]"[..]);
+        assert_eq!(Token::ArrBegin, analyzer.next());
+
+        let mut fork = analyzer.clone();
+
+        assert_eq!(Token::Num, analyzer.next());
+        assert_eq!("1", analyzer.content().literal());
+        assert_eq!(Token::ValueSep, analyzer.next());
+
+        assert_eq!(Token::Num, fork.next());
+        assert_eq!("1", fork.content().literal());
+        assert_eq!(Token::ValueSep, fork.next());
+
+        assert_eq!(Token::Num, analyzer.next());
+        assert_eq!("2", analyzer.content().literal());
+        assert_eq!(Token::ArrEnd, analyzer.next());
+        assert_eq!(Token::Eof, analyzer.next());
     }
 
     #[rstest]

@@ -1482,6 +1482,16 @@ where
     B: Deref<Target = [u8]>,
     T: Deref<Target = B>;
 
+impl<B, T> Clone for DerefBuf<B, T>
+where
+    B: Deref<Target = [u8]>,
+    T: Deref<Target = B> + Clone,
+{
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
 impl<B, T> DerefBuf<B, T>
 where
     B: Deref<Target = [u8]>,
