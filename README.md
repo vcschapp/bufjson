@@ -119,6 +119,11 @@ without any allocation whatsoever.
 A more sophisticated version of the same code that streams its *output* with minimal allocation and
 copying can be written using zero-copy `Bytes` structures and the `PipeAnalyzer` lexical analyzer.
 
+## Contributing
+
+Contributions are welcome! See the contributing guidelines in
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
 ## License
 
 <sup>

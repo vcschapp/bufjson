@@ -158,6 +158,11 @@
 //!    own me-too solution. You may find write-focused crates such as
 //!    [`json_in_type`](https://crates.io/crates/json_in_type) or
 //!    [`json-writer`](https://crates.io/crates/json-writer) work well for you here.
+//!
+//! # Contributing
+//!
+//! Contributions are welcome! See the contributing guidelines in
+//! [`CONTRIBUTING.md`](https://github.com/vcschapp/bufjson/blob/main/CONTRIBUTING.md).
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
