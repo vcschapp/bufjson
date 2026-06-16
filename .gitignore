@@ -6,3 +6,6 @@ test-cfg-param
 /*.data
 *.swp
 
+# Garbage LLMs tend to add.
+/build.log
+/test.log
