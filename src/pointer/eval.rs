@@ -481,21 +481,72 @@ where
     /// The group can be an owned [`Group`] or anything that is [`AsRef<Group>`]. Since `Group` is
     /// immutable, the latter approach allows a single group to be shared across many evaluators.
     ///
+    /// The evaluator will expand escape sequences in object member names before matching against
+    /// the group's pointers, if and only if the `unescape` parameter is `true`. Disabling escape
+    /// expansion provides a modest performance benefit that may be useful in applications that
+    /// don't wish to allow Unicode escape sequences in object member names.
+    ///
     /// # Example
     ///
+    /// With escape expansion on, the letter *a* in a JSON Pointer will match the Unicode escape
+    /// sequence `\u0061`.
+    ///
     /// ```
-    /// use bufjson::{lexical::fixed::FixedAnalyzer, pointer::{Evaluator, Group, Pointer}};
+    /// use bufjson::{
+    ///     lexical::{Token, fixed::FixedAnalyzer},
+    ///     pointer::{Evaluator, Event, Group, Pointer}
+    /// };
     ///
     /// // Create the underlying lexer and parser.
-    /// let parser = FixedAnalyzer::new(&b"[1, 2, 3]"[..]).into_parser();
+    /// let parser = FixedAnalyzer::new(&br#"{"\u0061z": [1, 2], "az": [3, 4]}"#[..]).into_parser();
     ///
     /// // Create the JSON Pointer group.
-    /// let group = Group::from_pointers([Pointer::from_static(""), Pointer::from_static("/1")]);
+    /// let group = Group::from_pointers([Pointer::from_static("/az/1")]);
     ///
-    /// // Create an evaluator that does expand escape sequences in member names.
+    /// // Create an evaluator that expands escape sequences in member names.
     /// let mut evaluator = Evaluator::new(parser, group, /* unescape */ true);
     ///
-    /// // Use the evaluator...
+    /// // Use the evaluator.
+    /// let mut nums = vec![];
+    /// loop {
+    ///     match evaluator.next_meaningful() {
+    ///         Event::Nil(t) if t.is_terminal() => break,
+    ///         Event::Nil(_) => (),
+    ///         Event::Match(Token::Num, _) => nums.push(evaluator.content().literal().to_string()),
+    ///         _ => unreachable!(),
+    ///     }
+    /// }
+    ///
+    /// // Verify that we got the expected matches.
+    /// assert_eq!(nums, vec!["2", "4"]);
+    /// ```
+    ///
+    /// With escape expansion off, an *a* in a JSON Pointer does not match `\u0061` in an object
+    /// member name.
+    ///
+    /// ```
+    /// # use bufjson::{
+    /// #     lexical::{Token, fixed::FixedAnalyzer},
+    /// #     pointer::{Evaluator, Event, Group, Pointer}
+    /// # };
+    /// #
+    /// // Create the underlying lexer and parser.
+    /// let parser = FixedAnalyzer::new(&br#"{"\u0061z": [5]}"#[..]).into_parser();
+    ///
+    /// // Create the JSON Pointer group.
+    /// let group = Group::from_pointers([Pointer::from_static("/az/1")]);
+    ///
+    /// // Create an evaluator that does NOT expand escape sequences in member names.
+    /// let mut evaluator = Evaluator::new(parser, group, /* unescape */ false);
+    ///
+    /// // Use the evaluator.
+    /// loop {
+    ///     match evaluator.next_meaningful() {
+    ///         Event::Nil(Token::Eof) => break,
+    ///         Event::Nil(_) => (),
+    ///         _ => unreachable!(), // No match events are possible.
+    ///     }
+    /// }
     /// ```
     pub fn new(parser: Parser<L>, group: G, unescape: bool) -> Self {
         Self {
