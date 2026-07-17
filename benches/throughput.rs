@@ -224,6 +224,25 @@ fn bench_throughput_compare(c: &mut Criterion) {
             jr.consume_trailing_whitespace().unwrap();
         })
     });
+
+    // `jsn` streaming pull parser, iterating every token. This allocates heap memory for each
+    // string and number token it materializes.
+    group.bench_function("jsn: allocating", |b| {
+        b.iter(|| {
+            for token in jsn::TokenReader::new(buf.as_slice()) {
+                black_box(token.unwrap());
+            }
+        })
+    });
+
+    // `jsn` streaming pull parser, validating the whole input via `dry_run`, which borrows raw
+    // tokens from the input and performs no per-token heap allocation.
+    group.bench_function("jsn: borrowing", |b| {
+        b.iter(|| {
+            let mut tokens = jsn::TokenReader::new(buf.as_slice()).into_iter();
+            black_box(tokens.dry_run().unwrap());
+        })
+    });
 }
 
 criterion_group!(benches, bench_throughput_bufjson, bench_throughput_compare);
