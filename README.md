@@ -39,7 +39,8 @@ comparisons and benchmark numbers.
 1. [`serde_json`](./COMPARE.md#serde-json)
 2. [`simd_json`](./COMPARE.md#simd-json)
 3. [`json-streaming`](./COMPARE.md#json-streaming)
-4. [`struson`](./COMPARE.md#struson)
+4. [`jsn`](./COMPARE.md#jsn)
+5. [`struson`](./COMPARE.md#struson)
 
 ## Performance & benchmarks
 

@@ -104,10 +104,10 @@ Some limitations of `simd-json` are:
 # `json-streaming`
 
 The `json-streaming` crate appeared around the same time as the first versions of `bufjson`. It
-targets some of the same use cases. However, `bufjson` is the superior alternative because it has:
-markedly better performance in all scenarios, a more correct implementation<sup>1</sup>, and a more
-flexible API. The one exception is for `no-alloc` use cases, since `bufjson` has a `no_std`
-configuration but does not support `no-alloc`.
+targets some of the same use cases. However, `bufjson` is a superior alternative to `json-streaming`
+because it has markedly better performance in all scenarios, a more correct
+implementation<sup>1</sup>, and a more flexible API. The one exception is for `no-alloc` use cases,
+since `bufjson` has a `no_std` configuration but does not support `no-alloc`.
 
 In parsing performance, `bufjson` is a notable 3.8X faster than the `json-streaming` ordinary
 blocking parser and a dramatic 36X faster than the `json-streaming` non-blocking parser which is
@@ -157,13 +157,67 @@ overhead.<sup>2</sup>
    "stringly-typed".
 
 
+# `jsn`
+
+The `jsn` crate is a streaming, queryable JSON pull parser with similar capabilities to
+`json-streaming` and `struson`. One unique API choice in `jsn` is a small DSL for composing "masks"
+with logical ands and ors to declaratively filter the token stream. This gives a capability that is
+similar to `bufjson`'s streaming JSON Pointer evaluation (but slower). Overall, `bufjson` beats
+`jsn` along both key dimensions: JSON parse throughput and API features and flexibility.
+
+In parsing performance, `bufjson` is 3.75X faster than `jsn`.
+
+## Feature comparison
+
+| Feature                                                     | `jsn` | `bufjson` |
+|-------------------------------------------------------------|-------|-----------|
+| Token-level pull parsing                                    | ✅    | ✅        |
+| Faster parse                                                | ❌    | ✅        |
+| Concatenated JSON/JSONL                                     | ✅    | ✅        |
+| Minimize copy on read<sup>1</sup>                           | ❌    | ✅        |
+| Minimize allocation on read<sup>1</sup>                     | ❌    | ✅        |
+| Syntax validation without allocation<sup>2</sup>            | ❌    | ✅        |
+| Precise line, column, and offset of every token<sup>3</sup> | ❌    | ✅        |
+| Async/incremental input                                     | ❌    | ✅        |
+| Streaming JSON Pointer evaluation<sup>4</sup>               | 🟡    | ✅        |
+| Lossless parsing<sup>5</sup>                                | ❌    | ✅        |
+| Arbitrary number values<sup>6</sup>                         | ✅    | ✅        |
+| Structured errors with source location                      | ✅    | ✅        |
+| `serde` integration                                         | ❌    | ❌        |
+| Schemaless in-memory tree (`Value`)                         | ❌    | ❌        |
+| Map JSON into Rust types                                    | ❌    | ❌        |
+| Write/serialize                                             | ❌    | ❌        |
+| `no_std`                                                    | ❌    | ✅        |
+
+## Notes
+
+1. `jsn` skips heap allocation for tokens excluded by an active mask, and `Tokens::dry_run`
+   validates with no per-token allocation. But any token materialized through the iterator owns its
+   data (`String` or `Vec<u8>`), and even `Token::get::<&str>()` borrows from that owned `String`
+   rather than from the input, so reading token content always copies and allocates.
+2. `Tokens::dry_run` parses and validates the remainder of the input without allocating, but it
+   doesn't make the tokens available for processing.
+3. `jsn` tracks a precise `Position` (byte `offset`, plus 1-based `line` and `col`), but only exposes
+   it on `JsonError`. Successfully parsed tokens carry no position, and there is no position accessor
+   on the reader or iterator.
+4. `jsn` instead offers token *masks* (`key`, `index`, `depth`, `keys`, `values`, combined with
+   `and`/`or`) as an analogous selective-extraction mechanism that avoids allocating unmatched
+   tokens. Masks are not JSON Pointer; they match greedily, in order, and without overlap, which is
+   documented to behave surprisingly with nested arrays.
+5. Numbers are preserved exactly (stored as their raw ASCII bytes, arbitrary precision), but strings
+   are eagerly unescaped, and insignificant whitespace and structure are discarded, so the input
+   cannot be reproduced byte-for-byte.
+6. Stored as a raw `Vec<u8>` of ASCII digits; no numeric conversion is attempted unless requested
+   via `Token::get`.
+
+
 # struson
 
-The `struson` crate has similar capabilities to `json-streaming` in a slightly different API. It
-targets similar use cases. One interesting `struson` parsing feature that isn't widely available is
-the ability to configure the parser to recognize and ignore end of line and block comments in JSON
-text of the type supported by VS Code; a second related feature is the ability to configure the
-parser to ignore trailing commas within object and array values.
+The `struson` crate has similar capabilities to `json-streaming` and `jsn` in a slightly different
+API. It targets similar use cases. One interesting `struson` parsing feature that isn't widely
+available is the ability to configure the parser to recognize and ignore end of line and block
+comments in JSON text of the type supported by VS Code; a second related feature is the ability to
+configure the parser to ignore trailing commas within object and array values.
 
 In parsing performance, `bufjson` is about 6X faster than `struson`. If pure streaming JSON
 throughput is important, `bufjson` is the preferable alternative.
