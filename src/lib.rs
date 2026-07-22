@@ -936,6 +936,17 @@ pub trait Sink {
 }
 
 /// Sends all bytes from a [`Buf`] to a [`Sink`], consuming the `Buf` in the process.
+///
+/// # Example
+///
+/// ```
+/// use bufjson::{IntoBuf, Sink, sink};
+///
+/// let mut v = vec![];
+/// sink("hello, world".into_buf(), &mut v); // There is an `IntoBuf` implementation for `&str`.
+///
+/// assert_eq!(&b"hello, world"[..], v);
+/// ```
 pub fn sink(mut src: impl Buf, dst: &mut impl Sink) {
     dst.reserve(src.remaining());
     loop {
