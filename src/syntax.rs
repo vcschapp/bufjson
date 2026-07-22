@@ -6,8 +6,8 @@
 //! A `Parser` verifies, in a stream-oriented manner, that a JSON text is syntactically valid
 //! according to the [JSON spec][rfc]. It does not transform a JSON text into any kind of persistent
 //! in-memory data structure, abstract syntax tree, DOM, *etc.* Doing so would interfere with this
-//! crate's focus on streaming, minimizing copies and allocations, and would be redundant given the
-//! multitude of crates that already perform that function.
+//! crate's focus on streaming and minimizing copies and allocations; and it would be redundant
+//! given the multitude of crates that already perform that function.
 //!
 //! # Example
 //!
@@ -716,8 +716,9 @@ enum State {
 
 /// Parses JSON text at a syntax level.
 ///
-/// A `Parser` wraps any value that implements the [`lexical::Analyzer`] trait in a lightweight,
-/// stream-oriented, parsing layer that understands JSON syntax.
+/// A `Parser` wraps any value that implements the [`lexical::Analyzer`] trait, such as
+/// [`FixedAnalyzer`], in a lightweight, stream-oriented, parsing layer that understands JSON
+/// syntax.
 ///
 /// # Maximum nesting level
 ///
@@ -851,6 +852,7 @@ enum State {
 /// );
 /// ```
 ///
+/// [`FixedAnalyzer`]: crate::lexical::fixed::FixedAnalyzer
 /// [`content`]: method@Self::content
 /// [`into_inner`]: method@Self::into_inner
 /// [`level`]: method@Self::level

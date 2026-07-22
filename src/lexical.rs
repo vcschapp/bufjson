@@ -1,17 +1,16 @@
 //! Scan JSON text, extracting a stream of tokens (lexical analysis).
 //!
 //! This module provides the traits, helpers, and type definitions needed to perform stream-oriented
-//! lexical analysis on JSON text.
+//! lexical analysis, or tokenization, of JSON text. If you need to parse JSON at a structural
+//! level, you're looking for the [`syntax`] module and its [`Parser`] type.
 //!
-//! The fundamental types are the enum [`Token`], which represents the type of a JSON token, and
-//! the traits [`Analyzer`] (does the lexical analysis); [`Content`] (efficiently provides the
-//! actual content of a token from the JSON text); and [`Error`] (describes errors encountered by
-//! the lexical analyzer).
+//! The fundamental types in this module are the enum [`Token`], which represents the type of a JSON
+//! token, and the traits [`Analyzer`] (does the lexical analysis); [`Content`] (efficiently
+//! provides the actual content of a token from the JSON text); and [`Error`] (describes errors
+//! encountered by the lexical analyzer).
 //!
 //! The sub-modules provide concrete implementations of JSON tokenizers:
 //!
-//! - [`state`] is a lower-level module containing a simple reusable finite state machine; all the
-//!   concrete lexical analyzers in this crate use this state machine for their core logic.
 //! - [`fixed`] contains an implementation of [`Analyzer`] for tokenizing fixed-size in-memory
 //!   buffers.
 #![cfg_attr(feature = "read", doc = "- [`read`][`crate::lexical::read`]")]
@@ -23,6 +22,17 @@
 //! contains an implementation of [`Analyzer`] for tokenizing streams that yield chunks of input in
 //! `Bytes` buffers, useful for zero-copy network programming use cases. Requires the `pipe` feature
 //! to be enabled.
+//!
+//! Each of these JSON tokenizers can be used standalone at the lexical level or converted into a
+//! [`Parser`] to do syntax-level structural analysis.
+//!
+//! As well as the above sub-modules that provide lexer implementations, the following additional
+//! sub-modules are available for use:
+//!
+//! - [`state`] is a lower-level module containing a highly optimized reusable finite state machine;
+//!   all the concrete lexical analyzers in this crate are built using this state machine for their
+//!   core logic. You won't typically use this module, but it is available for an advanced user if
+//!   you want to [roll your own](#roll-your-own-lexer) JSON tokenizer or parser.
 //!
 //! # Performance
 //!
@@ -36,8 +46,8 @@
 //!
 //! By design, the [`Content`] trait provides the literal text of all tokens appearing in the input
 //! JSON, including whitespace, without any change whatsoever. This policy facilitates use cases
-//! such as stream editing, where you might want to make changes to the JSON text, such as deleting
-//! some JSON elements or inserting new ones, while leaving everything else unchanged.
+//! like stream editing, where you might want to make changes to the JSON text—for example deleting
+//! some JSON elements or inserting new ones—while leaving everything else unchanged.
 //!
 //! # Numbers
 //!
@@ -52,7 +62,7 @@
 //!
 //! \[1\]: The spec *does* urge software developers using JSON to be thoughtful about
 //! interoperability and, kinda sorta, to just stay within the IEEE double-precision floating point
-//! range, *a.k.a.*, `f64`. But that's not a requirement.
+//! range, *a.k.a.*, `f64`. But the spec doesn't require this, so neither does `bufjson`.
 //!
 //! # Strings
 //!
@@ -87,13 +97,15 @@
 //!
 //! # Roll your own lexer
 //!
-//! The sub-module [`state`] provides the basic state machine for tokenizing JSON text. You can use
-//! it to build your own implementation of [`Analyzer`] or any other application that needs a
-//! low-level ability to identify JSON tokens that is faithful to the [JSON spec][rfc].
+//! The sub-module [`state`] provides a highly optimized state machine for tokenizing JSON text. You
+//! can use it to build your own implementation of [`Analyzer`] or any other application that needs
+//! a low-level ability to identify JSON tokens that is faithful to the [JSON spec][rfc].
 //!
 //! For string tokens, you can use the [`unescape`] function standalone to expand escape sequences.
 //!
+//! [`Parser`]: crate::syntax::Parser
 //! [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
+//! [`syntax`]: crate::syntax
 
 use crate::{Buf, EqStr, IntoBuf, OrdStr, Pos, Sink, StringBuf};
 #[cfg(feature = "num")]
@@ -236,6 +248,8 @@ macro_rules! parse_int {
 /// other number tokens, the result is an `Err`. For any other input, the result is
 /// `Err(NumError::Format)`.
 ///
+/// This is a generalized version of [`Content::parse_i64`] that works on any `IntoBuf`.
+///
 /// # Performance considerations
 ///
 /// Never allocates. May copy a small number of bytes on stack if the representation is
@@ -295,6 +309,8 @@ pub fn parse_i64(literal: impl IntoBuf) -> Result<i64, NumError> {
 /// not have a leading minus sign, a decimal point, or exponent; and represents an integer within
 /// the range of `u64`. For other number tokens, the result is an `Err`. For any other input, the
 /// result is `Err(NumError::Format)`.
+///
+/// This is a generalized version of [`Content::parse_u64`] that works on any `IntoBuf`.
 ///
 /// # Performance considerations
 ///
@@ -365,6 +381,8 @@ pub fn parse_u64(literal: impl IntoBuf) -> Result<u64, NumError> {
 /// other number tokens, the result is an `Err`. For any other input, the result is
 /// `Err(NumError::Format)`.
 ///
+/// This is a generalized version of [`Content::parse_i128`] that works on any `IntoBuf`.
+///
 /// # Performance considerations
 ///
 /// Never allocates. May copy a small number of bytes on stack if the representation is
@@ -427,6 +445,8 @@ pub fn parse_i128(literal: impl IntoBuf) -> Result<i128, NumError> {
 /// `f64` value (rounded according to IEEE 754 round-to-nearest-even). For other number tokens, the
 /// result is `Err(NumError::Range)`. For non-number tokens, the result is always
 /// `Err(NumError::Format)`.
+///
+/// This is a generalized version of [`Content::parse_f64`] that works on any `IntoBuf`.
 ///
 /// # Performance considerations
 ///
@@ -1341,7 +1361,7 @@ pub trait Content: fmt::Debug {
     /// method returns the equivalent of `self.literal().cmp(other)`.
     ///
     /// For string tokens with one or more escape sequences, this method compares a normalized
-    /// version of the string value with escape sequences expanded to `other`. It gives the same
+    /// version of the string value, with escape sequences expanded, to `other`. It gives the same
     /// result as `self.unescaped().cmp(other)`, but is faster because it avoids the accompanying
     /// allocations and copying.
     ///
@@ -1847,23 +1867,17 @@ pub trait Error: core::error::Error + Send + Sync {
     /// the token returned by [`Analyzer::next`], while this method provides the granular position
     /// where the error occurred.
     ///
-    /// For example, consider the following lexically-invalid JSON text:
+    /// # Examples
     ///
-    /// ```json
-    /// "foo
     /// ```
+    /// use bufjson::lexical::{Token, fixed::FixedAnalyzer};
     ///
-    /// The above text contains an unterminated string token. A lexical analyzer tokenizing this
-    /// text will return:
+    /// let mut lexer = FixedAnalyzer::new(&br#""foo"#[..]);
     ///
-    /// 1. [`Token::Err`] on the first call to its [`next`][`Analyzer::next`] method, since the very
-    ///    first token has an error.
-    /// 2. The position of the first `"` character in the text on a subsequent call to its
-    ///    [`pos`][Analyzer::pos] method, because that is the position of the start of the token
-    ///    returned by [`next`][Analyzer::next].
-    /// 3. An `Err` result containing an `Error` whose `pos` method (this method) returns the
-    ///    position immediately right of the last `o` character in the text, because this is where
-    ///    the actual error, an unexpected end of file, was encountered.
+    /// assert_eq!(Token::Err, lexer.next());    // Unterminated string token `"foo`.
+    /// assert_eq!(1, lexer.pos().col);          // Lexer pos is at the start of the token.
+    /// assert_eq!(5, lexer.err().pos().col);    // Error pos is where error occurs within token.
+    /// ```
     fn pos(&self) -> &Pos;
 }
 

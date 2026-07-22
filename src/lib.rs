@@ -9,10 +9,11 @@
 //! Despite being low-level, the `bufjson` API is designed and documented with care and, hopefully,
 //! very intuitive to work with.
 //!
-//! The crate design enables use cases that require scalability, either due to high levels of
-//! concurrent processing (in a web server, for example); or due to working with enormous JSON
-//! texts. As a streaming library, it also enables making progress in parsing JSON text that may not
-//! be complete yet, due to I/O latency or other reasons.
+//! The crate design enables use cases that require scalability, incredible throughput, or very low
+//! latency. This can include embedded systems; workloads needing high levels of concurrent
+//! processing (in a web server, for example); or systems that consume enormous JSON texts. As a
+//! streaming library, `bufjson`'s design also enables making progress in parsing JSON text that may
+//! not be complete yet, due to I/O latency or other reasons.
 //!
 //! # Features
 //!
@@ -20,7 +21,7 @@
 //! - Best in class speed, second only to `simd-json` (but with more flexibility and features).
 //! - Minimizes allocations and data copying.
 //! - Clear structured error messages with pinpoint locations.
-//! - Fast streaming JSON pointer evaluation.
+//! - Fast streaming JSON Pointer evaluation.
 //! - `no_std` support.
 //!
 //! # Optional features
@@ -60,14 +61,14 @@
 //! 4. The `num_ext` feature, which implicitly turns on `num`, adds native support for less
 //!    commonplace number parsing use cases, such as parsing `i128`.
 //!
-//! ## JSON pointer feature flags
+//! ## JSON Pointer feature flags
 //!
 //! 1. The `pointer` feature activates streaming JSON Pointer evaluation by enabling the
 //!    [`pointer`][mod@pointer] module.
-//! 2. The `ignore_case` feature opts into a very narrow, but useful, use case: case-insensitive
-//!    JSON Pointer evaluation. This can be handy in scenarios such as backward-compatible parsing
-//!    of JSON that was previously handled by a case-insensitive parser like GoLang standard
-//!    library's `encoding/json`.
+//! 2. The `ignore_case` flag opts into a very narrow, but useful, feature: case-insensitive JSON
+//!    Pointer evaluation. This can be handy in scenarios such as backward-compatible parsing of
+//!    JSON that was previously handled by a case-insensitive parser like GoLang standard library's
+//!    `encoding/json`.
 //!
 //! # Stability
 //!
@@ -99,11 +100,12 @@
 //!   includes pseudo-tokens for error and end-of-file cases.
 //! - [`lexical::Content`] is a trait that represents the text content of a JSON token. For example,
 //!   the content of a [`Token::ObjBegin`] is always `{`, while the content of a [`Token::Str`]
-//!   might be `""`, `"foo"`, or an infinity of other possibilities.
-//! - [`lexical::Analyzer`] is a trait that represents the capability to tokenize a stream of JSON
-//!   text.
-//! - [`syntax::Parser`] wraps any lexical analyzer with the ability to parse JSON at the syntax
-//!   level.
+//!   might be `""`, `"foo"`, `"bar"`, `"\u0062\u0061\u007A"`, `"hello 🌍"`, or anything else.
+//! - [`lexical::Analyzer`] is a trait that represents the capability to scan or tokenize a stream
+//!   of JSON text into a stream of JSON lexical tokens such as strings, numbers, `{` characters,
+//!   and so on.
+//! - [`syntax::Parser`] wraps any `lexical::Analyzer` with the ability to parse JSON at the syntax
+//!   level, meaning it prevents invalid sequences of tokens like `{123]`.
 //! - [`Pos`] represents an exact position within a JSON text.
 //! - [`Buf`] and [`IntoBuf`] are special traits that allow `bufjson` to give zero-copy,
 //!   zero-allocation access to validated token content even if the token is not contiguous in
@@ -117,10 +119,11 @@
 //!
 //! The layered architecture of `bufjson` comes with some bonus features.
 //!
-//! In particular, the lower-level state machines on which the lexical analyzers and the streaming
-//! JSON Pointer evaluator are based are available in modules [`lexical::state`] and
-//! [`pointer::state`]. You can use these state machines to build your own lower-level JSON
-//! features, such as custom lexical analyzers.
+//! In particular, the highly optimized lower-level state machines on which the lexical analyzers
+//! and the streaming JSON Pointer evaluator are based are available in modules [`lexical::state`]
+//! and [`pointer::state`]. You can use these state machines to build your own lower-level JSON
+//! features, such as custom JSON tokenizers, custom parsers, *etc.*, if `bufjson` doesn't meet your
+//! needs exactly.
 //!
 //! # Nuances and design philosophy
 //!
@@ -143,21 +146,28 @@
 //! 2. Escape sequence expansion is deferred until you ask for it. There are several ways to do
 //!    this, including [`Content::unescaped`][lexical::Content::unescaped] and
 //!    [`unescape`][lexical::unescape].
-//! 3. Numbers are recognized, but not interpreted. In other words, all
-//!    [`Token::Num`] tokens are lexically correct but `bufjson` does not try to convert them to
-//!    Rust types for you. You can convert them trivially using the `num` feature.
+//! 3. Numbers are recognized, but not automatically interpreted. In other words, all
+//!    [`Token::Num`] tokens are lexically correct but `bufjson` does not automatically convert them
+//!    to Rust types for you. You control when to convert them, either with a `num` feature function
+//!    such as [`parse_i64`], or in any other way you want.
 //! 4. Strings and numbers can have infinite length.
+//!
+//! [`parse_i64`]: lexical::parse_i64
 //!
 //! # Non-features
 //!
 //! A deliberate choice has been made not to support the following features:
 //!
 //! 1. JSON writing or serialization. Compared to the input side (parsing), the output side is
-//!    relatively trivial and is easy to do performantly. The Rust ecosystem is already well-served
+//!    relatively trivial and is easy to do performantly. The Rust ecosystem is already well served
 //!    by crates that solve this problem, and `bufjson` would add nothing of value by providing its
 //!    own me-too solution. You may find write-focused crates such as
 //!    [`json_in_type`](https://crates.io/crates/json_in_type) or
 //!    [`json-writer`](https://crates.io/crates/json-writer) work well for you here.
+//! 2. Deserialization into Rust structured types, for example via integration with the well-known
+//!    [`serde`](https://crates.io/crates/serde) crate. Again, the Rust ecosystem is currently
+//!    well served by crates that do this, of which
+//!    [`serde_json`](https://crates.io/crates/serde_json) is the most popular.
 //!
 //! # Contributing
 //!
