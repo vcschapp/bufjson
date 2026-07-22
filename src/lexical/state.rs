@@ -474,10 +474,12 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
         }
     }
 
+    /// Returns the current scan position of the state machine.
     pub fn pos(&self) -> &Pos {
         &self.global_pos
     }
 
+    /// Returns the kind of lexical error detected if the state machine is in an error state.
     pub fn err_kind(&self) -> Option<ErrorKind> {
         self.err_kind
     }

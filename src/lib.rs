@@ -259,10 +259,10 @@ impl fmt::Display for Pos {
 /// Error returned when a [`Buf`] does not have enough bytes remaining to satisfy a request.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct BufUnderflow {
-    // Number of bytes requested from the buffer.
+    /// Number of bytes requested from the buffer.
     pub requested: usize,
 
-    // Number of bytes available in the buffer.
+    /// Number of bytes available in the buffer.
     pub remaining: usize,
 }
 

@@ -795,15 +795,15 @@ impl<G: AsRef<Group>> Machine<G> {
     }
 }
 
-/// Iterator over the characters in a `Buf` that does not consume the last byte.
+// Iterator over the characters in a `Buf` that does not consume the last byte.
 #[derive(Debug)]
-pub struct BufIter<'a, B> {
+struct BufIter<'a, B> {
     buf: &'a mut B, // `Buf` being converted to an iterator.
     pos: usize,     // Position within the current chunk.
 }
 
 impl<'a, B: Buf> BufIter<'a, B> {
-    pub fn new(buf: &'a mut B) -> Self {
+    fn new(buf: &'a mut B) -> Self {
         Self { buf, pos: 0 }
     }
 
