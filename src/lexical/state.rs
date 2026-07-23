@@ -157,6 +157,19 @@ pub enum End {
 // Assert that `Next` does not grow beyond 16 bytes (two 64-bit words).
 const _: [(); 16] = [(); core::mem::size_of::<Next>()];
 
+static BORING: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut i = 0u8;
+    loop {
+        t[i as usize] = i >= 0x20 && i < 128 && i != b'\\' && i != b'"';
+        if i == 255 {
+            break;
+        }
+        i += 1;
+    }
+    t
+};
+
 #[derive(Clone, Copy, Debug)]
 #[repr(u8)]
 #[rustfmt::skip]
@@ -647,36 +660,17 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
     }
 
     fn str(&mut self) -> Next {
-        static BORING: [bool; 256] = {
-            let mut t = [false; 256];
-            let mut i = 0u8;
-            loop {
-                t[i as usize] = i >= 0x20 && i < 128 && i != b'\\' && i != b'"';
-                if i == 255 {
-                    break;
-                }
-                i += 1;
-            }
-            t
-        };
+        let buf = &self.buf[..];
+        let i = Self::str_boring(buf, self.buf_pos + 1 /* Advance past opening '"'. */);
 
-        let mut i = self.buf_pos + 1; // Advance past opening '"'.
-        while i < self.buf.len() && BORING[self.buf[i] as usize] {
-            i += 1;
-        }
-
-        if i < self.buf.len() && self.buf[i] == b'"' {
-            i += 1;
-
-            self.done(Token::Str, i)
-        } else if i < self.buf.len() && self.buf[i].is_ascii_control() {
-            self.err(i, ErrorKind::expect_str_char(self.buf[i]))
-        } else if i < self.buf.len() {
-            self.str_slow(i, i - self.buf_pos, false)
-        } else {
+        if i == buf.len() {
             self.state = State::Str(Str::Ready { escaped: false });
 
             self.part(Token::Str, i - self.buf_pos)
+        } else if buf[i] == b'"' {
+            self.done(Token::Str, i + 1 /* Advance past closing '"'. */)
+        } else {
+            self.str_slow(i, i - self.buf_pos, false) // Handles error case too.
         }
     }
 
@@ -724,11 +718,20 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
 
         let mut j = i;
         let mut last_j = j;
+        let mut skip_boring = true;
 
         while j < self.buf.len() {
             let b = self.buf[j];
             let x = b as usize;
             match CLASS[x] {
+                Fine if skip_boring => {
+                    skip_boring = false;
+                    if j - last_j <= 8 {
+                        j = Self::str_boring(&self.buf, j + 1);
+                    } else {
+                        j += 1;
+                    }
+                },
                 Fine => j += 1,
                 Quot => {
                     j += 1;
@@ -866,6 +869,15 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
         self.state = State::Str(Str::Ready { escaped });
 
         Next::Part(Token::Str, n)
+    }
+
+    #[inline(always)]
+    fn str_boring(buf: &[u8], mut i: usize) -> usize {
+        while i < buf.len() && BORING[buf[i] as usize] {
+            i += 1;
+        }
+
+        i
     }
 
     fn str_esc_resume(&mut self) -> Next {
