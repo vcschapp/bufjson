@@ -718,21 +718,12 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
 
         let mut j = i;
         let mut last_j = j;
-        let mut skip_boring = true;
 
         while j < self.buf.len() {
             let b = self.buf[j];
             let x = b as usize;
             match CLASS[x] {
-                Fine if skip_boring => {
-                    skip_boring = false;
-                    if j - last_j <= 8 {
-                        j = Self::str_boring(&self.buf, j + 1);
-                    } else {
-                        j += 1;
-                    }
-                },
-                Fine => j += 1,
+                Fine => j = Self::str_boring(&self.buf, j + 1),
                 Quot => {
                     j += 1;
                     col_delta += j - last_j;

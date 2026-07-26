@@ -48,14 +48,14 @@ The table below shows JSON text throughput benchmark results.<sup>1</sup>
 
 | Component                  | `.content()` fetched | Throughput |
 |----------------------------|----------------------|------------|
-| `FixedAnalyzer`            | Never                | 1.1 GiB/s  |
-| `FixedAnalyzer`            | Always               | 1.1 GiB/s  |
-| `Parser` + `FixedAnalyzer` | Never                | 1 GiB/s    |
+| `FixedAnalyzer`            | Never                | 1.26 GiB/s |
+| `FixedAnalyzer`            | Always               | 1.18 GiB/s |
+| `Parser` + `FixedAnalyzer` | Never                | 1.1 GiB/s  |
 | `Parser` + `FixedAnalyzer` | Always               | 950 MiB/s  |
-| `PipeAnalyzer`             | Never                | 950 MiB/s  |
-| `PipeAnalyzer`             | Always               | 730 MiB/s  |
-| `ReadAnalyzer`<sup>2</sup> | Never                | 900 MiB/s  |
-| `ReadAnalyzer`<sup>2</sup> | Always               | 700 MiB/s  |
+| `PipeAnalyzer`             | Never                | 1.1 GiB/s  |
+| `PipeAnalyzer`             | Always               | 830 MiB/s  |
+| `ReadAnalyzer`<sup>2</sup> | Never                | 1.0 GiB/s  |
+| `ReadAnalyzer`<sup>2</sup> | Always               | 810 MiB/s  |
 
 <sub>
 1 Running on Ubuntu 22 with an Intel Core i7 1.8 GHz with four physical cores.
