@@ -9,3 +9,7 @@ test-cfg-param
 # Garbage LLMs tend to add.
 /build.log
 /test.log
+
+# Performance testing.
+/__pycache__/
+/*.py
