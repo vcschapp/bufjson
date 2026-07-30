@@ -864,7 +864,47 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
 
     #[inline(always)]
     fn str_boring(buf: &[u8], mut i: usize) -> usize {
-        while i < buf.len() && BORING[buf[i] as usize] {
+        // Word-at-a-time fast path using only integer arithmetic. (SWAR, not SIMD.)
+        //
+        // A byte is boring iff it is printable ASCII (0x20..=0x7F) and not `"` (0x22) or `\`
+        // (0x5C).
+        //
+        // Conversely, a byte `b` is super interesting and not boring at all iff:
+        //     1.  `(b ^ 0x7d) >= 0x5f` (catches control bytes, bytes >= 0x80, and `"`) OR
+        //     2.  `b == 0x5c`.
+        const ONES: u64 = 0x0101_0101_0101_0101;
+        const HIGH: u64 = 0x8080_8080_8080_8080;
+        let n = buf.len();
+        while i + 8 <= n {
+            // Load the next input word ensuring the lsat byte goes into the high order byte of the
+            // word regardless of CPU endianness. We don't bother word-aligning the scan. Modern
+            // CPUs reading from L1 cache aren't fussed by misaligned reads, and benchmarking showed
+            // no performance benefit from alignment.
+            let w = u64::from_le_bytes(buf[i..i + 8].try_into().unwrap());
+
+            // First branch of the interestingness test. This leaves the high-order bit of each byte
+            // `b` in the word set to one iff `(b ^ 0x7d) >= 0x5f`.
+            let x = w ^ ONES.wrapping_mul(0x7d);
+            let test1 = x.wrapping_add(ONES.wrapping_mul(0x7f - 0x5e)) | x; // (b^0x7d) >= 0x5f
+
+            // Second branch of the interestingness test. This leaves the high-order bit of each
+            // byte `b` in the word set to one iff `b == 0x5c`.
+            let y = w ^ ONES.wrapping_mul(0x5c);
+            let test2 = y.wrapping_sub(ONES) & !y; // b == 0x5c
+
+            // Combine the two branches. If no byte is interesting, keep on chugging. Otherwise,
+            // map the index of the first interesting byte in the word back to its buffer index and
+            // return.
+            let interesting = (test1 | test2) & HIGH;
+            if interesting == 0 {
+                i += 8;
+            } else {
+                return i + (interesting.trailing_zeros() as usize >> 3);
+            }
+        }
+
+        // Fall back table-based scan if less than a word is available.
+        while i < n && BORING[buf[i] as usize] {
             i += 1;
         }
 
