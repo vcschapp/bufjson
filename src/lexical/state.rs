@@ -157,19 +157,6 @@ pub enum End {
 // Assert that `Next` does not grow beyond 16 bytes (two 64-bit words).
 const _: [(); 16] = [(); core::mem::size_of::<Next>()];
 
-static BORING: [bool; 256] = {
-    let mut t = [false; 256];
-    let mut i = 0u8;
-    loop {
-        t[i as usize] = i >= 0x20 && i < 128 && i != b'\\' && i != b'"';
-        if i == 255 {
-            break;
-        }
-        i += 1;
-    }
-    t
-};
-
 #[derive(Clone, Copy, Debug)]
 #[repr(u8)]
 #[rustfmt::skip]
@@ -661,7 +648,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
 
     fn str(&mut self) -> Next {
         let buf = &self.buf[..];
-        let i = Self::str_boring(buf, self.buf_pos + 1 /* Advance past opening '"'. */);
+        let i = str_boring(buf, self.buf_pos + 1 /* Advance past opening '"'. */);
 
         if i == buf.len() {
             self.state = State::Str(Str::Ready { escaped: false });
@@ -723,7 +710,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
             let b = self.buf[j];
             let x = b as usize;
             match CLASS[x] {
-                Fine => j = Self::str_boring(&self.buf, j + 1),
+                Fine => j = str_boring(&self.buf, j + 1),
                 Quot => {
                     j += 1;
                     col_delta += j - last_j;
@@ -860,55 +847,6 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
         self.state = State::Str(Str::Ready { escaped });
 
         Next::Part(Token::Str, n)
-    }
-
-    #[inline(always)]
-    fn str_boring(buf: &[u8], mut i: usize) -> usize {
-        // Word-at-a-time fast path using only integer arithmetic. (SWAR, not SIMD.)
-        //
-        // A byte is boring iff it is printable ASCII (0x20..=0x7F) and not `"` (0x22) or `\`
-        // (0x5C).
-        //
-        // Conversely, a byte `b` is super interesting and not boring at all iff:
-        //     1.  `(b ^ 0x7d) >= 0x5f` (catches control bytes, bytes >= 0x80, and `"`) OR
-        //     2.  `b == 0x5c`.
-        const ONES: u64 = 0x0101_0101_0101_0101;
-        const HIGH: u64 = 0x8080_8080_8080_8080;
-        let n = buf.len();
-        while i + 8 <= n {
-            // Load the next input word ensuring the lsat byte goes into the high order byte of the
-            // word regardless of CPU endianness. We don't bother word-aligning the scan. Modern
-            // CPUs reading from L1 cache aren't fussed by misaligned reads, and benchmarking showed
-            // no performance benefit from alignment.
-            let w = u64::from_le_bytes(buf[i..i + 8].try_into().unwrap());
-
-            // First branch of the interestingness test. This leaves the high-order bit of each byte
-            // `b` in the word set to one iff `(b ^ 0x7d) >= 0x5f`.
-            let x = w ^ ONES.wrapping_mul(0x7d);
-            let test1 = x.wrapping_add(ONES.wrapping_mul(0x7f - 0x5e)) | x; // (b^0x7d) >= 0x5f
-
-            // Second branch of the interestingness test. This leaves the high-order bit of each
-            // byte `b` in the word set to one iff `b == 0x5c`.
-            let y = w ^ ONES.wrapping_mul(0x5c);
-            let test2 = y.wrapping_sub(ONES) & !y; // b == 0x5c
-
-            // Combine the two branches. If no byte is interesting, keep on chugging. Otherwise,
-            // map the index of the first interesting byte in the word back to its buffer index and
-            // return.
-            let interesting = (test1 | test2) & HIGH;
-            if interesting == 0 {
-                i += 8;
-            } else {
-                return i + (interesting.trailing_zeros() as usize >> 3);
-            }
-        }
-
-        // Fall back table-based scan if less than a word is available.
-        while i < n && BORING[buf[i] as usize] {
-            i += 1;
-        }
-
-        i
     }
 
     fn str_esc_resume(&mut self) -> Next {
@@ -1500,6 +1438,247 @@ impl Machine<&[u8]> {
         } else {
             false
         }
+    }
+}
+
+static BORING: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut i = 0u8;
+    loop {
+        t[i as usize] = i >= 0x20 && i < 128 && i != b'\\' && i != b'"';
+        if i == 255 {
+            break;
+        }
+        i += 1;
+    }
+    t
+};
+
+#[inline(always)]
+fn str_boring(buf: &[u8], mut i: usize) -> usize {
+    // Dispatch to the fastest available option. We use a nested function here to ensure that at
+    // compile time there is exactly one available `dispatch`. If there were more, you would get
+    // a symbol redefined error from the compiler; if there were none, it would fail to find it.
+    // This structure helps us ensure that the fast dispatch is done once, and exactly once.
+    #[cfg(feature = "simd_dyn")]
+    #[inline(always)]
+    fn dispatch(buf: &[u8], mut i: usize) -> usize {
+        i = swar::str_boring(buf, i, (i + 16).min(buf.len()));
+
+        simd_dyn::str_boring(buf, i)
+    }
+    #[cfg(all(not(feature = "simd_dyn"), feature = "simd", target_feature = "avx2"))]
+    #[inline(always)]
+    fn dispatch(buf: &[u8], mut i: usize) -> usize {
+        i = swar::str_boring(buf, i, (i + 16).min(buf.len()));
+
+        unsafe { simd_avx2::str_boring(buf, i) }
+    }
+    #[cfg(all(
+        not(feature = "simd_dyn"),
+        feature = "simd",
+        target_feature = "sse2",
+        not(target_feature = "avx2"),
+    ))]
+    #[inline(always)]
+    fn dispatch(buf: &[u8], mut i: usize) -> usize {
+        i = swar::str_boring(buf, i, (i + 16).min(buf.len()));
+
+        unsafe { simd_sse2::str_boring(buf, i) }
+    }
+    #[cfg(not(any(
+        feature = "simd_dyn",
+        all(feature = "simd", target_feature = "avx2"),
+        all(feature = "simd", target_feature = "sse2"),
+    )))]
+    #[inline(always)]
+    fn dispatch(buf: &[u8], i: usize) -> usize {
+        swar::str_boring(buf, i, buf.len())
+    }
+
+    i = dispatch(buf, i);
+
+    // For any final run of bytes that is shorter than the word size (SWAR) or vector width (SIMD),
+    // finish it with a simple lookup table.
+    while i < buf.len() && BORING[buf[i] as usize] {
+        i += 1;
+    }
+
+    i
+}
+
+mod swar {
+    #[inline(always)]
+    pub(super) fn str_boring(buf: &[u8], mut i: usize, n: usize) -> usize {
+        debug_assert!(i <= n);
+        debug_assert!(n <= buf.len());
+        // Word-at-a-time fast path using only integer arithmetic. (SWAR, not SIMD.)
+        //
+        // A byte is boring iff it is printable ASCII (0x20..=0x7F) and not `"` (0x22) or `\`
+        // (0x5C).
+        //
+        // Conversely, a byte `b` is super interesting and not boring at all iff:
+        //     1.  `(b ^ 0x7d) >= 0x5f` (catches control bytes, bytes >= 0x80, and `"`) OR
+        //     2.  `b == 0x5c`.
+        const ONES: u64 = 0x0101_0101_0101_0101;
+        const HIGH: u64 = 0x8080_8080_8080_8080;
+        while i + 8 <= n {
+            // Load the next input word ensuring the last byte goes into the high order byte of the
+            // word regardless of CPU endianness. We don't bother word-aligning the scan. Modern
+            // CPUs reading from L1 cache aren't fussed by misaligned reads, and benchmarking showed
+            // no performance benefit from alignment.
+            let w = u64::from_le_bytes(buf[i..i + 8].try_into().unwrap());
+
+            // First branch of the interestingness test. This leaves the high-order bit of each byte
+            // `b` in the word set to one iff `(b ^ 0x7d) >= 0x5f`.
+            let x = w ^ ONES.wrapping_mul(0x7d);
+            let test1 = x.wrapping_add(ONES.wrapping_mul(0x7f - 0x5e)) | x; // (b^0x7d) >= 0x5f
+
+            // Second branch of the interestingness test. This leaves the high-order bit of each
+            // byte `b` in the word set to one iff `b == 0x5c`.
+            let y = w ^ ONES.wrapping_mul(0x5c);
+            let test2 = y.wrapping_sub(ONES) & !y; // b == 0x5c
+
+            // Combine the two branches. If no byte is interesting, keep on chugging. Otherwise,
+            // map the index of the first interesting byte in the word back to its buffer index and
+            // return.
+            let interesting = (test1 | test2) & HIGH;
+            if interesting == 0 {
+                i += 8;
+            } else {
+                return i + (interesting.trailing_zeros() as usize >> 3);
+            }
+        }
+
+        i
+    }
+}
+
+#[cfg(feature = "simd_dyn")]
+mod simd_dyn {
+    use core::sync::atomic::{AtomicPtr, Ordering};
+
+    type ScanFn = unsafe fn(&[u8], usize) -> usize;
+
+    static STR_BORING: AtomicPtr<()> = AtomicPtr::new(resolve_str_boring as *mut ());
+
+    #[inline]
+    pub(super) fn str_boring(buf: &[u8], i: usize) -> usize {
+        let p = STR_BORING.load(Ordering::Relaxed);
+        // SAFETY: `STR_BORING` always holds a valid `ScanFn`. It starts with `resolve_str_boring`,
+        //         which replaces the contents with the resolved SIMD variant. Since the resolved
+        //         SIMD variant can only be chosen if the CPU has that capability, it is always safe
+        //         to call.
+        let f: ScanFn = unsafe { core::mem::transmute(p) };
+        unsafe { f(buf, i) }
+    }
+
+    fn resolve_str_boring(buf: &[u8], i: usize) -> usize {
+        let mut f: ScanFn = str_boring_swar;
+
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            if std::is_x86_feature_detected!("avx2") {
+                f = super::simd_avx2::str_boring;
+            } else if std::is_x86_feature_detected!("sse2") {
+                f = super::simd_sse2::str_boring;
+            }
+        }
+
+        STR_BORING.store(f as *mut (), Ordering::Relaxed);
+
+        // SAFETY: `f` was just selected to match available CPU features.
+        unsafe { f(buf, i) }
+    }
+
+    fn str_boring_swar(buf: &[u8], i: usize) -> usize {
+        super::swar::str_boring(buf, i, buf.len())
+    }
+}
+
+#[cfg(all(
+    feature = "simd",
+    any(
+        all(feature = "simd_dyn", any(target_arch = "x86", target_arch = "x86_64"),),
+        target_feature = "avx2",
+    ),
+))]
+mod simd_avx2 {
+    use wide::u8x32;
+
+    #[inline]
+    pub(super) unsafe fn str_boring(buf: &[u8], mut i: usize) -> usize {
+        const N: usize = 32;
+        let n = buf.len();
+
+        if i + N <= n {
+            let v_quote = u8x32::splat(b'"');
+            let v_bslash = u8x32::splat(b'\\');
+            let v_space = u8x32::splat(0x20);
+            let v_del = u8x32::splat(0x7f);
+
+            loop {
+                let v = u8x32::new(buf[i..i + N].try_into().unwrap());
+                let interesting = v.simd_eq(v_quote)
+                    | v.simd_eq(v_bslash)
+                    | v.simd_lt(v_space)
+                    | v.simd_gt(v_del);
+                let bits = interesting.to_bitmask();
+                if bits != 0 {
+                    i += bits.trailing_zeros() as usize;
+                    break;
+                }
+                i += N;
+                if i + N > n {
+                    break;
+                }
+            }
+        }
+
+        i
+    }
+}
+
+#[cfg(all(
+    feature = "simd",
+    any(
+        all(feature = "simd_dyn", any(target_arch = "x86", target_arch = "x86_64"),),
+        target_feature = "sse2",
+    ),
+))]
+mod simd_sse2 {
+    use wide::u8x16;
+
+    #[inline]
+    pub(super) unsafe fn str_boring(buf: &[u8], mut i: usize) -> usize {
+        const N: usize = 16;
+        let n = buf.len();
+
+        if i + N <= n {
+            let v_quote = u8x16::splat(b'"');
+            let v_bslash = u8x16::splat(b'\\');
+            let v_space = u8x16::splat(0x20);
+            let v_del = u8x16::splat(0x7f);
+
+            loop {
+                let v = u8x16::new(buf[i..i + N].try_into().unwrap());
+                let interesting = v.simd_eq(v_quote)
+                    | v.simd_eq(v_bslash)
+                    | v.simd_lt(v_space)
+                    | v.simd_gt(v_del);
+                let bits = interesting.to_bitmask();
+                if bits != 0 {
+                    i += bits.trailing_zeros() as usize;
+                    break;
+                }
+                i += N;
+                if i + N > n {
+                    break;
+                }
+            }
+        }
+
+        i
     }
 }
 

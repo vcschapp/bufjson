@@ -111,6 +111,8 @@ use crate::{Buf, EqStr, IntoBuf, OrdStr, Pos, Sink, StringBuf};
 #[cfg(feature = "num")]
 use crate::{sink, sink::InlineSink};
 use alloc::string::String;
+#[cfg(feature = "num")]
+use alloc::vec::Vec;
 use core::{
     borrow::Borrow,
     cmp::{Ord, Ordering},
