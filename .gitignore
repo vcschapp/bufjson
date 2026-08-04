@@ -5,6 +5,7 @@ test-cfg-param
 /*.svg
 /*.data
 *.swp
+*.patch
 
 # Garbage LLMs tend to add.
 /build.log
@@ -13,3 +14,4 @@ test-cfg-param
 # Performance testing.
 /__pycache__/
 /*.py
+/*.sh
