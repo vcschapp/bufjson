@@ -1460,20 +1460,25 @@ fn str_boring(buf: &[u8], mut i: usize) -> usize {
     // compile time there is exactly one available `dispatch`. If there were more, you would get
     // a symbol redefined error from the compiler; if there were none, it would fail to find it.
     // This structure helps us ensure that the fast dispatch is done once, and exactly once.
-    #[cfg(feature = "simd_dyn")]
+
+    // (1) x86 + `simd_dyn`: DYNAMIC (runtime) dispatch. x86 is the only target where the best
+    //     available SIMD is not known until runtime (AVX2/SSE2 are optional).
+    #[cfg(all(feature = "simd_dyn", any(target_arch = "x86", target_arch = "x86_64")))]
     #[inline(always)]
     fn dispatch(buf: &[u8], mut i: usize) -> usize {
         i = swar::str_boring(buf, i, (i + 16).min(buf.len()));
 
         simd_dyn::str_boring(buf, i)
     }
+    // (2) x86 static AVX2 (whole crate built `+avx2`).
     #[cfg(all(not(feature = "simd_dyn"), feature = "simd", target_feature = "avx2"))]
     #[inline(always)]
     fn dispatch(buf: &[u8], mut i: usize) -> usize {
         i = swar::str_boring(buf, i, (i + 16).min(buf.len()));
 
-        unsafe { simd_avx2::str_boring(buf, i) }
+        unsafe { simd::str_boring::<wide::u8x32>(buf, i) }
     }
+    // (3) x86 static SSE2 (no AVX2).
     #[cfg(all(
         not(feature = "simd_dyn"),
         feature = "simd",
@@ -1484,12 +1489,49 @@ fn str_boring(buf: &[u8], mut i: usize) -> usize {
     fn dispatch(buf: &[u8], mut i: usize) -> usize {
         i = swar::str_boring(buf, i, (i + 16).min(buf.len()));
 
-        unsafe { simd_sse2::str_boring(buf, i) }
+        unsafe { simd::str_boring::<wide::u8x16>(buf, i) }
     }
+    // (4) AArch64 NEON. NEON is architecturally mandatory on aarch64, so the choice is known at
+    //     compile time: go DIRECT to the kernel even under `simd_dyn`, skipping dynamic resolution,
+    //     on aarch64. Note that if the build is done with `-C target_feature=-neon`, this branch
+    //     will be skipped and the build correctly drops down to SWAR rather than try to go through
+    //     `wide`'s scalar emulation, which is likely slower.
+    //
+    //     Note that there is no 32-bit ARM NEON, so armv7 falls through to SWAR.
+    #[cfg(all(feature = "simd", target_arch = "aarch64", target_feature = "neon"))]
+    #[inline(always)]
+    fn dispatch(buf: &[u8], mut i: usize) -> usize {
+        i = swar::str_boring(buf, i, (i + 16).min(buf.len()));
+
+        unsafe { simd::str_boring::<wide::u8x16>(buf, i) }
+    }
+    // (5) WASM simd128. A compile-time capability (WASM has no runtime feature detection), so go
+    //     DIRECT even under `simd_dyn`.
+    #[cfg(all(
+        feature = "simd",
+        any(target_arch = "wasm32", target_arch = "wasm64"),
+        target_feature = "simd128",
+    ))]
+    #[inline(always)]
+    fn dispatch(buf: &[u8], mut i: usize) -> usize {
+        i = swar::str_boring(buf, i, (i + 16).min(buf.len()));
+
+        unsafe { simd::str_boring::<wide::u8x16>(buf, i) }
+    }
+    // (6) Scalar fallback: bufjson SWAR. Covers every case `wide` would only scalar-emulate
+    //     (armv7/riscv/..., aarch64 without NEON, wasm without simd128, i586 without SSE2) and
+    //     non-SIMD builds. SWAR uses only integer registers, so it is also correct where SIMD/FP
+    //     is intentionally disabled.
     #[cfg(not(any(
-        feature = "simd_dyn",
-        all(feature = "simd", target_feature = "avx2"),
-        all(feature = "simd", target_feature = "sse2"),
+        all(feature = "simd_dyn", any(target_arch = "x86", target_arch = "x86_64")),
+        all(feature = "simd", not(feature = "simd_dyn"), target_feature = "avx2"),
+        all(feature = "simd", not(feature = "simd_dyn"), target_feature = "sse2"),
+        all(feature = "simd", target_arch = "aarch64", target_feature = "neon"),
+        all(
+            feature = "simd",
+            any(target_arch = "wasm32", target_arch = "wasm64"),
+            target_feature = "simd128"
+        ),
     )))]
     #[inline(always)]
     fn dispatch(buf: &[u8], i: usize) -> usize {
@@ -1554,7 +1596,10 @@ mod swar {
     }
 }
 
-#[cfg(feature = "simd_dyn")]
+// Runtime SIMD dispatch. Compiled ONLY on x86 -- the sole target where the best available kernel
+// is not known until runtime (AVX2/SSE2 are optional). On aarch64/wasm the kernel is compile-time
+// certain, so those targets bypass this module entirely (see the dispatch arms in `str_boring`).
+#[cfg(all(feature = "simd_dyn", any(target_arch = "x86", target_arch = "x86_64")))]
 mod simd_dyn {
     use core::sync::atomic::{AtomicPtr, Ordering};
 
@@ -1565,114 +1610,100 @@ mod simd_dyn {
     #[inline]
     pub(super) fn str_boring(buf: &[u8], i: usize) -> usize {
         let p = STR_BORING.load(Ordering::Relaxed);
-        // SAFETY: `STR_BORING` always holds a valid `ScanFn`. It starts with `resolve_str_boring`,
-        //         which replaces the contents with the resolved SIMD variant. Since the resolved
-        //         SIMD variant can only be chosen if the CPU has that capability, it is always safe
-        //         to call.
+        // SAFETY: `STR_BORING` always holds a valid `ScanFn`. It starts as `resolve_str_boring`,
+        //         which swaps in the detected kernel. A SIMD kernel is stored only after its
+        //         feature is confirmed present, and the scalar tier is always safe.
         let f: ScanFn = unsafe { core::mem::transmute(p) };
         unsafe { f(buf, i) }
     }
 
     fn resolve_str_boring(buf: &[u8], i: usize) -> usize {
+        // x86-only module => plain runtime detection, widest kernel first, scalar otherwise.
         let mut f: ScanFn = str_boring_swar;
-
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            if std::is_x86_feature_detected!("avx2") {
-                f = super::simd_avx2::str_boring;
-            } else if std::is_x86_feature_detected!("sse2") {
-                f = super::simd_sse2::str_boring;
-            }
+        if std::is_x86_feature_detected!("avx2") {
+            f = str_boring_simd_u8x32;
+        } else if std::is_x86_feature_detected!("sse2") {
+            f = str_boring_simd_u8x16;
         }
 
         STR_BORING.store(f as *mut (), Ordering::Relaxed);
 
-        // SAFETY: `f` was just selected to match available CPU features.
+        // SAFETY: `f` was just selected to match a detected CPU feature (or the safe scalar tier).
         unsafe { f(buf, i) }
     }
 
     fn str_boring_swar(buf: &[u8], i: usize) -> usize {
         super::swar::str_boring(buf, i, buf.len())
     }
-}
 
-#[cfg(all(
-    feature = "simd",
-    any(
-        all(feature = "simd_dyn", any(target_arch = "x86", target_arch = "x86_64"),),
-        target_feature = "avx2",
-    ),
-))]
-mod simd_avx2 {
-    use wide::u8x32;
+    #[target_feature(enable = "avx2")]
+    unsafe fn str_boring_simd_u8x32(buf: &[u8], i: usize) -> usize {
+        unsafe { super::simd::str_boring::<wide::u8x32>(buf, i) }
+    }
 
-    #[inline]
-    pub(super) unsafe fn str_boring(buf: &[u8], mut i: usize) -> usize {
-        const N: usize = 32;
-        let n = buf.len();
-
-        if i + N <= n {
-            let v_quote = u8x32::splat(b'"');
-            let v_bslash = u8x32::splat(b'\\');
-            let v_space = u8x32::splat(0x20);
-            let v_del = u8x32::splat(0x7f);
-
-            loop {
-                let v = u8x32::new(buf[i..i + N].try_into().unwrap());
-                let interesting = v.simd_eq(v_quote)
-                    | v.simd_eq(v_bslash)
-                    | v.simd_lt(v_space)
-                    | v.simd_gt(v_del);
-                let bits = interesting.to_bitmask();
-                if bits != 0 {
-                    i += bits.trailing_zeros() as usize;
-                    break;
-                }
-                i += N;
-                if i + N > n {
-                    break;
-                }
-            }
-        }
-
-        i
+    #[target_feature(enable = "sse2")]
+    unsafe fn str_boring_simd_u8x16(buf: &[u8], i: usize) -> usize {
+        unsafe { super::simd::str_boring::<wide::u8x16>(buf, i) }
     }
 }
 
-#[cfg(all(
-    feature = "simd",
-    any(
-        all(feature = "simd_dyn", any(target_arch = "x86", target_arch = "x86_64"),),
-        target_feature = "sse2",
-    ),
-))]
-mod simd_sse2 {
-    use wide::u8x16;
+#[cfg(feature = "simd")]
+mod simd {
+    #[allow(dead_code)]
+    pub(super) trait ByteVec: Copy {
+        const N: usize;
+        fn load(chunk: &[u8]) -> Self;
+        fn str_interesting(self) -> u32;
+    }
 
-    #[inline]
-    pub(super) unsafe fn str_boring(buf: &[u8], mut i: usize) -> usize {
+    impl ByteVec for wide::u8x32 {
+        const N: usize = 32;
+
+        #[inline(always)]
+        fn load(chunk: &[u8]) -> Self {
+            Self::new(chunk.try_into().unwrap())
+        }
+
+        #[inline(always)]
+        fn str_interesting(self) -> u32 {
+            let q = Self::splat(b'"');
+            let b = Self::splat(b'\\');
+            let s = Self::splat(0x20);
+            let d = Self::splat(0x7f);
+            (self.simd_eq(q) | self.simd_eq(b) | self.simd_lt(s) | self.simd_gt(d)).to_bitmask()
+        }
+    }
+
+    impl ByteVec for wide::u8x16 {
         const N: usize = 16;
+
+        #[inline(always)]
+        fn load(chunk: &[u8]) -> Self {
+            Self::new(chunk.try_into().unwrap())
+        }
+
+        #[inline(always)]
+        fn str_interesting(self) -> u32 {
+            let q = Self::splat(b'"');
+            let b = Self::splat(b'\\');
+            let s = Self::splat(0x20);
+            let d = Self::splat(0x7f);
+            (self.simd_eq(q) | self.simd_eq(b) | self.simd_lt(s) | self.simd_gt(d)).to_bitmask()
+        }
+    }
+
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(super) unsafe fn str_boring<V: ByteVec>(buf: &[u8], mut i: usize) -> usize {
         let n = buf.len();
-
-        if i + N <= n {
-            let v_quote = u8x16::splat(b'"');
-            let v_bslash = u8x16::splat(b'\\');
-            let v_space = u8x16::splat(0x20);
-            let v_del = u8x16::splat(0x7f);
-
+        if i + V::N <= n {
             loop {
-                let v = u8x16::new(buf[i..i + N].try_into().unwrap());
-                let interesting = v.simd_eq(v_quote)
-                    | v.simd_eq(v_bslash)
-                    | v.simd_lt(v_space)
-                    | v.simd_gt(v_del);
-                let bits = interesting.to_bitmask();
+                let bits = V::load(&buf[i..i + V::N]).str_interesting();
                 if bits != 0 {
-                    i += bits.trailing_zeros() as usize;
-                    break;
+                    return i + bits.trailing_zeros() as usize;
                 }
-                i += N;
-                if i + N > n {
+                i += V::N;
+                if i + V::N > n {
                     break;
                 }
             }
