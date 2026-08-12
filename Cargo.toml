@@ -2,6 +2,7 @@
 name = "bufjson"
 version = "1.1.1"
 edition = "2024"
+autobenches = false
 license = "MIT OR Apache-2.0"
 authors = ["Victor Schappert <victor.schappert@protonmail.com>"]
 repository = "https://github.com/vcschapp/bufjson"
@@ -46,8 +47,10 @@ json-streaming = { version = "^1.0.3", features = ["tokio"] }
 rand = "^0.10.0"
 rand_distr = "^0.6.0"
 rstest = "^0.26.1"
+serde = "^1.0"
 serde_json = "^1.0.49"
-simd-json = "^0.17.0"
+sha2 = "^0.10"
+simd-json = { version = "^0.17.0", features = ["big-int-as-float"] }
 smallvec = "^1.15.1"
 struson = "^0.7.2"
 tempfile = "^3.25.0"

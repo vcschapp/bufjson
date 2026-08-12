@@ -82,10 +82,18 @@ pub struct NumRules<D: Distribution<f64> = Normal<f64>> {
     pct_zero: f64,
     pct_frac: f64,
     pct_exp: f64,
+    allow_big_exponents: bool,
 }
 
 impl<D: Distribution<f64>> NumRules<D> {
-    pub fn new(len_distr: D, pct_neg: f64, pct_zero: f64, pct_frac: f64, pct_exp: f64) -> Self {
+    pub fn new(
+        len_distr: D,
+        pct_neg: f64,
+        pct_zero: f64,
+        pct_frac: f64,
+        pct_exp: f64,
+        allow_big_exponents: bool,
+    ) -> Self {
         pct_partial_group_check!(pct_neg; pct_zero);
         pct_partial_group_check!(pct_frac; pct_exp);
 
@@ -95,13 +103,26 @@ impl<D: Distribution<f64>> NumRules<D> {
             pct_zero,
             pct_frac,
             pct_exp,
+            allow_big_exponents,
         }
+    }
+
+    pub fn allow_big_exponents(mut self) -> Self {
+        self.allow_big_exponents = true;
+        self
     }
 }
 
 impl Default for NumRules<Normal<f64>> {
     fn default() -> Self {
-        Self::new(Normal::new(5.0, 15.0).unwrap(), 0.15, 0.20, 0.25, 0.1)
+        Self::new(
+            Normal::new(5.0, 15.0).unwrap(),
+            0.15,
+            0.20,
+            0.25,
+            0.1,
+            false,
+        )
     }
 }
 
@@ -135,7 +156,8 @@ pub struct StrRules<K: Distribution<f64> = Normal<f64>, V: Distribution<f64> = N
     key_len_distr: K,
     val_len_distr: V,
     pct_multiline: f64,
-    pct_escaped: f64,
+    pct_escaped_simple: f64,
+    pct_escaped_unicode: f64,
     pct_multibyte: f64,
     avoid_surrogate_pairs: bool,
 }
@@ -145,18 +167,20 @@ impl<K: Distribution<f64>, V: Distribution<f64>> StrRules<K, V> {
         key_len_distr: K,
         val_len_distr: V,
         pct_multiline: f64,
-        pct_escaped: f64,
+        pct_escaped_simple: f64,
+        pct_escaped_unicode: f64,
         pct_multibyte: f64,
         avoid_surrogate_pairs: bool,
     ) -> Self {
         pct_value_check!(pct_multiline);
-        pct_partial_group_check!(pct_escaped; pct_multibyte);
+        pct_partial_group_check!(pct_escaped_simple, pct_escaped_unicode; pct_multibyte);
 
         Self {
             key_len_distr,
             val_len_distr,
             pct_multiline,
-            pct_escaped,
+            pct_escaped_simple,
+            pct_escaped_unicode,
             pct_multibyte,
             avoid_surrogate_pairs,
         }
@@ -169,6 +193,7 @@ impl Default for StrRules<Normal<f64>> {
             Normal::new(10.0, 10.0).unwrap(),
             Normal::new(20.0, 1_000.0).unwrap(),
             0.1,
+            0.0,
             0.05,
             0.05,
             false,
@@ -621,7 +646,32 @@ impl<
                 },
             ];
             w.write_all(prefix)?;
-            self.generate_int(exp_len - 2, true, w)?;
+            if self.num_rules.allow_big_exponents {
+                // Unbounded exponent: bufjson's lexer has no numeric range limit, so this keeps the
+                // ability to exercise extreme values that f64-based parsers would reject.
+                self.generate_int(exp_len - 2, true, w)?;
+            } else {
+                // Cap the exponent so the number stays within f64 range (|value| < 10^308): with an
+                // int_len-digit mantissa, any exponent <= 308 - int_len keeps the value finite, and
+                // this still permits 3-digit exponents whenever int_len is small (the common case).
+                // The field keeps its full `exp_len - 2` width via left zero-padding, so the
+                // number's length budget is unchanged.
+                let exp_digits = exp_len - 2;
+                let max_exp = {
+                    let cap = 308usize.saturating_sub(int_len);
+                    if exp_digits >= 3 {
+                        cap
+                    } else {
+                        cap.min(10usize.pow(exp_digits as u32) - 1)
+                    }
+                };
+                let exp_value = self.rng.random_range(0..=max_exp);
+                let digits = exp_value.to_string();
+                for _ in 0..exp_digits - digits.len() {
+                    w.write_all(b"0")?;
+                }
+                w.write_all(digits.as_bytes())?;
+            }
         }
 
         Ok(sign_len + len)
@@ -873,8 +923,20 @@ impl<
                 continue;
             }
 
-            // Escape sequence.
-            if rem >= 6 && self.rng.random_bool(self.str_rules.pct_escaped) {
+            // Simple (C-style) escape sequence — each is exactly two bytes and always valid JSON.
+            if rem >= 2 && self.rng.random_bool(self.str_rules.pct_escaped_simple) {
+                const SIMPLE_ESCAPES: [&[u8]; 7] = [
+                    br#"\b"#, br#"\t"#, br#"\n"#, br#"\f"#, br#"\r"#, br#"\""#, br#"\\"#,
+                ];
+                let esc = SIMPLE_ESCAPES[self.rng.random_range(0..SIMPLE_ESCAPES.len())];
+                w.write_all(esc)?;
+                rem -= 2;
+
+                continue;
+            }
+
+            // Unicode escape sequence.
+            if rem >= 6 && self.rng.random_bool(self.str_rules.pct_escaped_unicode) {
                 let c = match rem {
                     6..=11 => CharRange::random_char_byte_range(1..=3, &mut self.rng),
                     12.. => CharRange::random_char_byte_range(
@@ -938,14 +1000,11 @@ impl<
                 continue;
             }
 
-            // Ordinary single-byte character (some must be escaped using '\').
+            // Ordinary printable ASCII. The 0x20..=0x7f range yields only two bytes JSON must
+            // escape — '"' and '\' — each two bytes wide, so fall back to a space when one byte
+            // remains. (Control chars are emitted only via the escape branches above, never raw.)
             let b = match self.rng.random_range(b' '..=0x7f) {
-                b'\x08' | b'\t' | b'\n' | b'\x0c' | b'\r' | b'"' | b'\\' if rem == 1 => &b" "[..],
-                b'\x08' => &br#"\b"#[..],
-                b'\t' => &br#"\t"#[..],
-                b'\n' => &br#"\n"#[..],
-                b'\x0c' => &br#"\f"#[..],
-                b'\r' => &br#"\r"#[..],
+                b'"' | b'\\' if rem == 1 => &b" "[..],
                 b'"' => &br#"\""#[..],
                 b'\\' => &br#"\\"#[..],
                 printable => &[printable],
@@ -991,8 +1050,16 @@ impl<
         assert!(rng.start() <= rng.end());
 
         let (hat, weights) = self.generate_val_setup(rng.clone());
-        let dist = WeightedIndex::new(&weights).unwrap();
-        let drawn = hat[dist.sample(&mut self.rng)];
+        // Every `ValueKind` in `hat` is length-feasible for this range, so when the configured
+        // weights give no guidance (all zero — e.g. a length-1 slot under a `ValueDist` with
+        // `pct_num == 0`, where only a single-digit number fits), fall back to a uniform pick
+        // rather than letting `WeightedIndex` fail with `InsufficientNonZero`.
+        let drawn = if weights.iter().all(|&w| w == 0.0) {
+            hat[self.rng.random_range(0..hat.len())]
+        } else {
+            let dist = WeightedIndex::new(&weights).unwrap();
+            hat[dist.sample(&mut self.rng)]
+        };
 
         let len = match drawn {
             ValueKind::Arr => {
