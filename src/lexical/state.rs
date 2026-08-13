@@ -313,9 +313,9 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
                 b'}' => single!(ObjEnd),
                 b':' => single!(NameSep),
                 b',' => single!(ValueSep),
-                b'f' => self.lit(b"false", 0, Token::LitFalse, State::False),
-                b'n' => self.lit(b"null", 0, Token::LitNull, State::Null),
-                b't' => self.lit(b"true", 0, Token::LitTrue, State::True),
+                b'f' => self.lit_false(),
+                b'n' => self.lit_null(),
+                b't' => self.lit_true(),
                 b'-' => self.num_minus(self.buf_pos + 1),
                 b'0' => self.num_zero(self.buf_pos + 1),
                 b'1'..=b'9' => self.num_int(self.buf_pos + 1),
@@ -482,6 +482,66 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
     /// Returns the kind of lexical error detected if the state machine is in an error state.
     pub fn err_kind(&self) -> Option<ErrorKind> {
         self.err_kind
+    }
+
+    fn lit_false(&mut self) -> Next {
+        const FALSE: [u8; 5] = *b"false";
+        const ALSE___: u64 = u32::from_le_bytes([FALSE[1], FALSE[2], FALSE[3], FALSE[4]]) as u64;
+        let start = self.buf_pos + 1;
+
+        if let Some(&w) = self
+            .buf
+            .as_ref()
+            .get(start..)
+            .and_then(<[u8]>::first_chunk::<8>)
+        {
+            let rem = u64::from_le_bytes(w);
+            if rem & 0xffffffff == ALSE___ && Self::is_boundary_byte((rem >> 32) as u8) {
+                return self.done(Token::LitFalse, start + 4);
+            }
+        }
+
+        self.lit(&FALSE[..], 0, Token::LitFalse, State::False)
+    }
+
+    fn lit_null(&mut self) -> Next {
+        const NULL: [u8; 4] = *b"null";
+        const ULL_: u32 = u32::from_le_bytes(NULL) >> 8;
+        let start = self.buf_pos + 1;
+
+        if let Some(&w) = self
+            .buf
+            .as_ref()
+            .get(start..)
+            .and_then(<[u8]>::first_chunk::<4>)
+        {
+            let rem = u32::from_le_bytes(w);
+            if rem & 0x00ffffff == ULL_ && Self::is_boundary_byte((rem >> 24) as u8) {
+                return self.done(Token::LitNull, start + 3);
+            }
+        }
+
+        self.lit(&NULL[..], 0, Token::LitNull, State::Null)
+    }
+
+    fn lit_true(&mut self) -> Next {
+        const TRUE: [u8; 4] = *b"true";
+        const RUE_: u32 = u32::from_le_bytes(TRUE) >> 8;
+        let start = self.buf_pos + 1;
+
+        if let Some(&w) = self
+            .buf
+            .as_ref()
+            .get(start..)
+            .and_then(<[u8]>::first_chunk::<4>)
+        {
+            let rem = u32::from_le_bytes(w);
+            if rem & 0x00ffffff == RUE_ && Self::is_boundary_byte((rem >> 24) as u8) {
+                return self.done(Token::LitTrue, start + 3);
+            }
+        }
+
+        self.lit(&TRUE[..], 0, Token::LitTrue, State::True)
     }
 
     fn lit<S>(&mut self, expect: &[u8], n: usize, token: Token, state: S) -> Next
@@ -1273,17 +1333,17 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
     fn is_boundary_byte(b: u8) -> bool {
         static TABLE: [bool; 256] = {
             let mut t = [false; 256];
-            t[b'{' as usize] = true;
-            t[b'}' as usize] = true;
-            t[b'[' as usize] = true;
-            t[b']' as usize] = true;
-            t[b':' as usize] = true;
-            t[b',' as usize] = true;
-            t[b'"' as usize] = true;
-            t[b' ' as usize] = true;
             t[b'\t' as usize] = true;
             t[b'\n' as usize] = true;
             t[b'\r' as usize] = true;
+            t[b' ' as usize] = true;
+            t[b'"' as usize] = true;
+            t[b',' as usize] = true;
+            t[b':' as usize] = true;
+            t[b'[' as usize] = true;
+            t[b']' as usize] = true;
+            t[b'{' as usize] = true;
+            t[b'}' as usize] = true;
             t
         };
 
@@ -3178,6 +3238,19 @@ mod tests {
                 "failed {} splits: {:?}",
                 failures.len(),
                 failures
+            );
+        }
+    }
+
+    #[test]
+    fn test_machine_is_boundary_byte() {
+        const BOUNDARIES: &[u8] = b"\t\n\r \",:[]{}";
+        for b in 0u8..=u8::MAX {
+            assert_eq!(
+                Machine::<&[u8]>::is_boundary_byte(b),
+                BOUNDARIES.contains(&b),
+                "byte {b:#04x} ({:?})",
+                b as char,
             );
         }
     }
