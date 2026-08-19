@@ -162,9 +162,8 @@ fn simd_value_inplace(b: &mut [u8]) {
 }
 
 // One fresh, throwaway mutable copy per logical run, byte-weighted identically to the timed loops.
-fn nocopy_buffers(datas: &[&Bytes], counts: &[usize]) -> Vec<Vec<u8>> {
-    datas
-        .iter()
+fn nocopy_buffers(bufs: &[&Bytes], counts: &[usize]) -> Vec<Vec<u8>> {
+    bufs.iter()
         .zip(counts)
         .flat_map(|(d, &cnt)| std::iter::repeat_with(|| d.to_vec()).take(cnt))
         .collect()
@@ -356,6 +355,23 @@ static SUBJECTS: &[(&str, Run)] = &[
     ),
 ];
 
+static LEGACIES: &[(&str, Run)] = &[
+    (
+        "bufjson/fixed/nocontent",
+        Run::Borrowed(run_fixed_nocontent),
+    ),
+    ("bufjson/fixed/content", Run::Borrowed(run_fixed_content)),
+    (
+        "bufjson/parser/nocontent",
+        Run::Borrowed(run_parser_nocontent),
+    ),
+    ("bufjson/parser/content", Run::Borrowed(run_parser_content)),
+    ("bufjson/pipe/nocontent", Run::Borrowed(run_pipe_nocontent)),
+    ("bufjson/pipe/content", Run::Borrowed(run_pipe_content)),
+    ("bufjson/read/nocontent", Run::Borrowed(run_read_nocontent)),
+    ("bufjson/read/content", Run::Borrowed(run_read_content)),
+];
+
 static FOCUSES: &[(&str, Focus)] = &[
     ("Lit", Focus::Lit),
     ("NumExp", Focus::NumExp),
@@ -385,11 +401,11 @@ fn subject_path(b: &Bench) -> String {
     }
 }
 
-fn bench_subject(group: &mut BenchmarkGroup<WallTime>, id: String, datas: &[&Bytes], run: Run) {
-    if datas.is_empty() {
+fn bench_subject(group: &mut BenchmarkGroup<WallTime>, id: &str, inputs: &[&Bytes], run: Run) {
+    if inputs.is_empty() {
         return;
     }
-    let lens: Vec<usize> = datas.iter().map(|d| d.len()).collect();
+    let lens: Vec<usize> = inputs.iter().map(|d| d.len()).collect();
     let counts = balanced_run_counts(&lens);
     let total: u64 = lens
         .iter()
@@ -399,14 +415,14 @@ fn bench_subject(group: &mut BenchmarkGroup<WallTime>, id: String, datas: &[&Byt
     group.throughput(Throughput::Bytes(total));
     group.bench_function(id, |bn| match run {
         Run::Borrowed(f) => bn.iter(|| {
-            for (&d, &cnt) in datas.iter().zip(&counts) {
+            for (&d, &cnt) in inputs.iter().zip(&counts) {
                 for _ in 0..cnt {
                     f(d);
                 }
             }
         }),
         Run::OwnedMut(f) => bn.iter_batched(
-            || nocopy_buffers(datas, &counts),
+            || nocopy_buffers(inputs, &counts),
             |mut bufs| {
                 for buf in &mut bufs {
                     f(buf);
@@ -423,12 +439,12 @@ fn bench_general(c: &mut Criterion) {
     group.sample_size(20);
 
     for b in GENERAL {
-        let datas: Vec<&Bytes> = INPUTS
+        let inputs: Vec<&Bytes> = INPUTS
             .iter()
             .filter(|&i| (b.supports)(i))
             .map(Input::bytes)
             .collect();
-        bench_subject(&mut group, subject_path(b), &datas, b.run);
+        bench_subject(&mut group, &subject_path(b), &inputs, b.run);
     }
 }
 
@@ -438,12 +454,17 @@ fn bench_focus(c: &mut Criterion) {
 
     for (subj_path, run) in SUBJECTS {
         for (foc_name, foc) in FOCUSES {
-            let datas: Vec<&Bytes> = INPUTS
+            let inputs: Vec<&Bytes> = INPUTS
                 .iter()
                 .filter(|i| i.focus().contains(foc))
                 .map(Input::bytes)
                 .collect();
-            bench_subject(&mut group, format!("{subj_path}/{foc_name}"), &datas, *run);
+            bench_subject(
+                &mut group,
+                &format!("{subj_path}/{foc_name}"),
+                &inputs,
+                *run,
+            );
         }
     }
 }
@@ -454,22 +475,49 @@ fn bench_token_density(c: &mut Criterion) {
 
     for (subj_path, run) in SUBJECTS {
         for bucket in ALL_DENSITY_BUCKETS {
-            let datas: Vec<&Bytes> = INPUTS
+            let inputs: Vec<&Bytes> = INPUTS
                 .iter()
                 .filter(|i| i.density_bucket() == bucket)
                 .map(Input::bytes)
                 .collect();
             bench_subject(
                 &mut group,
-                format!("{subj_path}/{}", bucket.label()),
-                &datas,
+                &format!("{subj_path}/{}", bucket.label()),
+                &inputs,
                 *run,
             );
         }
     }
 }
 
-criterion_group!(benches, bench_general, bench_focus, bench_token_density);
+fn bench_legacy(c: &mut Criterion) {
+    let mut group = c.benchmark_group("legacy");
+    group.sample_size(20);
+
+    for (legacy_path, run) in LEGACIES {
+        let inputs = [
+            INPUTS
+                .iter()
+                .find(|i| i.name() == "generated:default_with_space")
+                .expect("default with space input")
+                .bytes(),
+            INPUTS
+                .iter()
+                .find(|i| i.name() == "generated:default_no_space")
+                .expect("default no space input")
+                .bytes(),
+        ];
+        bench_subject(&mut group, legacy_path, &inputs, *run);
+    }
+}
+
+criterion_group!(
+    benches,
+    bench_general,
+    bench_focus,
+    bench_token_density,
+    bench_legacy
+);
 criterion_main!(benches);
 
 fn struson_consume_value(jr: &mut JsonStreamReader<&[u8]>) {
