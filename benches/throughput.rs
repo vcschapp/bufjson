@@ -14,7 +14,7 @@ use criterion::measurement::WallTime;
 use criterion::{
     BatchSize, BenchmarkGroup, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
-use input::{Focus, INPUTS, Input};
+use input::{ALL_DENSITY_BUCKETS, Focus, INPUTS, Input};
 use json_streaming::shared::JsonReadToken;
 use serde_json::Value;
 use std::convert::Infallible;
@@ -343,7 +343,7 @@ static GENERAL: &[Bench] = &[
     },
 ];
 
-static GRANULAR_SUBJECTS: &[(&str, Run)] = &[
+static SUBJECTS: &[(&str, Run)] = &[
     ("bufjson/fixed", Run::Borrowed(run_fixed_nocontent)),
     ("bufjson/parser", Run::Borrowed(run_parser_nocontent)),
     (
@@ -356,7 +356,7 @@ static GRANULAR_SUBJECTS: &[(&str, Run)] = &[
     ),
 ];
 
-static GRANULAR_FOCUSES: &[(&str, Focus)] = &[
+static FOCUSES: &[(&str, Focus)] = &[
     ("Lit", Focus::Lit),
     ("NumExp", Focus::NumExp),
     ("NumFloat", Focus::NumFloat),
@@ -432,12 +432,12 @@ fn bench_general(c: &mut Criterion) {
     }
 }
 
-fn bench_granular(c: &mut Criterion) {
-    let mut group = c.benchmark_group("granular");
+fn bench_focus(c: &mut Criterion) {
+    let mut group = c.benchmark_group("focus");
     group.sample_size(20);
 
-    for (subj_path, run) in GRANULAR_SUBJECTS {
-        for (foc_name, foc) in GRANULAR_FOCUSES {
+    for (subj_path, run) in SUBJECTS {
+        for (foc_name, foc) in FOCUSES {
             let datas: Vec<&Bytes> = INPUTS
                 .iter()
                 .filter(|i| i.focus().contains(foc))
@@ -448,7 +448,28 @@ fn bench_granular(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_general, bench_granular);
+fn bench_token_density(c: &mut Criterion) {
+    let mut group = c.benchmark_group("token_density");
+    group.sample_size(20);
+
+    for (subj_path, run) in SUBJECTS {
+        for bucket in ALL_DENSITY_BUCKETS {
+            let datas: Vec<&Bytes> = INPUTS
+                .iter()
+                .filter(|i| i.density_bucket() == bucket)
+                .map(Input::bytes)
+                .collect();
+            bench_subject(
+                &mut group,
+                format!("{subj_path}/{}", bucket.label()),
+                &datas,
+                *run,
+            );
+        }
+    }
+}
+
+criterion_group!(benches, bench_general, bench_focus, bench_token_density);
 criterion_main!(benches);
 
 fn struson_consume_value(jr: &mut JsonStreamReader<&[u8]>) {
