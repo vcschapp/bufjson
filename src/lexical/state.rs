@@ -2128,23 +2128,54 @@ mod tests {
     #[case(r#""\u0061b""#, Token::Str, true)]
     #[case(r#""\uD800\uDC00a""#, Token::Str, true)]
     #[case(r#""hello\nworld""#, Token::Str, true)]
-    #[case(r#""swar-64""#, Token::Str, false)] // 64-bit SWAR one word → close quote at offset 7 (last byte of word 0)
-    #[case(r#""swar-64.""#, Token::Str, false)] // 64-bit SWAR one word with scalar tail → close quote at offset 8
-    #[case(r#""swar-64........""#, Token::Str, false)] // 64-bit SWAR two words → close quote at offset 15 (last byte of word 1)
-    #[case(r#""swar-64.........""#, Token::Str, false)] // 64-bit SWAR two words with scalar tail → close quote at offset 16
-    #[case(r#""swar-64.........simd-128.......""#, Token::Str, false)] // 64-bit SWAR, two words, then 128-bit SIMD, one vector → close quote at offset 31
-    #[case(r#""swar-64.........simd-128........""#, Token::Str, false)]
+    // 64-bit SWAR one word → close quote at offset 7 (last byte of word 0)
+    #[case(r#""swar-64""#, Token::Str, false)]
+    // 64-bit SWAR one word with scalar tail → close quote at offset 8
+    #[case(r#""swar-64.""#, Token::Str, false)]
+    // 64-bit SWAR two words → close quote at offset 15 (last byte of word 1)
+    #[case(r#""swar-64........""#, Token::Str, false)]
+    // 64-bit SWAR two words with scalar tail → close quote at offset 16
+    #[case(r#""swar-64.........""#, Token::Str, false)]
+    // 64-bit SWAR, two words, then 128-bit SIMD, one vector → close quote at offset 31
+    #[case(r#""swar-64.........simd-128.......""#, Token::Str, false)]
     // 64-bit SWAR, two words, then 128-bit SIMD, one vector, then scalar tail → close quote at offset 32
+    #[case(r#""swar-64.........simd-128........""#, Token::Str, false)]
+    // 64-bit SWAR, two words, then 256-bit SIMD, one vector → close quote at offset 47
     #[case(
         r#""swar-64.........simd-256.......................""#,
         Token::Str,
         false
-    )] // 64-bit SWAR, two words, then 256-bit SIMD, one vector → close quote at offset 47
+    )]
+    // 64-bit SWAR, two words / 256-bit SIMD, one vector / scalar tail → close quote at offset 48
     #[case(
         r#""swar-64.........simd-256........................""#,
         Token::Str,
         false
-    )] // 64-bit SWAR, two words / 256-bit SIMD, one vector / scalar tail → close quote at offset 48
+    )]
+    // 64-bit SWAR one word → ß (c3 9f) lead at offset 7 (last byte of word 0; continuation falls into slow path)
+    #[case("\"swar-64\u{df}\"", Token::Str, false)]
+    // 64-bit SWAR one word with scalar tail → ß (c3 9f) lead at offset 8
+    #[case("\"swar-64.\u{df}\"", Token::Str, false)]
+    // 64-bit SWAR two words → ß (c3 9f) lead at offset 15 (last byte of word 1; continuation falls into slow path)
+    #[case("\"swar-64........\u{df}\"", Token::Str, false)]
+    // 64-bit SWAR two words with scalar tail → ß (c3 9f) lead at offset 16
+    #[case("\"swar-64.........\u{df}\"", Token::Str, false)]
+    // 64-bit SWAR, two words, then 128-bit SIMD, one vector → U+40000 (f1 80 80 80) lead at offset 31 (continuations fall into slow path)
+    #[case("\"swar-64.........simd-128.......\u{40000}\"", Token::Str, false)]
+    // 64-bit SWAR, two words, then 128-bit SIMD, one vector, then scalar tail → U+40000 (f1 80 80 80) lead at offset 32
+    #[case("\"swar-64.........simd-128........\u{40000}\"", Token::Str, false)]
+    // 64-bit SWAR, two words, then 256-bit SIMD, one vector → U+40000 (f1 80 80 80) lead at offset 47 (continuations fall into slow path)
+    #[case(
+        "\"swar-64.........simd-256.......................\u{40000}\"",
+        Token::Str,
+        false
+    )]
+    // 64-bit SWAR, two words / 256-bit SIMD, one vector / scalar tail → U+40000 (f1 80 80 80) lead at offset 48
+    #[case(
+        "\"swar-64.........simd-256........................\u{40000}\"",
+        Token::Str,
+        false
+    )]
     #[case("\"\u{0080}\"", Token::Str, false)] // c2 80 — lowest 2-byte
     #[case("\"\u{00e9}\"", Token::Str, false)] // c3 a9 — é
     #[case("\"\u{07ff}\"", Token::Str, false)] // df bf — highest 2-byte
