@@ -2042,11 +2042,7 @@ mod tests {
     ) {
         let mut failures = Vec::new();
         for split in CANONICAL_SPLITS.iter().copied() {
-            eprintln!("STARTING SPLIT {split:?} FOR INPUT {input}...\n");
-
             let items = batch(input, split);
-
-            eprintln!("ITEMS = {items:?}\n");
 
             if items.len() != 2 {
                 eprintln!(
@@ -2229,6 +2225,7 @@ mod tests {
     #[case("false \r\n", T::t(Token::LitFalse), T::t(Token::White).pos(5, 1, 6), 2, 1)]
     #[case("false \n\r", T::t(Token::LitFalse), T::t(Token::White).pos(5, 1, 6), 3, 1)]
     #[case(r#"false"""#, T::t(Token::LitFalse), T::t(Token::Str).pos(5, 1, 6), 1, 8)]
+    #[case(r#"false"false""#, T::t(Token::LitFalse), T::t(Token::Str).pos(5, 1, 6), 1, 13)]
     // =============================================================================================
     // Literal `null` followed by something...
     // =============================================================================================
@@ -3187,59 +3184,122 @@ mod tests {
         #[case] expect: char,
         #[case] expect_token: Token,
     ) {
-        let bad_chars = &[
+        // Bad character to be detected by the lexer.
+        const BAD_CHARS: [u8; 17] = [
             b'[', b']', b':', b'{', b'}', b',', b'"', b'\\', b'$', b' ', b'\0', b'\t', b'A', b'x',
             b'X', b'0', b'9',
         ];
-        let mut buf = Vec::with_capacity(input.len() + 1);
+        // Padding after the bad character to ensure SWAR paths are exercised.
+        const PAD: [&str; 10] = [
+            "", " ", "a", "bb", "ccc", "dddd", "eeeee", "ffffff", "ggggggg", "hhhhhhhh",
+        ];
+        let mut buf = Vec::with_capacity(input.len() + 10);
         buf.extend_from_slice(input.as_bytes());
         buf.push(b'_');
 
-        for actual in bad_chars.into_iter() {
-            buf[input.len()] = *actual;
+        for actual in BAD_CHARS.into_iter() {
+            buf[input.len()] = actual;
+            for pad in PAD.iter() {
+                buf.truncate(input.len() + 1);
+                buf.extend(pad.as_bytes());
+                eprintln!("buf = {buf:?} | {}", str::from_utf8(&buf).unwrap());
 
-            let mut failures = Vec::new();
-            for split in CANONICAL_SPLITS.iter().copied() {
-                eprintln!("STARTING SPLIT {split:?} FOR INPUT {buf:?}...\n");
+                let mut failures = Vec::new();
+                for split in CANONICAL_SPLITS.iter().copied() {
+                    eprintln!("STARTING SPLIT {split:?} FOR INPUT {buf:?}...\n");
 
-                let items = batch(&buf, split);
+                    let items = batch(&buf, split);
 
-                eprintln!("ITEMS = {items:?}\n");
+                    eprintln!("ITEMS = {items:?}\n");
 
-                if items.len() != 1 {
-                    eprintln!(
-                        "ITEMS LENGTH DISAGREEMENT AT SPLIT {split:?}: expected 1 item, got {}: {items:?}\n",
-                        items.len()
-                    );
-                    failures.push(split);
-                    continue;
+                    if items.len() != 1 {
+                        eprintln!(
+                            "ITEMS LENGTH DISAGREEMENT AT SPLIT {split:?}: expected 1 item, got {}: {items:?}\n",
+                            items.len()
+                        );
+                        failures.push(split);
+                        continue;
+                    }
+
+                    let item = &items[0];
+                    let err_kind = ErrorKind::UnexpectedByte {
+                        token: Some(expect_token),
+                        expect: Expect::Char(expect),
+                        actual,
+                    };
+                    let err_pos = Pos::new(input.len(), 1, input.len() + 1);
+                    if !item.matches_err(Pos::default(), err_pos, err_kind) {
+                        let diff = item.diff_err(Pos::default(), err_pos, err_kind);
+                        eprintln!(
+                            "MAIN ITEM DIFFERENCES FOR INPUT {input} AT SPLIT {split:?}:\n    - {}\n",
+                            diff.join("\n    - ")
+                        );
+                        failures.push(split);
+                        continue;
+                    }
                 }
 
-                let item = &items[0];
-                let err_kind = ErrorKind::UnexpectedByte {
-                    token: Some(expect_token),
-                    expect: Expect::Char(expect),
-                    actual: *actual,
-                };
-                let err_pos = Pos::new(input.len(), 1, buf.len());
-                if !item.matches_err(Pos::default(), err_pos, err_kind) {
-                    let diff = item.diff_err(Pos::default(), err_pos, err_kind);
-                    eprintln!(
-                        "MAIN ITEM DIFFERENCES FOR INPUT {input} AT SPLIT {split:?}:\n    - {}\n",
-                        diff.join("\n    - ")
-                    );
-                    failures.push(split);
-                    continue;
-                }
+                assert!(
+                    failures.is_empty(),
+                    "failed {} splits: {:?}",
+                    failures.len(),
+                    failures
+                );
+            }
+        }
+    }
+
+    #[rstest]
+    #[case("falsep", Token::LitFalse, 5)]
+    #[case("false____", Token::LitFalse, 5)]
+    #[case("nullE", Token::LitNull, 4)]
+    #[case("true0", Token::LitTrue, 4)]
+    fn test_machine_single_error_expect_boundary(
+        #[case] input: &str,
+        #[case] expect_token: Token,
+        #[case] expect_offset: usize,
+    ) {
+        let mut failures = Vec::new();
+        for split in CANONICAL_SPLITS.iter().copied() {
+            eprintln!("STARTING SPLIT {split:?} FOR INPUT {input}...\n");
+
+            let items = batch(input, split);
+
+            eprintln!("ITEMS = {items:?}\n");
+
+            if items.len() != 1 {
+                eprintln!(
+                    "ITEMS LENGTH DISAGREEMENT AT SPLIT {split:?}: expected 1 item, got {}: {items:?}\n",
+                    items.len()
+                );
+                failures.push(split);
+                continue;
             }
 
-            assert!(
-                failures.is_empty(),
-                "failed {} splits: {:?}",
-                failures.len(),
-                failures
-            );
+            let item = &items[0];
+            let err_kind = ErrorKind::UnexpectedByte {
+                token: Some(expect_token),
+                expect: Expect::Boundary,
+                actual: input.as_bytes()[expect_offset],
+            };
+            let err_pos = Pos::new(expect_offset, 1, expect_offset + 1);
+            if !item.matches_err(Pos::default(), err_pos, err_kind) {
+                let diff = item.diff_err(Pos::default(), err_pos, err_kind);
+                eprintln!(
+                    "MAIN ITEM DIFFERENCES FOR INPUT {input} AT SPLIT {split:?}:\n    - {}\n",
+                    diff.join("\n    - ")
+                );
+                failures.push(split);
+                continue;
+            }
         }
+
+        assert!(
+            failures.is_empty(),
+            "failed {} splits: {:?}",
+            failures.len(),
+            failures
+        );
     }
 
     #[test]

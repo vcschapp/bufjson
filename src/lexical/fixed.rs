@@ -1999,6 +1999,7 @@ mod tests {
     #[case("false \r\n", T::t(Token::LitFalse, "false"), T::t(Token::White, " \r\n").pos(5, 1, 6), 2, 1)]
     #[case("false \n\r", T::t(Token::LitFalse, "false"), T::t(Token::White, " \n\r").pos(5, 1, 6), 3, 1)]
     #[case(r#"false"""#, T::t(Token::LitFalse, "false"), T::t(Token::Str, r#""""#).pos(5, 1, 6), 1, 8)]
+    #[case(r#"false"false""#, T::t(Token::LitFalse, "false"), T::t(Token::Str, r#""false""#).pos(5, 1, 6), 1, 13)]
     // =============================================================================================
     // Literal `null` followed by something...
     // =============================================================================================
@@ -2887,12 +2888,14 @@ mod tests {
     }
 
     #[rstest]
-    #[case("falsep", Token::LitFalse)]
-    #[case("nullE", Token::LitNull)]
-    #[case("true0", Token::LitTrue)]
+    #[case("falsep", Token::LitFalse, 5)]
+    #[case("false____", Token::LitFalse, 5)]
+    #[case("nullE", Token::LitNull, 4)]
+    #[case("true0", Token::LitTrue, 4)]
     fn test_analyzer_single_error_expect_boundary(
         #[case] input: &str,
         #[case] expect_token: Token,
+        #[case] expect_offset: usize,
     ) {
         let actual = input.as_bytes().last().copied().unwrap();
         let mut an = FixedAnalyzer::new(input.as_bytes());
@@ -2911,9 +2914,9 @@ mod tests {
         );
         assert_eq!(
             Pos {
-                offset: input.len() - 1,
+                offset: expect_offset,
                 line: 1,
-                col: input.len(),
+                col: expect_offset + 1,
             },
             *err.pos(),
         );
