@@ -40,13 +40,20 @@ smallvec = { version = "^1.15.1", optional = true }
 wide = { version = "^1.6.0", default-features = false, optional = true }
 
 [dev-dependencies]
+# Needed by every unit test target (`cargo test --lib`), including wasm.
+rstest = "^0.26.1"
+
+# Bench-, comparison-, and doctest-only dev-dependencies. None are used by the library unit tests,
+# and several cannot build for wasm (criterion -> rayon; simd-json -> native SIMD), so they are
+# excluded from wasm targets. The SIMD matrix wasm CI job runs `cargo test --lib`, which doesn't
+# use any of these.
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 criterion = "0.5"
 doc-comment = "^0.3.3"
 jsn = "^0.14.0"
 json-streaming = { version = "^1.0.3", features = ["tokio"] }
 rand = "^0.10.0"
 rand_distr = "^0.6.0"
-rstest = "^0.26.1"
 serde = "^1.0"
 serde_json = "^1.0.49"
 sha2 = "^0.10"

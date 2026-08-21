@@ -52,7 +52,7 @@ jobs:
         with:
           target: wasm32-wasip1
       - uses: bytecodealliance/actions/wasmtime/setup@v1
-      - run: cargo test --no-default-features --features std,simd --target wasm32-wasip1
+      - run: cargo test --lib --no-default-features --features std,simd --target wasm32-wasip1
 
   # dynamic -> SSE2: NOT reachable on hosted runners (all are AVX2-capable, and simd_dyn resolves
   # via runtime std::is_x86_feature_detected!). Opt-in QEMU emulation with a no-AVX2 CPU model.
