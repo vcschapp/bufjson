@@ -52,7 +52,11 @@ jobs:
         with:
           target: wasm32-wasip1
       - uses: bytecodealliance/actions/wasmtime/setup@v1
-      - run: cargo test --lib --no-default-features --features std,simd --target wasm32-wasip1
+      # wasm32-wasip1 defaults to panic=abort, so #[should_panic] tests abort the whole process when
+      # they work correctly, which in turn causes the whole WASM test run to fail. To work around
+      # this, we only run the SIMD/SWAR kernel tests, which contain no #[should_panic] tests. They
+      # exercise the wasm simd128 u8x16 kernel via `wide`.
+      - run: cargo test --lib --no-default-features --features std,simd --target wasm32-wasip1 -- lexical::state::swar lexical::state::simd
 
   # dynamic -> SSE2: NOT reachable on hosted runners (all are AVX2-capable, and simd_dyn resolves
   # via runtime std::is_x86_feature_detected!). Opt-in QEMU emulation with a no-AVX2 CPU model.
