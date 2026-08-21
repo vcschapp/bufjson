@@ -58,7 +58,8 @@ tokio = { version = "^1.50.0", features = ["macros", "rt", "sync"] }
 
 [dev-dependencies.bufjson]
 path = "."
-features = ["pointer", "pipe", "read"]
+default-features = false
+features = ["pointer", "pipe", "read", "std"]
 
 [[bench]]
 name = "throughput"

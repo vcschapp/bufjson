@@ -1,0 +1,69 @@
+name: SIMD Matrix
+on:
+  pull_request:
+    types: [opened, synchronize, edited, enqueued]
+  push:
+  workflow_dispatch:
+
+jobs:
+  x86_64:
+    runs-on: ubuntu-latest
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: static AVX2 (u8x32)
+            args: --no-default-features --features std,simd
+            rustflags: -C target-feature=+avx2
+          - name: static SSE2 (u8x16)
+            args: --no-default-features --features std,simd
+            rustflags: -C target-feature=-avx2      # SSE2 is baseline on x86_64
+          - name: dynamic -> AVX2 (default features)
+            args: ""
+            rustflags: ""
+          - name: no SIMD (scalar SWAR)
+            args: --no-default-features --features std
+            rustflags: ""
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo test ${{ matrix.args }}
+
+  neon:
+    runs-on: ubuntu-24.04-arm
+    name: NEON (aarch64 u8x16)
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo test          # default features; aarch64 dispatch arm -> u8x16 NEON
+
+  wasm:
+    runs-on: ubuntu-latest
+    name: WASM simd128 (u8x16)
+    env:
+      RUSTFLAGS: -C target-feature=+simd128
+      CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-wasip1
+      - uses: bytecodealliance/actions/wasmtime/setup@v1
+      - run: cargo test --no-default-features --features std,simd --target wasm32-wasip1
+
+  # dynamic -> SSE2: NOT reachable on hosted runners (all are AVX2-capable, and simd_dyn resolves
+  # via runtime std::is_x86_feature_detected!). Opt-in QEMU emulation with a no-AVX2 CPU model.
+  dynamic-sse2-qemu:
+    runs-on: ubuntu-latest
+    name: dynamic -> SSE2 (QEMU, no-AVX2 CPU)
+    if: github.event_name == 'workflow_dispatch'
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: qemu-x86_64 -cpu Nehalem
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: sudo apt-get update && sudo apt-get install -y qemu-user
+      - run: cargo test          # runtime detect finds SSE2 (no AVX2) -> u8x16 kernel

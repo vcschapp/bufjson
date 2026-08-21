@@ -1654,6 +1654,26 @@ mod swar {
 
         i
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::str_boring;
+
+        #[test]
+        fn finds_interesting_at_first_word_boundary() {
+            assert_eq!(str_boring(b"aaaaaaa\"", 0, 8), 7);
+        }
+
+        #[test]
+        fn finds_interesting_in_second_word() {
+            assert_eq!(str_boring(b"aaaaaaaaaaaaaaa\"", 0, 16), 15);
+        }
+
+        #[test]
+        fn advances_past_clean_word_and_leaves_short_tail() {
+            assert_eq!(str_boring(b"aaaaaaaa\"", 0, 9), 8);
+        }
+    }
 }
 
 // Runtime SIMD dispatch. Compiled ONLY on x86 -- the sole target where the best available kernel
@@ -1704,6 +1724,45 @@ mod simd_dyn {
     #[target_feature(enable = "sse2")]
     unsafe fn str_boring_simd_u8x16(buf: &[u8], i: usize) -> usize {
         unsafe { super::simd::str_boring::<wide::u8x16>(buf, i) }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn swar_tier_ok() {
+            assert_eq!(str_boring_swar(b"aaaaaaa\"", 0), 7);
+        }
+
+        #[test]
+        fn sse2_tier_when_present() {
+            // All x86_64 CPUs have SSE2, but guard for 32-bit architectures.
+            if std::is_x86_feature_detected!("sse2") {
+                let mut buf = [b'a'; 16];
+                buf[15] = b'"';
+
+                assert_eq!(unsafe { str_boring_simd_u8x16(&buf, 0) }, 15);
+            }
+        }
+
+        #[test]
+        fn avx2_tier_when_present() {
+            if std::is_x86_feature_detected!("avx2") {
+                let mut buf = [b'a'; 32];
+                buf[31] = b'"';
+
+                assert_eq!(unsafe { str_boring_simd_u8x32(&buf, 0) }, 31);
+            }
+        }
+
+        #[test]
+        fn resolver_matches_running_cpu() {
+            let mut buf = [b'a'; 32];
+            buf[31] = b'"';
+
+            assert_eq!(str_boring(&buf, 0), 31);
+        }
     }
 }
 
@@ -1770,6 +1829,45 @@ mod simd {
         }
 
         i
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{ByteVec, str_boring};
+        use wide::{u8x16, u8x32};
+
+        #[test]
+        fn u8x16_kernel_boundaries() {
+            probe::<u8x16>();
+        }
+
+        #[test]
+        fn u8x32_kernel_boundaries() {
+            probe::<u8x32>();
+        }
+
+        // This always works when the `simd` feature is on because `wide` uses real SIMD where the
+        // target supports it and scalar emulation otherwise.
+        fn probe<V: ByteVec>() {
+            let mut buf = [b'a'; 128];
+
+            // Interesting byte as the LAST lane of the first full vector.
+            buf[V::N - 1] = b'"';
+            assert_eq!(unsafe { str_boring::<V>(&buf[..V::N], 0) }, V::N - 1);
+            buf[V::N - 1] = b'a';
+
+            // One clean vector, then a lone tail byte: advance by V::N and stop.
+            buf[V::N] = b'"';
+            assert_eq!(unsafe { str_boring::<V>(&buf[..V::N + 1], 0) }, V::N);
+            buf[V::N] = b'a';
+
+            // Interesting byte in the SECOND vector's last lane.
+            buf[2 * V::N - 1] = b'"';
+            assert_eq!(
+                unsafe { str_boring::<V>(&buf[..2 * V::N], 0) },
+                2 * V::N - 1
+            );
+        }
     }
 }
 
@@ -2030,6 +2128,23 @@ mod tests {
     #[case(r#""\u0061b""#, Token::Str, true)]
     #[case(r#""\uD800\uDC00a""#, Token::Str, true)]
     #[case(r#""hello\nworld""#, Token::Str, true)]
+    #[case(r#""swar-64""#, Token::Str, false)] // 64-bit SWAR one word → close quote at offset 7 (last byte of word 0)
+    #[case(r#""swar-64.""#, Token::Str, false)] // 64-bit SWAR one word with scalar tail → close quote at offset 8
+    #[case(r#""swar-64........""#, Token::Str, false)] // 64-bit SWAR two words → close quote at offset 15 (last byte of word 1)
+    #[case(r#""swar-64.........""#, Token::Str, false)] // 64-bit SWAR two words with scalar tail → close quote at offset 16
+    #[case(r#""swar-64.........simd-128.......""#, Token::Str, false)] // 64-bit SWAR, two words, then 128-bit SIMD, one vector → close quote at offset 31
+    #[case(r#""swar-64.........simd-128........""#, Token::Str, false)]
+    // 64-bit SWAR, two words, then 128-bit SIMD, one vector, then scalar tail → close quote at offset 32
+    #[case(
+        r#""swar-64.........simd-256.......................""#,
+        Token::Str,
+        false
+    )] // 64-bit SWAR, two words, then 256-bit SIMD, one vector → close quote at offset 47
+    #[case(
+        r#""swar-64.........simd-256........................""#,
+        Token::Str,
+        false
+    )] // 64-bit SWAR, two words / 256-bit SIMD, one vector / scalar tail → close quote at offset 48
     #[case(" ", Token::White, false)]
     #[case("\t", Token::White, false)]
     #[case("  ", Token::White, false)]
@@ -2701,41 +2816,55 @@ mod tests {
     }
 
     #[rstest]
-    #[case(&[0xc2, 0xc0], 1)]
-    #[case(&[0xdf, 0xd0], 1)]
-    #[case(&[0xe0, 0x7f, 0x80], 1)]
-    #[case(&[0xe0, 0x80, 0x80], 1)]
-    #[case(&[0xe0, 0xc0, 0x80], 1)]
-    #[case(&[0xed, 0xa0, 0x80], 1)]
-    #[case(&[0xed, 0xa0, 0xbf], 1)]
-    #[case(&[0xed, 0xb0, 0x80], 1)]
-    #[case(&[0xed, 0xb0, 0xbf], 1)]
-    #[case(&[0xef, 0x7f, 0x80], 1)]
-    #[case(&[0xef, 0xc0, 0x80], 1)]
-    #[case(&[0xe0, 0x80, 0x7f], 2)]
-    #[case(&[0xe0, 0x80, 0xc0], 2)]
-    #[case(&[0xe0, 0xbf, 0x7f], 2)]
-    #[case(&[0xe0, 0xbf, 0xc0], 2)]
-    #[case(&[0xf0, 0x7f, 0x80, 0x80], 1)]
-    #[case(&[0xf0, 0x80, 0x80, 0x80], 1)]
-    #[case(&[0xf0, 0xc0, 0x80, 0x80], 1)]
-    #[case(&[0xf4, 0x7f, 0x80, 0x80], 1)]
-    #[case(&[0xf4, 0xc0, 0x80, 0x80], 1)]
-    #[case(&[0xf4, 0x90, 0x80, 0x80], 1)]
-    #[case(&[0xf0, 0x80, 0x7f, 0x80], 2)]
-    #[case(&[0xf0, 0x80, 0xc0, 0x80], 2)]
-    #[case(&[0xf0, 0xbf, 0x7f, 0x80], 2)]
-    #[case(&[0xf0, 0xbf, 0xc0, 0x80], 2)]
-    #[case(&[0xf1, 0x80, 0xff, 0x80], 2)]
-    #[case(&[0xf0, 0x80, 0x80, 0x7f], 3)]
-    #[case(&[0xf0, 0x80, 0x80, 0xc0], 3)]
-    #[case(&[0xf0, 0xbf, 0xbf, 0x7f], 3)]
-    #[case(&[0xf0, 0xbf, 0xbf, 0xc0], 3)]
-    #[case(&[0xf1, 0x80, 0x80, 0xff], 3)]
-    fn test_machine_single_error_bad_utf8_cont_byte(#[case] input: &[u8], #[case] offset: u8) {
-        // Construct input buffer.
-        let mut buf = Vec::with_capacity(input.len() + 1);
+    #[case(&[0xc2, 0xc0], 1, 0)]
+    #[case(&[0xdf, 0xd0], 1, 0)]
+    #[case(&[0xe0, 0x7f, 0x80], 1, 0)]
+    #[case(&[0xe0, 0x80, 0x80], 1, 0)]
+    #[case(&[0xe0, 0xc0, 0x80], 1, 0)]
+    #[case(&[0xed, 0xa0, 0x80], 1, 0)]
+    #[case(&[0xed, 0xa0, 0xbf], 1, 0)]
+    #[case(&[0xed, 0xb0, 0x80], 1, 0)]
+    #[case(&[0xed, 0xb0, 0xbf], 1, 0)]
+    #[case(&[0xef, 0x7f, 0x80], 1, 0)]
+    #[case(&[0xef, 0xc0, 0x80], 1, 0)]
+    #[case(&[0xe0, 0x80, 0x7f], 2, 0)]
+    #[case(&[0xe0, 0x80, 0xc0], 2, 0)]
+    #[case(&[0xe0, 0xbf, 0x7f], 2, 0)]
+    #[case(&[0xe0, 0xbf, 0xc0], 2, 0)]
+    #[case(&[0xf0, 0x7f, 0x80, 0x80], 1, 0)]
+    #[case(&[0xf0, 0x80, 0x80, 0x80], 1, 0)]
+    #[case(&[0xf0, 0xc0, 0x80, 0x80], 1, 0)]
+    #[case(&[0xf4, 0x7f, 0x80, 0x80], 1, 0)]
+    #[case(&[0xf4, 0xc0, 0x80, 0x80], 1, 0)]
+    #[case(&[0xf4, 0x90, 0x80, 0x80], 1, 0)]
+    #[case(&[0xf0, 0x80, 0x7f, 0x80], 2, 0)]
+    #[case(&[0xf0, 0x80, 0xc0, 0x80], 2, 0)]
+    #[case(&[0xf0, 0xbf, 0x7f, 0x80], 2, 0)]
+    #[case(&[0xf0, 0xbf, 0xc0, 0x80], 2, 0)]
+    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 0)]
+    #[case(&[0xf0, 0x80, 0x80, 0x7f], 3, 0)]
+    #[case(&[0xf0, 0x80, 0x80, 0xc0], 3, 0)]
+    #[case(&[0xf0, 0xbf, 0xbf, 0x7f], 3, 0)]
+    #[case(&[0xf0, 0xbf, 0xbf, 0xc0], 3, 0)]
+    #[case(&[0xf1, 0x80, 0x80, 0xff], 3, 0)]
+    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 7)]
+    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 8)]
+    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 15)]
+    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 16)]
+    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 31)]
+    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 32)]
+    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 47)]
+    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 48)]
+    fn test_machine_single_error_bad_utf8_cont_byte(
+        #[case] input: &[u8],
+        #[case] offset: u8,
+        #[case] pad: usize,
+    ) {
+        // Construct input buffer with `pad` leading boring bytes so the bad sequence starts at a
+        // chosen content offset (to exercise SWAR/SIMD scan boundaries).
+        let mut buf = Vec::with_capacity(1 + pad + input.len());
         buf.push(b'"');
+        buf.extend(core::iter::repeat(b'a').take(pad));
         buf.extend_from_slice(input);
 
         // Run test.
@@ -2762,7 +2891,7 @@ mod tests {
                 offset,
                 value: input[offset as usize],
             };
-            let err_pos = Pos::new(1, 1, 2);
+            let err_pos = Pos::new(1 + pad, 1, 2 + pad);
             if !item.matches_err(Pos::default(), err_pos, err_kind) {
                 let diff = item.diff_err(Pos::default(), err_pos, err_kind);
                 eprintln!(
@@ -3033,6 +3162,20 @@ mod tests {
     #[case(r#"\ud800\u0:"#, Expect::UnicodeEscHexDigit)]
     #[case(r#"\ud800\u00:"#, Expect::UnicodeEscHexDigit)]
     #[case(r#"\ud800\u000:"#, Expect::UnicodeEscHexDigit)]
+    #[case(r#"aaaaaaa\x"#, Expect::EscChar)] // backslash at index 7  (64-bit SWAR word 0)
+    #[case(r#"aaaaaaaa\x"#, Expect::EscChar)] // backslash at index 8 (scalar tail)
+    #[case(r#"aaaaaaaaaaaaaaa\x"#, Expect::EscChar)] // backslash at index 15 (64-bit SWAR word 1)
+    #[case(r#"aaaaaaaaaaaaaaaa\x"#, Expect::EscChar)] // backslash at index 16 (scalar tail)
+    #[case(r#"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x"#, Expect::EscChar)] // backslash at index 31 (128-bit SIMD)
+    #[case(r#"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x"#, Expect::EscChar)] // backslash at index 32 (scalar tail)
+    #[case(
+        r#"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x"#,
+        Expect::EscChar
+    )] // backslash at index 47 (256-bit SIMD)
+    #[case(
+        r#"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x"#,
+        Expect::EscChar
+    )] // backslash at index 48 (scalar tail)
     fn test_machine_single_error_bad_escape(#[case] input: &str, #[case] expect: Expect) {
         let mut s = String::with_capacity(1 + input.len());
         s.push('"');
@@ -3115,8 +3258,23 @@ mod tests {
     #[case::rs(0x1E)]
     #[case::us(0x1F)]
     fn test_machine_single_error_control_char(#[case] ctrl: u8) {
-        static PREFIXES: [&str; 6] = ["", "a", r#"\u1234"#, "café", "𝄞", "🧶"];
-        static COLS: [usize; 6] = [0, 1, 6, 4, 1, 1];
+        static PREFIXES: [&str; 14] = [
+            "",
+            "a",
+            r#"\u1234"#,
+            "café",
+            "𝄞",
+            "🧶",
+            "aaaaaaa",                                          // 7
+            "aaaaaaaa",                                         // 8
+            "aaaaaaaaaaaaaaa",                                  // 15
+            "aaaaaaaaaaaaaaaa",                                 // 16
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",                  // 31
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",                 // 32
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",  // 47
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // 48
+        ];
+        static COLS: [usize; 14] = [0, 1, 6, 4, 1, 1, 7, 8, 15, 16, 31, 32, 47, 48];
         let mut s: String = '"'.into();
 
         for (prefix, cols) in PREFIXES.iter().zip(COLS.iter().copied()) {
