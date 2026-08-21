@@ -1476,6 +1476,15 @@ mod tests {
     #[case(r#""\u0061b""#, Token::Str, Some(r#""ab""#))]
     #[case(r#""\uD800\uDC00a""#, Token::Str, Some("\"\u{10000}a\""))]
     #[case(r#""hello\nworld""#, Token::Str, Some("\"hello\nworld\""))]
+    #[case("\"\u{0080}\"", Token::Str, None)] // c2 80 — lowest 2-byte
+    #[case("\"\u{00e9}\"", Token::Str, None)] // c3 a9 — é
+    #[case("\"\u{07ff}\"", Token::Str, None)] // df bf — highest 2-byte
+    #[case("\"\u{0800}\"", Token::Str, None)] // e0 a0 80 — e0 arm (lowest 3-byte)
+    #[case("\"\u{d7ff}\"", Token::Str, None)] // ed 9f bf — ed arm (highest pre-surrogate)
+    #[case("\"\u{ffff}\"", Token::Str, None)] // ef bf bf — general arm (highest 3-byte)
+    #[case("\"\u{40000}\"", Token::Str, None)] // f1 80 80 80 — 4-byte lead 0xf1
+    #[case("\"\u{80000}\"", Token::Str, None)] // f2 80 80 80 — 4-byte lead 0xf2
+    #[case("\"\u{c0000}\"", Token::Str, None)] // f3 80 80 80 — 4-byte lead 0xf3
     #[case(" ", Token::White, None)]
     #[case("\t", Token::White, None)]
     #[case("  ", Token::White, None)]
@@ -1508,7 +1517,7 @@ mod tests {
                 Pos {
                     offset: input.len(),
                     line: 1,
-                    col: input.len() + 1
+                    col: input.chars().count() + 1
                 },
                 *an.pos()
             );
@@ -1518,7 +1527,7 @@ mod tests {
                 Pos {
                     offset: input.len(),
                     line: 1,
-                    col: input.len() + 1
+                    col: input.chars().count() + 1
                 },
                 *an.pos()
             );
@@ -1537,7 +1546,7 @@ mod tests {
                 Pos {
                     offset: input.len(),
                     line: 1,
-                    col: input.len() + 1
+                    col: input.chars().count() + 1
                 },
                 *an.pos()
             );
@@ -1547,7 +1556,7 @@ mod tests {
                 Pos {
                     offset: input.len(),
                     line: 1,
-                    col: input.len() + 1
+                    col: input.chars().count() + 1
                 },
                 *an.pos()
             );
@@ -1591,7 +1600,7 @@ mod tests {
             Pos {
                 offset: input.len(),
                 line: 1,
-                col: input.len() + 1
+                col: input.chars().count() + 1
             },
             *an.pos()
         );
@@ -1601,7 +1610,7 @@ mod tests {
             Pos {
                 offset: input.len(),
                 line: 1,
-                col: input.len() + 1
+                col: input.chars().count() + 1
             },
             *an.pos()
         );
@@ -2081,6 +2090,9 @@ mod tests {
     #[case(r#""""café""#, T::t(Token::Str, r#""""#), T::t(Token::Str, r#""café""#).pos(2, 1, 3), 1, 9)]
     #[case(r#""a""""#, T::t(Token::Str, r#""a""#), T::t(Token::Str, r#""""#).pos(3, 1, 4), 1, 6)]
     #[case(r#""€10""""#, T::t(Token::Str, r#""€10""#), T::t(Token::Str, r#""""#).pos(7, 1, 6), 1, 8)]
+    #[case("\"\u{40000}\":", T::t(Token::Str, "\"\u{40000}\""), T::t(Token::NameSep, ":").pos(6, 1, 4), 1, 5)] // f1 80 80 80
+    #[case("\"\u{80000}\"-0", T::t(Token::Str, "\"\u{80000}\""), T::t(Token::Num, "-0").pos(6, 1, 4), 1, 6)] // f2 80 80 80
+    #[case("\"\u{c0000}\"}", T::t(Token::Str, "\"\u{c0000}\""), T::t(Token::ObjEnd, "}").pos(6, 1, 4), 1, 5)]
     // =============================================================================================
     // Whitespace followed by something...
     // =============================================================================================

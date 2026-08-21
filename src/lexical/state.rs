@@ -2145,6 +2145,15 @@ mod tests {
         Token::Str,
         false
     )] // 64-bit SWAR, two words / 256-bit SIMD, one vector / scalar tail → close quote at offset 48
+    #[case("\"\u{0080}\"", Token::Str, false)] // c2 80 — lowest 2-byte
+    #[case("\"\u{00e9}\"", Token::Str, false)] // c3 a9 — é
+    #[case("\"\u{07ff}\"", Token::Str, false)] // df bf — highest 2-byte
+    #[case("\"\u{0800}\"", Token::Str, false)] // e0 a0 80 — e0 arm (lowest 3-byte)
+    #[case("\"\u{d7ff}\"", Token::Str, false)] // ed 9f bf — ed arm (highest pre-surrogate)
+    #[case("\"\u{ffff}\"", Token::Str, false)] // ef bf bf — general arm (highest 3-byte)
+    #[case("\"\u{40000}\"", Token::Str, false)] // f1 80 80 80 — 4-byte lead 0xf1
+    #[case("\"\u{80000}\"", Token::Str, false)] // f2 80 80 80 — 4-byte lead 0xf2
+    #[case("\"\u{c0000}\"", Token::Str, false)] // f3 80 80 80 — 4-byte lead 0xf3
     #[case(" ", Token::White, false)]
     #[case("\t", Token::White, false)]
     #[case("  ", Token::White, false)]
@@ -2180,7 +2189,7 @@ mod tests {
             }
 
             let second = &items[1];
-            let expect_eof_pos = Pos::new(input.len(), 1, input.len() + 1);
+            let expect_eof_pos = Pos::new(input.len(), 1, input.chars().count() + 1);
             if !second.matches_ok(Token::Eof, expect_eof_pos, "", false) {
                 let diff = second.diff_ok(Token::Eof, expect_eof_pos, "", false);
                 eprintln!(
@@ -2422,6 +2431,9 @@ mod tests {
     #[case(r#""""café""#, T::t(Token::Str), T::t(Token::Str).pos(2, 1, 3), 1, 9)]
     #[case(r#""a""""#, T::t(Token::Str), T::t(Token::Str).pos(3, 1, 4), 1, 6)]
     #[case(r#""€10""""#, T::t(Token::Str), T::t(Token::Str).pos(7, 1, 6), 1, 8)]
+    #[case("\"\u{40000}\":", T::t(Token::Str), T::t(Token::NameSep).pos(6, 1, 4), 1, 5)] // f1 80 80 80
+    #[case("\"\u{80000}\"-0", T::t(Token::Str), T::t(Token::Num).pos(6, 1, 4), 1, 6)] // f2 80 80 80
+    #[case("\"\u{c0000}\"}", T::t(Token::Str), T::t(Token::ObjEnd).pos(6, 1, 4), 1, 5)]
     // =============================================================================================
     // Whitespace followed by something...
     // =============================================================================================
