@@ -3645,7 +3645,7 @@ mod tests {
         }
     }
 
-    static CANONICAL_SPLITS: [Split; 14] = [
+    static CANONICAL_SPLITS: [Split; 20] = [
         Split::All(1),
         Split::All(2),
         Split::OddEven(1, 2),
@@ -3659,7 +3659,13 @@ mod tests {
         Split::OddEven(5, 2),
         Split::All(6),
         Split::All(7),
+        Split::All(8),
+        Split::All(9),
         Split::All(10),
+        Split::All(16),
+        Split::All(17),
+        Split::All(32),
+        Split::All(33),
     ];
 
     fn batch<'a, T: AsRef<[u8]> + ?Sized>(input: &'a T, split: Split) -> Vec<Item<'a>> {
