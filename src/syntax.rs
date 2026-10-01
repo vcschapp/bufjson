@@ -260,7 +260,11 @@ impl StructContext {
                     None
                 }
             }
-            StructContext::Heap(v) => v.pop().map(Into::into),
+            StructContext::Heap(v) => {
+                v.pop();
+
+                v.last().map(Into::into)
+            }
         }
     }
 
@@ -1744,7 +1748,7 @@ mod tests {
             assert_eq!(progress, iter.map(Into::into).collect::<Vec<_>>());
 
             let prev_ctx = ctx.clone();
-            ctx.pop();
+            assert_eq!(expect[..i].last().copied(), ctx.pop());
 
             assert_eq!(ctx, ctx);
             assert_ne!(prev_ctx, ctx);
@@ -2215,6 +2219,39 @@ mod tests {
         assert_eq!(expect_token, parser.next_end());
         assert_eq!(expect_level, parser.level());
         assert_eq!(expect_next, parser.next());
+    }
+
+    #[rstest]
+    #[case::inline_arr_valid(NUM_INLINED_LEVELS, false, "", Token::Eof)]
+    #[case::heap_arr_valid(NUM_INLINED_LEVELS + 1, false, "", Token::Eof)]
+    #[case::heap_arr_extra_close(NUM_INLINED_LEVELS + 1, false, "]", Token::Err)]
+    #[case::inline_arr_in_obj_valid(NUM_INLINED_LEVELS - 1, true, "", Token::Eof)]
+    #[case::heap_arr_in_obj_valid(NUM_INLINED_LEVELS, true, "", Token::Eof)]
+    fn test_parser_deep_nesting(
+        #[case] num_arr_levels: usize,
+        #[case] outer_obj: bool,
+        #[case] suffix: &str,
+        #[case] expect: Token,
+    ) {
+        let arrs = format!(
+            "{}1{}",
+            "[".repeat(num_arr_levels),
+            "]".repeat(num_arr_levels)
+        );
+        let input = if outer_obj {
+            format!("{{\"a\":{arrs}}}{suffix}")
+        } else {
+            format!("{arrs}{suffix}")
+        };
+        let max_level = num_arr_levels + usize::from(outer_obj);
+        let mut parser = Parser::with_max_level(FixedAnalyzer::new(input.as_bytes()), max_level);
+        let last = loop {
+            match parser.next() {
+                t @ (Token::Eof | Token::Err) => break t,
+                _ => {}
+            }
+        };
+        assert_eq!(expect, last);
     }
 
     #[rstest]
