@@ -34,15 +34,37 @@
 //!
 //! ## `no_std` mode
 //!
-//! For convenience, the default feature set includes `std`. To enable `no_std` mode disable `std`
-//! by adding a dependency line like this in your `Cargo.toml`:
+//! For convenience, the default feature set includes `std` (along with `simd` and `simd_dyn`
+//! described below). To enable `no_std` mode disable `std` by adding a dependency line like this in
+//! your `Cargo.toml`:
 //!
 //! ```toml
 //! bufjson = { version = "1", default-features = false }
 //! ```
 //!
+//! The above change also turns off SIMD string scanning. To keep SIMD enabled in `no_std` mode,
+//! re-enable the `simd` feature (but not `simd_dyn`, which requires `std`):
+//!
+//! ```toml
+//! bufjson = { version = "1", default-features = false, features = ["simd"] }
+//! ```
+//!
 //! Note that while `std` can easily be turned off, `bufjson` currently has a permanent dependency
 //! on `alloc`.
+//!
+//! ## SIMD feature flags
+//!
+//! Both of the following two flags are on by default.
+//!
+//! 1. The `simd` feature enables SIMD accelerated scanning of string tokens on supported
+//!    architectures. The instruction set is chosen at compile time from the target's enabled
+//!    features: AVX2 or SSE2 on x86 and x86-64, NEON on AArch64, and `simd128` on WebAssembly.
+//!    Targets that don't support one of these instruction sets fall back to portable word-at-a-time
+//!    (SWAR) scanning.
+//! 2. The `simd_dyn` feature, which implicitly turns on `simd`, selects between AVX2 and SSE2 at
+//!    runtime on x86 and x86-64, so a binary compiled for a generic x86-64 CPU target be able to
+//!    use AVX2 on CPUs that have it. This feature currently has no effect on other architectures
+//!    where the best instruction set to target is already known at compile time.
 //!
 //! ## Advanced JSON parsing feature flags
 //!
