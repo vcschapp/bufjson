@@ -684,7 +684,10 @@ impl<G: AsRef<Group>> Machine<G> {
         let has_more_chars = name_iter.peek().is_some();
         let current_node = &self.group().nodes[current_index];
         if !has_more_chars
-            && (current_node.match_index.is_some() || current_node.num_trie_children == 0)
+            && (current_node.match_index.is_some()
+                || current_node.num_name_children > 0
+                || current_node.num_index_children > 0
+                || current_node.num_trie_children == 0)
         {
             Some(current_index)
         } else if has_more_chars && current_node.num_trie_children > 0 {

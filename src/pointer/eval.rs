@@ -1380,7 +1380,7 @@ mod tests {
             Event::Exit(Token::ObjEnd, Pointer::from_static("/ab")),
         ]
     )]
-    #[case::name::trie::long(
+    #[case::name_trie_long(
         ["/fog", "/folly", "/foo", "/fool", "/foolery", "/foolhardy", "/fooling", "/foolish", "/foolishness", "/foolishness/knows/0", "/foolishly", "/foolproof", "/foolscap"],
         r#"{"foolishness":{"knows":["bounds"]}}"#,
         [
@@ -1388,6 +1388,16 @@ mod tests {
             Event::Match(Token::Str, Pointer::from_static("/foolishness/knows/0")),
             Event::Exit(Token::ObjEnd, Pointer::from_static("/foolishness")),
         ],
+    )]
+    #[case::name_trie_prefix_not_pointer_1_name_child(
+        ["/ab/z", "/abd"],
+        r#"{"ab":{"z":1}}"#,
+        match1(Token::Num, "/ab/z"),
+    )]
+    #[case::name_trie_prefix_not_pointer_index_child(
+        ["/ab/0", "/abd"],
+        r#"{"ab":[1]}"#,
+        match1(Token::Num, "/ab/0"),
     )]
     fn test_next_ascii_no_unescape<P, I, E>(
         #[case] pointers: I,
