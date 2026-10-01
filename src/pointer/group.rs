@@ -579,7 +579,12 @@ impl Builder {
 
     #[inline]
     fn common_prefix_len(a: &str, b: &str) -> usize {
-        a.bytes().zip(b.bytes()).take_while(|(a, b)| a == b).count()
+        let mut n = a.bytes().zip(b.bytes()).take_while(|(a, b)| a == b).count();
+        while n > 0 && !a.is_char_boundary(n) {
+            n -= 1;
+        }
+
+        n
     }
 }
 
@@ -890,6 +895,8 @@ mod tests {
     #[case("foo", "foo", 3)]
     #[case("foo", "fool", 3)]
     #[case("foo", "foolish", 3)]
+    #[case("foo", "foolish", 3)]
+    #[case("café", "cafè", 3)]
     fn test_builder_common_prefix_len(#[case] a: &str, #[case] b: &str, #[case] expect: usize) {
         let len_a_b = Builder::common_prefix_len(a, b);
         let len_b_a = Builder::common_prefix_len(b, a);
@@ -1091,6 +1098,12 @@ mod tests {
         Node::new_name("a", None).with_child_index(2).with_trie_children(2),
         Node::new_trie("b", Some(0)),
         Node::new_trie("c", Some(1)),
+    ], [0, 1, 1])]
+    #[case::two_slash_cafe_acute_and_slash_cafe_grave(["/café", "/cafè"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("caf", None).with_child_index(2).with_trie_children(2),
+        Node::new_trie("è", Some(0)),
+        Node::new_trie("é", Some(1)),
     ], [0, 1, 1])]
     #[case::two_slash_f_slash_oo_and_slash_f_slash_ob(["/f/oo", "/f/ob"], [
         Node::default().with_child_index(1).with_name_children(1),
