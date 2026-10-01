@@ -1274,8 +1274,8 @@ impl Bufs {
             }
 
             Ok(n) if n <= inner.len() => {
-                // If fewer bytes were read than the buffer since, truncate the buffer to the
-                // number of bytes actually read. This ensures that `byte()` knows when to stop.
+                // If fewer bytes were read than the buffer size, truncate the buffer to the number
+                // of bytes actually read. This ensures that `byte()` knows when to stop.
                 //
                 // Note one subtle consequence of this behavior: if `r.read` provides substantially
                 // fewer bytes than the buffer size, the buffer will be truncated to a smaller size,
@@ -1289,7 +1289,7 @@ impl Bufs {
                 // `Vec`.
                 inner.truncate(n);
 
-                if self.j != self.i {
+                if !self.used.is_empty() || self.j != self.i {
                     // Incomplete token in progress...
                     debug_assert!(!self.current.is_empty());
 
@@ -3192,6 +3192,58 @@ mod tests {
         let content = an.content();
         assert_eq!(expect.len(), content.literal_len());
         assert_eq!(expect, content.literal().into_string());
+    }
+
+    #[test]
+    fn test_analyzer_three_buf_triple_whammy() {
+        // Regression test for a very edgy case indeed. This one needed a token spanning exactly
+        // three buffers to manifeset and the token's start index within the first buffer had to
+        // equal the exact length of the second buffer. Crazy. This was producing an "attempt to
+        // subtract with overflow" error when the analyzer tried to fetch the content for the
+        // spanning token.
+
+        struct ChunkedRead(Vec<&'static [u8]>);
+
+        impl io::Read for ChunkedRead {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let chunk_ref = loop {
+                    match self.0.get_mut(0) {
+                        None => return Ok(0),
+                        Some([]) => self.0.remove(0),
+                        Some(c) => break c,
+                    };
+                };
+
+                let n: usize;
+                if chunk_ref.len() <= buf.len() {
+                    n = chunk_ref.len();
+                    buf[..n].copy_from_slice(chunk_ref);
+                    self.0.remove(0);
+                } else {
+                    n = buf.len();
+                    buf.copy_from_slice(&chunk_ref[..n]);
+                    *chunk_ref = &chunk_ref[n..]
+                }
+
+                Ok(n)
+            }
+        }
+
+        // The token structure in this test has the string token "bar" split across three buffers,
+        // as shown below.
+        // _
+        // ┌───┬───┐───┐   ┌───┬   ┌───┬───┐───┐
+        // │ [ │ " │ b │   │ a │   │ r │ " │ ] │
+        // └───┴───┘───┘   └───┴   └───┴───┘───┘
+
+        let reader = ChunkedRead(vec![br#"["b"#, b"a", br#"r"]"#]);
+        let mut an = ReadAnalyzer::with_buf_size(reader, 8);
+
+        assert_eq!(Token::ArrBegin, an.next());
+        assert_eq!(Token::Str, an.next());
+        assert_eq!(r#""bar""#, an.content().literal().into_string());
+        assert_eq!(Token::ArrEnd, an.next());
+        assert_eq!(Token::Eof, an.next());
     }
 
     #[rstest]
