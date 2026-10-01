@@ -2605,6 +2605,32 @@ mod tests {
         assert_eq!(Token::Err, an.next());
     }
 
+    #[test]
+    fn test_analyzer_resume_empty_after_white_cr() {
+        // Regression test for a bug that existed at the state machine level where, if a buffer
+        // ended with '\r', putting the machine into white CR mode, the next buffer was totally
+        // empty, and the next available character <c> was some non-whitespace character, the token
+        // content would give you '\r<c>' when it should just be '\r'.
+
+        let (tx, rx) = channel();
+        tx.send("[\r".into()).unwrap();
+        tx.send("".into()).unwrap();
+        tx.send("true]".into()).unwrap();
+        drop(tx);
+
+        let mut an = PipeAnalyzer::new(rx);
+
+        assert_eq!(Token::ArrBegin, an.next());
+        assert_eq!("[", an.content().literal());
+        assert_eq!(Token::White, an.next());
+        assert_eq!("\r", an.content().literal());
+        assert_eq!(Token::LitTrue, an.next());
+        assert_eq!("true", an.content().literal());
+        assert_eq!(Token::ArrEnd, an.next());
+        assert_eq!("]", an.content().literal());
+        assert_eq!(Token::Eof, an.next());
+    }
+
     #[rstest]
     #[case(1)]
     #[case(2)]

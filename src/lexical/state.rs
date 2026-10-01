@@ -1318,7 +1318,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
         if i == self.buf.len() {
             self.state = State::White { cr: true };
 
-            Next::Part(Token::White, 1)
+            Next::Part(Token::White, i - start_pos)
         } else {
             if self.buf[i] == b'\n' {
                 i += 1;
@@ -2015,6 +2015,22 @@ mod tests {
             mach.resume(&buf[2..])
         );
         assert_eq!(State::Start, mach.state);
+    }
+
+    #[test]
+    fn test_machine_resume_empty_from_white_cr() {
+        let mut mach = Machine::new(&b"\r"[..]);
+
+        assert_eq!(Next::Part(Token::White, 1), mach.next());
+        assert_eq!(State::White { cr: true }, mach.state);
+        assert_eq!(Next::Part(Token::White, 0), mach.resume(&b""[..]));
+        assert_eq!(State::White { cr: true }, mach.state);
+        assert_eq!(
+            Next::Done(Token::White, false, 0),
+            mach.resume(&b"true "[..])
+        );
+        assert_eq!(State::Start, mach.state);
+        assert_eq!(Next::Done(Token::LitTrue, false, 4), mach.next());
     }
 
     #[test]
