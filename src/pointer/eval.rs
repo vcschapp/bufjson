@@ -1394,10 +1394,27 @@ mod tests {
         r#"{"ab":{"z":1}}"#,
         match1(Token::Num, "/ab/z"),
     )]
-    #[case::name_trie_prefix_not_pointer_index_child(
+    #[case::name_trie_prefix_not_pointer_2_index_child(
         ["/ab/0", "/abd"],
         r#"{"ab":[1]}"#,
         match1(Token::Num, "/ab/0"),
+    )]
+    #[case::name_trie_prefix_is_pointer_1_name_child_before_trie(
+        ["/ab", "/ab/c", "/abd"],
+        r#"{"ab":{"c":1}}"#,
+        [
+            Event::Enter(Token::ObjBegin, Pointer::from_static("/ab")),
+            Event::Match(Token::Num, Pointer::from_static("/ab/c")),
+            Event::Exit(Token::ObjEnd, Pointer::from_static("/ab"))
+        ]
+    )]
+    #[case::name_trie_prefix_is_pointer_2_name_equals_trie(
+        ["/ab", "/ab/c", "/abd"],
+        r#"{"ab":{"d":1}}"#,
+        [
+            Event::Enter(Token::ObjBegin, Pointer::from_static("/ab")),
+            Event::Exit(Token::ObjEnd, Pointer::from_static("/ab"))
+        ]
     )]
     fn test_next_ascii_no_unescape<P, I, E>(
         #[case] pointers: I,

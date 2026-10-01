@@ -601,8 +601,9 @@ impl<G: AsRef<Group>> Machine<G> {
         let start = node
             .child_index
             .expect("name node for non-skipped object must have a child")
-            .get() as usize;
-        let end = start + node.num_trie_children as usize + node.num_name_children as usize;
+            .get() as usize
+            + node.num_trie_children as usize;
+        let end = start + node.num_name_children as usize;
 
         #[cfg(test)]
         const MAX_INLINE_UNESCAPE_LEN: usize = 7;
