@@ -1007,8 +1007,8 @@ impl Content {
             buf[off..off + rem].copy_from_slice(&bufs.current[cur_off..cur_off + rem]);
 
             Self(InnerContent::Inline(len as u8, buf))
-        } else if rng.end <= bufs.current.len() && rng.end < u32::MAX as usize {
-            let r = UniRef::new(Arc::clone(&bufs.current), rng.start as u32..rng.end as u32);
+        } else if let Some(buf) = Self::single_buf(bufs, &rng) {
+            let r = UniRef::new(Arc::clone(buf), rng.start as u32..rng.end as u32);
 
             if escaped {
                 Self(InnerContent::EscapedUni(r))
@@ -1030,6 +1030,22 @@ impl Content {
             } else {
                 Self(InnerContent::NotEscapedMulti(Box::new(r)))
             }
+        }
+    }
+
+    fn single_buf<'a>(bufs: &'a Bufs, rng: &Range<usize>) -> Option<&'a Arc<Vec<u8>>> {
+        if rng.end >= u32::MAX as usize {
+            None
+        } else if bufs.used.is_empty() {
+            debug_assert!(rng.end <= bufs.current.len());
+
+            Some(&bufs.current)
+        } else if let [prev] = bufs.used.as_slice()
+            && rng.end == prev.len()
+        {
+            Some(prev)
+        } else {
+            None
         }
     }
 }
@@ -3126,6 +3142,56 @@ mod tests {
         assert_eq!(Token::White, an.next());
         assert_eq!(Token::LitTrue, an.next());
         assert_eq!(Token::Eof, an.next());
+    }
+
+    #[rstest]
+    #[case::num_fills_buf1_no_buf2("12345678", 8, 0, Token::Num, "12345678")]
+    #[case::num_fills_buf1_buf2_partial_1("12345678,", 8, 0, Token::Num, "12345678")]
+    #[case::num_fills_buf1_buf2_partial_7("12345678,123456", 8, 0, Token::Num, "12345678")]
+    #[case::num_fills_buf1_buf2_full("12345678,1234567", 8, 0, Token::Num, "12345678")]
+    #[case::num_fills_buf1_buf2_white("12345678 1234567", 8, 0, Token::Num, "12345678")]
+    #[case::num_extends_into_buf2("123456789", 8, 0, Token::Num, "123456789")]
+    #[case::num_extends_into_buf2_buf2_full("123456789,123456", 8, 0, Token::Num, "123456789")]
+    #[case::num_extends_into_buf3("12345678901234567", 8, 0, Token::Num, "12345678901234567")]
+    #[case::num_offset_fills_buf1_buf2_full("[1234567,1234567", 8, 1, Token::Num, "1234567")]
+    #[case::num_offset_fills_buf1_buf2_full_2("[1,34567,1234567", 8, 3, Token::Num, "34567")]
+    #[case::num_offset_extends_into_buf2("[12345678,123456", 8, 1, Token::Num, "12345678")]
+    #[case::num_inline_fills_buf1_buf2_full("1234,123", 4, 0, Token::Num, "1234")]
+    #[case::num_inline_extends_into_buf2("12345,12", 4, 0, Token::Num, "12345")]
+    #[case::str_fills_buf1_no_buf2("\"123456\"", 8, 0, Token::Str, "\"123456\"")]
+    #[case::str_fills_buf1_buf2_full("\"123456\",1234567", 8, 0, Token::Str, "\"123456\"")]
+    #[case::str_extends_into_buf2("\"1234567\"", 8, 0, Token::Str, "\"1234567\"")]
+    #[case::str_extends_into_buf2_buf2_full("\"1234567\",12345", 8, 0, Token::Str, "\"1234567\"")]
+    #[case::str_extends_into_buf3("\"123456789012345\"", 8, 0, Token::Str, "\"123456789012345\"")]
+    #[case::str_offset_fills_buf1_buf2_full("[\"12345\",1234567", 8, 1, Token::Str, "\"12345\"")]
+    #[case::str_inline_utf8_split("\"\u{e9}\"", 2, 0, Token::Str, "\"\u{e9}\"")]
+    #[case::str_utf8_split("\"\u{e9}\u{e9}\"", 4, 0, Token::Str, "\"\u{e9}\u{e9}\"")]
+    #[case::str_utf8_split_3_byte("\"\u{20ac}\"", 3, 0, Token::Str, "\"\u{20ac}\"")]
+    #[case::str_esc_fills_buf1_no_buf2("\"\\n\"", 4, 0, Token::Str, "\"\\n\"")]
+    #[case::str_esc_fills_buf1_buf2_full("\"\\n\",12", 4, 0, Token::Str, "\"\\n\"")]
+    #[case::str_esc_split("\"ab\\n\"", 4, 0, Token::Str, "\"ab\\n\"")]
+    #[case::str_esc_unicode_split("\"\\u0041\"", 4, 0, Token::Str, "\"\\u0041\"")]
+    #[case::str_esc_extends_into_buf3("\"\\n\\t\\r\\n\"", 4, 0, Token::Str, "\"\\n\\t\\r\\n\"")]
+    fn test_analyzer_single_buf_boundary(
+        #[case] input: &str,
+        #[case] buf_size: usize,
+        #[case] skip: usize,
+        #[case] token: Token,
+        #[case] expect: &str,
+    ) {
+        // Regression test for the case where, with a token living at least partly in the previous
+        // used buffer, either reaching to the end of the used buffer or crossing into the current
+        // buffer, we were incorrectly returning single-buffer content from the current buffer only.
+        let mut an = ReadAnalyzer::with_buf_size(input.as_bytes(), buf_size);
+
+        for _ in 0..skip {
+            assert_ne!(Token::Err, an.next());
+        }
+
+        assert_eq!(token, an.next());
+        let content = an.content();
+        assert_eq!(expect.len(), content.literal_len());
+        assert_eq!(expect, content.literal().into_string());
     }
 
     #[rstest]
