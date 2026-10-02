@@ -774,6 +774,7 @@ impl<G: AsRef<Group>> Machine<G> {
 
         let ord = loop {
             match (s_iter.next(), name_iter.peek()) {
+                (None, Some(_)) if s.is_empty() => break Ordering::Less,
                 (None, _) => break Ordering::Equal,
                 (Some(want), Some(have)) if want == *have => {
                     name_iter.next();
@@ -1340,6 +1341,8 @@ mod tests {
 
     #[rstest]
     #[case::empty([""], ["foo"])]
+    #[case::empty_and_name_sibling(["", "a"], ["b", "foo"])]
+    #[case::empty_and_name_siblings(["", "a", "b", "c"], ["d", "foo"])]
     #[case::escape_not_expanded(
         ["\\", "\\\\", "\\\"", "\\t", "\\n", "\\r", "\\u1234"],
         ["", "a", "\"", "\t", "\n", "\r", "\u{1234}"])
