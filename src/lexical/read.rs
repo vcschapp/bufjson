@@ -563,6 +563,10 @@ impl Hash for Literal {
             Repr::Together(s) => crate::buf::hash(s, state),
             Repr::Split(r) => crate::buf::hash(r.clone(), state),
         }
+        // Mirror `impl Hash for str`, which writes the bytes followed by a `0xff` terminator, so
+        // that a `Literal` and a `str` with the same text hash identically. `Unescaped` relies on
+        // this to satisfy the `Hash`/`Eq` contract across its `Literal` and `Expanded` variants.
+        state.write_u8(0xff);
     }
 }
 
@@ -2433,7 +2437,10 @@ mod tests {
         check_map!(
             hash_map2,
             unescaped_a.clone(),
-            a_s.iter().cloned().map(Unescaped::Literal)
+            a_s.iter()
+                .cloned()
+                .map(Unescaped::Literal)
+                .chain([Unescaped::Expanded("a".to_string())])
         );
         check_map!(
             hash_map2,

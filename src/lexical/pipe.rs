@@ -675,6 +675,10 @@ impl Hash for Literal {
             Repr::Together(s) => crate::buf::hash(s, state),
             Repr::Split(m) => crate::buf::hash(m.clone(), state),
         }
+        // Mirror `impl Hash for str`, which writes the bytes followed by a `0xff` terminator, so
+        // that a `Literal` and a `str` with the same text hash identically. `Unescaped` relies on
+        // this to satisfy the `Hash`/`Eq` contract across its `Literal` and `Expanded` variants.
+        state.write_u8(0xff);
     }
 }
 
@@ -2021,6 +2025,11 @@ mod tests {
         check_hash!(&aa_s[0], aa_s.iter().skip(1));
         check_hash!(&aab_s[0], aab_s.iter().skip(1));
 
+        // A `Literal` must hash identically to a `str` with the same text (see `impl Hash for
+        // Literal`), otherwise `Unescaped::Literal` and `Unescaped::Expanded` disagree.
+        assert_eq!(hash(&"a"), hash(&a_s[0]));
+        assert_eq!(hash(&"a".repeat(INLINE_LEN).as_str()), hash(&aa_s[0]));
+
         macro_rules! check_map {
             ($map:ident, $patient_zero:expr, $iter:expr) => {
                 assert!($map.insert($patient_zero, $patient_zero).is_none());
@@ -2045,7 +2054,10 @@ mod tests {
         check_map!(
             hash_map2,
             unescaped_a.clone(),
-            a_s.iter().cloned().map(Unescaped::Literal)
+            a_s.iter()
+                .cloned()
+                .map(Unescaped::Literal)
+                .chain([Unescaped::Expanded("a".to_string())])
         );
         check_map!(
             hash_map2,
