@@ -1611,13 +1611,10 @@ where
             .try_content()
             .expect_err("lexer should have error");
         let kind = ErrorKind::Lexical(err.kind());
+        let pos = *err.pos();
         let source = Some(Arc::new(err) as Arc<dyn core::error::Error + Send + Sync + 'static>);
         self.state = State::Err;
-        self.err = Some(Error {
-            kind,
-            pos: *self.lexer.pos(),
-            source,
-        })
+        self.err = Some(Error { kind, pos, source })
     }
 
     fn err_syntax(&mut self, token: Token) {
@@ -2329,6 +2326,11 @@ mod tests {
             matches!(err_kind, ErrorKind::Lexical(actual_kind) if *actual_kind == expect_kind),
             "err_kind: {err_kind:?}"
         );
+        let lexical_err = err
+            .source()
+            .and_then(|source| source.downcast_ref::<lexical::fixed::Error>())
+            .expect("lexical parser errors should retain the lexical source error");
+        assert_eq!(lexical_err.pos(), err.pos());
 
         assert_eq!(Token::Err, parser.next());
     }
