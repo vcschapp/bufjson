@@ -347,13 +347,16 @@ impl<'a> Iterator for RefTokens<'a> {
                             i + 1 < maybe_escaped.len(),
                             "JSON Pointer ~ escapes must be ~0 or ~1, but found ~ at end of string"
                         );
-                        let c = match maybe_escaped.chars().nth(i + 1).unwrap() {
-                            '0' => '~',
-                            '1' => '/',
-                            x => unreachable!(
-                                "JSON Pointer ~ escapes can only be ~0 or ~1, but found ~ followed by char {x:?} 0x{:0x}",
-                                x as u32
-                            ),
+                        let c = match maybe_escaped.as_bytes()[i + 1] {
+                            b'0' => '~',
+                            b'1' => '/',
+                            _ => {
+                                let x = maybe_escaped[i + 1..].chars().next().unwrap();
+                                unreachable!(
+                                    "JSON Pointer ~ escapes can only be ~0 or ~1, but found ~ followed by char {x:?} 0x{:0x}",
+                                    x as u32
+                                )
+                            }
                         };
                         maybe_escaped = &maybe_escaped[i + 2..];
                         unescaped.push(c);
@@ -575,6 +578,9 @@ mod tests {
     #[case::slash_esc_tilde_esc_slash("/~0~1", ["~/"])]
     #[case::slash_esc_slash_esc_tilde("/~1~0", ["/~"])]
     #[case::slash_esc_many("/~0foo~1bar~0~0", ["~foo/bar~~"])]
+    #[case::slash_utf8_esc_tilde_num_1("/é~01", ["é~1"])]
+    #[case::slash_utf8_esc_tilde("/é~0", ["é~"])]
+    #[case::slash_utf8_esc_slash_str_x("/é~1x", ["é/x"])]
     #[case::slash_str_a_slash("/a/", ["a", ""])]
     #[case::slash_esc_tilde_slash("/~0/", ["~", ""])]
     #[case::slash_esc_tilde_esc_tilde_slash("/~0~0/", ["~~", ""])]
