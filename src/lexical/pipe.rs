@@ -411,13 +411,10 @@ impl Buf for InnerLiteral {
 
             InnerLiteral::Bytes(b, _) => {
                 if b.len() < dst.len() {
-                    panic!(
-                        "{}",
-                        &BufUnderflow {
-                            requested: dst.len(),
-                            remaining: b.len(),
-                        }
-                    );
+                    Err(BufUnderflow {
+                        requested: dst.len(),
+                        remaining: b.len(),
+                    })
                 } else {
                     dst.copy_from_slice(&b[..dst.len()]);
                     *self = Self::Bytes(b.slice(dst.len()..), false);
@@ -2137,6 +2134,30 @@ mod tests {
         let mut dst = [0; 1];
 
         let _ = literal.into_buf().copy_to_slice(&mut dst);
+    }
+
+    #[rstest]
+    #[case(Literal::from_static(""))]
+    #[case(Literal::from_ref(""))]
+    #[case(Literal::from_string("".into()))]
+    #[case(Literal(InnerLiteral::test_new_bytes("", false)))]
+    #[case(Literal(InnerLiteral::test_new_bytes("", true)))]
+    #[case(Literal(InnerLiteral::test_new_multi([""], 0, 0, false)))]
+    #[case(Literal(InnerLiteral::test_new_multi(["", ""], 0, 0, true)))]
+    #[case(Literal(InnerLiteral::test_new_multi(["a"], 1, 0, false)))]
+    #[case(Literal(InnerLiteral::test_new_multi(["a", "a"], 1, 0, true)))]
+    fn test_literal_buf_try_copy_to_slice_underflow(#[case] literal: Literal) {
+        let mut dst = [0; 1];
+        let mut b = literal.into_buf();
+
+        assert_eq!(
+            Err(BufUnderflow {
+                requested: 1,
+                remaining: 0,
+            }),
+            b.try_copy_to_slice(&mut dst)
+        );
+        assert_eq!(0, b.remaining());
     }
 
     #[rstest]
