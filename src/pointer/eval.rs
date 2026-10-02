@@ -548,7 +548,17 @@ where
     ///     }
     /// }
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parser is positioned inside a structured value (an array or object), because
+    /// the evaluator cannot reconstruct the JSON Pointer evaluation state for consumed tokens.
     pub fn new(parser: Parser<L>, group: G, unescape: bool) -> Self {
+        assert!(
+            !parser.context().is_struct(),
+            "parser must be positioned outside a structured value"
+        );
+
         Self {
             parser,
             mach: state::Machine::new(group, unescape),
@@ -1034,6 +1044,17 @@ mod tests {
     use crate::{lexical::fixed::FixedAnalyzer, syntax};
     use rstest::rstest;
     use std::fmt;
+
+    #[test]
+    #[should_panic(expected = "parser must be positioned outside a structured value")]
+    fn test_new_rejects_parser_inside_structured_value() {
+        let mut parser = FixedAnalyzer::new(&br#"{"a": 1}"#[..]).into_parser();
+        assert_eq!(Token::ObjBegin, parser.next_meaningful());
+
+        let group = Group::from_pointer(Pointer::from_static("/a"));
+
+        let _ = Evaluator::new(parser, group, NO_UNESCAPE);
+    }
 
     #[test]
     fn test_event() {
