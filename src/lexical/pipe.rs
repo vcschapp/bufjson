@@ -323,7 +323,10 @@ impl Buf for InnerLiteral {
                         }
                     );
                 } else {
-                    *self = Self::Static(&s[n..], false)
+                    // `Buf` positions are byte offsets and may fall inside a multi-byte UTF-8
+                    // character, so the remainder cannot be kept as a `str`. `Bytes::from_static`
+                    // wraps the static bytes without copying or allocating.
+                    *self = Self::Bytes(Bytes::from_static(s.as_bytes()).slice(n..), false)
                 }
             }
 
@@ -384,7 +387,8 @@ impl Buf for InnerLiteral {
                     })
                 } else {
                     dst.copy_from_slice(&s.as_bytes()[..dst.len()]);
-                    *self = Self::Static(&s[dst.len()..], false);
+                    // See `advance` for why the remainder is migrated to bytes.
+                    *self = Self::Bytes(Bytes::from_static(s.as_bytes()).slice(dst.len()..), false);
 
                     Ok(())
                 }
@@ -1805,6 +1809,7 @@ mod tests {
     #[rstest]
     #[case(Literal::from_static(""), 0)]
     #[case(Literal::from_static("a"), 1)]
+    #[case(Literal::from_static("ƒoo"), 4)]
     #[case(Literal::from_static(concat!(
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1852,6 +1857,16 @@ mod tests {
             let byte = b.chunk()[0];
             b.advance(1);
             dst.push(byte);
+        }
+        assert_eq!(s.as_bytes(), &dst);
+
+        // Exercise `try_copy_to_slice` one byte at a time.
+        let mut b = literal.into_buf();
+        let mut dst = Vec::with_capacity(expect_len);
+        while b.remaining() > 0 {
+            let mut byte = [0];
+            b.try_copy_to_slice(&mut byte).unwrap();
+            dst.push(byte[0]);
         }
         assert_eq!(s.as_bytes(), &dst);
     }

@@ -272,7 +272,7 @@ enum Repr<'a> {
 
 #[derive(Clone, Debug)]
 enum InnerLiteral {
-    Static(&'static str),
+    Static(&'static [u8]),
     Inline(u8, u8, InlineBuf),
     Uni(UniRef),
     Multi(Box<MultiRef>),
@@ -308,7 +308,11 @@ impl InnerLiteral {
 
     fn repr(&self) -> Repr<'_> {
         match self {
-            Self::Static(s) => Repr::Together(s),
+            // SAFETY: `Static` is only ever constructed from a `&'static str`, and `repr` is only
+            //         reachable through `Literal`, which is never partially advanced (advancing
+            //         happens on the consumed `LiteralBuf`), so the bytes are the whole original
+            //         `str`.
+            Self::Static(s) => Repr::Together(unsafe { str::from_utf8_unchecked(s) }),
             Self::Inline(i, j, b) => {
                 Repr::Together(unsafe { str::from_utf8_unchecked(&b[*i as usize..*j as usize]) })
             }
@@ -323,7 +327,7 @@ impl InnerLiteral {
 impl From<InnerContent> for InnerLiteral {
     fn from(value: InnerContent) -> Self {
         match value {
-            InnerContent::Static(s) => Self::Static(s),
+            InnerContent::Static(s) => Self::Static(s.as_bytes()),
             InnerContent::Inline(len, b) => Self::Inline(0, len, b),
             InnerContent::NotEscapedUni(r) | InnerContent::EscapedUni(r) => Self::Uni(r),
             InnerContent::NotEscapedMulti(r) | InnerContent::EscapedMulti(r) => Self::Multi(r),
@@ -405,7 +409,7 @@ impl Literal {
     /// [`from_ref`]: method@Self::from_ref
     /// [`from_string`]: method@Self::from_string
     pub const fn from_static(s: &'static str) -> Self {
-        Self(InnerLiteral::Static(s))
+        Self(InnerLiteral::Static(s.as_bytes()))
     }
 
     /// Creates a literal value from anything that cheaply converts to a string slice reference.
@@ -780,7 +784,7 @@ impl LiteralBuf {
     /// [`remaining`]: method@Self::remaining
     pub fn chunk(&self) -> &[u8] {
         match &self.0 {
-            InnerLiteral::Static(s) => s.as_bytes(),
+            InnerLiteral::Static(s) => s,
             InnerLiteral::Inline(i, j, b) => &b[*i as usize..*j as usize],
             InnerLiteral::Uni(r) => r.chunk(),
             InnerLiteral::Multi(r) => r.chunk(),
@@ -819,7 +823,7 @@ impl LiteralBuf {
                         remaining: s.len(),
                     })
                 } else {
-                    dst.copy_from_slice(&s.as_bytes()[..dst.len()]);
+                    dst.copy_from_slice(&s[..dst.len()]);
                     *self = Self(InnerLiteral::Static(&s[dst.len()..]));
 
                     Ok(())
@@ -2181,8 +2185,8 @@ mod tests {
     }
 
     #[rstest]
-    #[case(InnerLiteral::Static(""), 0)]
-    #[case(InnerLiteral::Static("a"), 1)]
+    #[case(InnerLiteral::Static(b""), 0)]
+    #[case(InnerLiteral::Static(b"a"), 1)]
     #[case(InnerLiteral::Inline(0, 0, [0; INLINE_LEN]), 0)]
     #[case(InnerLiteral::Inline(0, 1, [0; INLINE_LEN]), 1)]
     #[case(InnerLiteral::Inline(1, 1, [0; INLINE_LEN]), 0)]
@@ -2205,8 +2209,8 @@ mod tests {
     }
 
     #[rstest]
-    #[case(InnerLiteral::Static(""), "")]
-    #[case(InnerLiteral::Static("a"), "a")]
+    #[case(InnerLiteral::Static(b""), "")]
+    #[case(InnerLiteral::Static(b"a"), "a")]
     #[case(InnerLiteral::Inline(0, 0, [0; INLINE_LEN]), "")]
     #[case(InnerLiteral::Inline(0, 1, [b'a'; INLINE_LEN]), "a")]
     #[case(InnerLiteral::Inline(0, INLINE_LEN as u8, [b'b'; INLINE_LEN]), "b".repeat(INLINE_LEN))]
@@ -2241,6 +2245,7 @@ mod tests {
     #[rstest]
     #[case(Literal::from_static(""), 0)]
     #[case(Literal::from_static("a"), 1)]
+    #[case(Literal::from_static("ƒoo"), 4)]
     #[case(Literal::from_static(concat!(
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -2276,7 +2281,27 @@ mod tests {
         let s = String::from_utf8(dst).unwrap();
 
         assert_eq!(literal.to_string(), s);
-        assert_eq!(Into::<String>::into(literal), s);
+        assert_eq!(Into::<String>::into(literal.clone()), s);
+
+        // Exercise `advance` one byte at a time.
+        let mut b = literal.clone().into_buf();
+        let mut dst = Vec::with_capacity(expect_len);
+        while b.remaining() > 0 {
+            let byte = b.chunk()[0];
+            b.advance(1);
+            dst.push(byte);
+        }
+        assert_eq!(s.as_bytes(), &dst);
+
+        // Exercise `try_copy_to_slice` one byte at a time.
+        let mut b = literal.into_buf();
+        let mut dst = Vec::with_capacity(expect_len);
+        while b.remaining() > 0 {
+            let mut byte = [0];
+            b.try_copy_to_slice(&mut byte).unwrap();
+            dst.push(byte[0]);
+        }
+        assert_eq!(s.as_bytes(), &dst);
     }
 
     #[test]
