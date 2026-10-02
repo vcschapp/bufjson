@@ -264,6 +264,9 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
     #[inline]
     pub fn parse_i64(&self) -> Result<i64, NumError> {
         let chunk = self.literal().as_bytes();
+        if chunk.is_empty() {
+            return Err(NumError::Format);
+        }
 
         parse_int!(one_slice, chunk, i64, 1, i64::MIN)
     }
@@ -295,6 +298,9 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
     #[inline]
     pub fn parse_u64(&self) -> Result<u64, NumError> {
         let chunk = self.literal().as_bytes();
+        if chunk.is_empty() {
+            return Err(NumError::Format);
+        }
 
         parse_int!(one_slice, chunk, u64, 0, u64::MAX)
     }
@@ -330,6 +336,9 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
     #[inline]
     pub fn parse_i128(&self) -> Result<i128, NumError> {
         let chunk = self.literal().as_bytes();
+        if chunk.is_empty() {
+            return Err(NumError::Format);
+        }
 
         parse_int!(one_slice, chunk, i128, 1, i128::MIN)
     }
@@ -1169,6 +1178,7 @@ mod tests {
 
     #[cfg(feature = "num")]
     #[rstest]
+    #[case::empty("", NumError::Format)]
     #[case::decimal_zero("10.0", NumError::Format)]
     #[case::decimal("3.14159", NumError::Format)]
     #[case::exponent_zero("0e0", NumError::Format)]
@@ -1180,7 +1190,14 @@ mod tests {
     #[case::range_i128_max(format!("{}", i128::MAX), NumError::Range)]
     fn test_content_parse_i64_err(#[case] input: impl AsRef<str>, #[case] expect: NumError) {
         let mut an = FixedAnalyzer::new(input.as_ref().as_bytes().to_vec());
-        assert_eq!(Token::Num, an.next());
+        assert_eq!(
+            if input.as_ref().is_empty() {
+                Token::Eof
+            } else {
+                Token::Num
+            },
+            an.next()
+        );
         let content = an.content();
         assert_eq!(Err(expect), content.parse_i64());
         assert_eq!(Err(expect), lexical::Content::parse_i64(&content));
@@ -1207,6 +1224,7 @@ mod tests {
     #[case::minus_zero("-0", NumError::Format)]
     #[case::minus_one("-1", NumError::Format)]
     #[case::minus_forty_two("-42", NumError::Format)]
+    #[case::empty("", NumError::Format)]
     #[case::decimal_zero("10.0", NumError::Format)]
     #[case::decimal("3.14159", NumError::Format)]
     #[case::exponent_zero("0e0", NumError::Format)]
@@ -1216,7 +1234,14 @@ mod tests {
     #[case::range_i128_max(format!("{}", i128::MAX), NumError::Range)]
     fn test_content_parse_u64_err(#[case] input: impl AsRef<str>, #[case] expect: NumError) {
         let mut an = FixedAnalyzer::new(input.as_ref().as_bytes().to_vec());
-        assert_eq!(Token::Num, an.next());
+        assert_eq!(
+            if input.as_ref().is_empty() {
+                Token::Eof
+            } else {
+                Token::Num
+            },
+            an.next()
+        );
         let content = an.content();
         assert_eq!(Err(expect), content.parse_u64());
         assert_eq!(Err(expect), lexical::Content::parse_u64(&content));
@@ -1251,6 +1276,7 @@ mod tests {
 
     #[cfg(feature = "num_ext")]
     #[rstest]
+    #[case::empty("", NumError::Format)]
     #[case::decimal_zero("10.0", NumError::Format)]
     #[case::decimal("3.14159", NumError::Format)]
     #[case::exponent_zero("0e0", NumError::Format)]
@@ -1260,7 +1286,14 @@ mod tests {
     #[case::range_u128_max(format!("{}", u128::MAX), NumError::Range)]
     fn test_content_parse_i128_err(#[case] input: impl AsRef<str>, #[case] expect: NumError) {
         let mut an = FixedAnalyzer::new(input.as_ref().as_bytes().to_vec());
-        assert_eq!(Token::Num, an.next());
+        assert_eq!(
+            if input.as_ref().is_empty() {
+                Token::Eof
+            } else {
+                Token::Num
+            },
+            an.next()
+        );
         let content = an.content();
         assert_eq!(Err(expect), content.parse_i128());
         assert_eq!(Err(expect), lexical::Content::parse_i128(&content));
