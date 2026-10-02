@@ -842,6 +842,8 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
                         j += 2;
                         last_j = j;
                     } else {
+                        col_delta += j - last_j;
+
                         return self.err_at_col(
                             col_delta,
                             j,
@@ -2875,61 +2877,83 @@ mod tests {
     }
 
     #[rstest]
-    #[case(&[0xc2, 0xc0], 1, 0)]
-    #[case(&[0xdf, 0xd0], 1, 0)]
-    #[case(&[0xe0, 0x7f, 0x80], 1, 0)]
-    #[case(&[0xe0, 0x80, 0x80], 1, 0)]
-    #[case(&[0xe0, 0xc0, 0x80], 1, 0)]
-    #[case(&[0xed, 0xa0, 0x80], 1, 0)]
-    #[case(&[0xed, 0xa0, 0xbf], 1, 0)]
-    #[case(&[0xed, 0xb0, 0x80], 1, 0)]
-    #[case(&[0xed, 0xb0, 0xbf], 1, 0)]
-    #[case(&[0xef, 0x7f, 0x80], 1, 0)]
-    #[case(&[0xef, 0xc0, 0x80], 1, 0)]
-    #[case(&[0xe0, 0x80, 0x7f], 2, 0)]
-    #[case(&[0xe0, 0x80, 0xc0], 2, 0)]
-    #[case(&[0xe0, 0xbf, 0x7f], 2, 0)]
-    #[case(&[0xe0, 0xbf, 0xc0], 2, 0)]
-    #[case(&[0xe1, 0x80, 0x7f], 2, 0)]
-    #[case(&[0xe5, 0xa0, 0x7f], 2, 0)]
-    #[case(&[0xec, 0xbf, 0xff], 2, 0)]
-    #[case(&[0xee, 0x80, 0xc0], 2, 0)]
-    #[case(&[0xef, 0xbf, 0xc0], 2, 0)]
-    #[case(&[0xf0, 0x7f, 0x80, 0x80], 1, 0)]
-    #[case(&[0xf0, 0x80, 0x80, 0x80], 1, 0)]
-    #[case(&[0xf0, 0xc0, 0x80, 0x80], 1, 0)]
-    #[case(&[0xf4, 0x7f, 0x80, 0x80], 1, 0)]
-    #[case(&[0xf4, 0xc0, 0x80, 0x80], 1, 0)]
-    #[case(&[0xf4, 0x90, 0x80, 0x80], 1, 0)]
-    #[case(&[0xf0, 0x80, 0x7f, 0x80], 2, 0)]
-    #[case(&[0xf0, 0x80, 0xc0, 0x80], 2, 0)]
-    #[case(&[0xf0, 0xbf, 0x7f, 0x80], 2, 0)]
-    #[case(&[0xf0, 0xbf, 0xc0, 0x80], 2, 0)]
-    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 0)]
-    #[case(&[0xf0, 0x80, 0x80, 0x7f], 3, 0)]
-    #[case(&[0xf0, 0x80, 0x80, 0xc0], 3, 0)]
-    #[case(&[0xf0, 0xbf, 0xbf, 0x7f], 3, 0)]
-    #[case(&[0xf0, 0xbf, 0xbf, 0xc0], 3, 0)]
-    #[case(&[0xf1, 0x80, 0x80, 0xff], 3, 0)]
-    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 7)]
-    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 8)]
-    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 15)]
-    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 16)]
-    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 31)]
-    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 32)]
-    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 47)]
-    #[case(&[0xf1, 0x80, 0xff, 0x80], 2, 48)]
+    // 2-byte sequences, bad byte 1.
+    #[case::utf82_cont1_high(&[0xc2, 0xc0], 1, &[b'a'; 0])]
+    #[case::utf82_cont1_high_df(&[0xdf, 0xd0], 1, &[b'a'; 0])]
+    // 3-byte sequences, bad byte 1.
+    #[case::utf83_e0_cont1_low(&[0xe0, 0x7f, 0x80], 1, &[b'a'; 0])]
+    #[case::utf83_e0_cont1_below_range(&[0xe0, 0x80, 0x80], 1, &[b'a'; 0])]
+    #[case::utf83_e0_cont1_high(&[0xe0, 0xc0, 0x80], 1, &[b'a'; 0])]
+    #[case::utf83_ed_cont1_surrogate_lo(&[0xed, 0xa0, 0x80], 1, &[b'a'; 0])]
+    #[case::utf83_ed_cont1_surrogate_lo_max(&[0xed, 0xa0, 0xbf], 1, &[b'a'; 0])]
+    #[case::utf83_ed_cont1_surrogate_hi(&[0xed, 0xb0, 0x80], 1, &[b'a'; 0])]
+    #[case::utf83_ed_cont1_surrogate_hi_max(&[0xed, 0xb0, 0xbf], 1, &[b'a'; 0])]
+    #[case::utf83_ef_cont1_low(&[0xef, 0x7f, 0x80], 1, &[b'a'; 0])]
+    #[case::utf83_ef_cont1_high(&[0xef, 0xc0, 0x80], 1, &[b'a'; 0])]
+    // 3-byte sequences, bad byte 2.
+    #[case::utf83_e0_cont2_low(&[0xe0, 0x80, 0x7f], 2, &[b'a'; 0])]
+    #[case::utf83_e0_cont2_high(&[0xe0, 0x80, 0xc0], 2, &[b'a'; 0])]
+    #[case::utf83_e0_cont2_low_bf(&[0xe0, 0xbf, 0x7f], 2, &[b'a'; 0])]
+    #[case::utf83_e0_cont2_high_bf(&[0xe0, 0xbf, 0xc0], 2, &[b'a'; 0])]
+    #[case::utf83_e1_cont2_low(&[0xe1, 0x80, 0x7f], 2, &[b'a'; 0])]
+    #[case::utf83_e5_cont2_low(&[0xe5, 0xa0, 0x7f], 2, &[b'a'; 0])]
+    #[case::utf83_ec_cont2_ff(&[0xec, 0xbf, 0xff], 2, &[b'a'; 0])]
+    #[case::utf83_ee_cont2_high(&[0xee, 0x80, 0xc0], 2, &[b'a'; 0])]
+    #[case::utf83_ef_cont2_high(&[0xef, 0xbf, 0xc0], 2, &[b'a'; 0])]
+    // 4-byte sequences, bad byte 1.
+    #[case::utf84_f0_cont1_low(&[0xf0, 0x7f, 0x80, 0x80], 1, &[b'a'; 0])]
+    #[case::utf84_f0_cont1_below_range(&[0xf0, 0x80, 0x80, 0x80], 1, &[b'a'; 0])]
+    #[case::utf84_f0_cont1_high(&[0xf0, 0xc0, 0x80, 0x80], 1, &[b'a'; 0])]
+    #[case::utf84_f4_cont1_low(&[0xf4, 0x7f, 0x80, 0x80], 1, &[b'a'; 0])]
+    #[case::utf84_f4_cont1_high(&[0xf4, 0xc0, 0x80, 0x80], 1, &[b'a'; 0])]
+    #[case::utf84_f4_cont1_above_range(&[0xf4, 0x90, 0x80, 0x80], 1, &[b'a'; 0])]
+    // 4-byte sequences, bad byte 2.
+    #[case::utf84_f0_cont2_low(&[0xf0, 0x80, 0x7f, 0x80], 2, &[b'a'; 0])]
+    #[case::utf84_f0_cont2_high(&[0xf0, 0x80, 0xc0, 0x80], 2, &[b'a'; 0])]
+    #[case::utf84_f0_cont2_low_bf(&[0xf0, 0xbf, 0x7f, 0x80], 2, &[b'a'; 0])]
+    #[case::utf84_f0_cont2_high_bf(&[0xf0, 0xbf, 0xc0, 0x80], 2, &[b'a'; 0])]
+    #[case::utf84_f1_cont2_ff(&[0xf1, 0x80, 0xff, 0x80], 2, &[b'a'; 0])]
+    // 4-byte sequences, bad byte 3.
+    #[case::utf84_f0_cont3_low(&[0xf0, 0x80, 0x80, 0x7f], 3, &[b'a'; 0])]
+    #[case::utf84_f0_cont3_high(&[0xf0, 0x80, 0x80, 0xc0], 3, &[b'a'; 0])]
+    #[case::utf84_f0_cont3_low_bf(&[0xf0, 0xbf, 0xbf, 0x7f], 3, &[b'a'; 0])]
+    #[case::utf84_f0_cont3_high_bf(&[0xf0, 0xbf, 0xbf, 0xc0], 3, &[b'a'; 0])]
+    #[case::utf84_f1_cont3_ff(&[0xf1, 0x80, 0x80, 0xff], 3, &[b'a'; 0])]
+    // Bad sequence placed at SWAR / SIMD scan boundaries.
+    #[case::utf84_f1_cont2_ff_pad7(&[0xf1, 0x80, 0xff, 0x80], 2, &[b'a'; 7])]
+    #[case::utf84_f1_cont2_ff_pad8(&[0xf1, 0x80, 0xff, 0x80], 2, &[b'a'; 8])]
+    #[case::utf84_f1_cont2_ff_pad15(&[0xf1, 0x80, 0xff, 0x80], 2, &[b'a'; 15])]
+    #[case::utf84_f1_cont2_ff_pad16(&[0xf1, 0x80, 0xff, 0x80], 2, &[b'a'; 16])]
+    #[case::utf84_f1_cont2_ff_pad31(&[0xf1, 0x80, 0xff, 0x80], 2, &[b'a'; 31])]
+    #[case::utf84_f1_cont2_ff_pad32(&[0xf1, 0x80, 0xff, 0x80], 2, &[b'a'; 32])]
+    #[case::utf84_f1_cont2_ff_pad47(&[0xf1, 0x80, 0xff, 0x80], 2, &[b'a'; 47])]
+    #[case::utf84_f1_cont2_ff_pad48(&[0xf1, 0x80, 0xff, 0x80], 2, &[b'a'; 48])]
+    // A prefix that `str_slow` itself consumes (an escape, boring bytes after it, or a valid
+    // multi-byte character), so the column must account for bytes scanned since the last sync.
+    #[case::after_esc_2(&[0xc2, 0xc0], 1, b"\\t")]
+    #[case::after_esc_3(&[0xe0, 0xa0, 0xc0], 2, b"\\t")]
+    #[case::after_esc_4(&[0xf0, 0x90, 0x80, 0xc0], 3, b"\\t")]
+    #[case::after_esc_boring_2(&[0xc2, 0xc0], 1, b"\\tabc")]
+    #[case::after_esc_boring_3(&[0xe0, 0xa0, 0xc0], 2, b"\\tabc")]
+    #[case::after_esc_boring_4(&[0xf0, 0x90, 0x80, 0xc0], 3, b"\\tabc")]
+    #[case::after_utf8_2(&[0xc2, 0xc0], 1, &[0xc3, 0xa9])]
+    #[case::after_utf8_3(&[0xe0, 0xa0, 0xc0], 2, &[0xe2, 0x82, 0xac])]
+    #[case::after_utf8_4(&[0xf0, 0x90, 0x80, 0xc0], 3, &[0xf0, 0x9f, 0x98, 0x80])]
+    #[case::after_esc_utf8_boring_2(&[0xc2, 0xc0], 1, b"\\n\xc3\xa9z")]
     fn test_machine_single_error_bad_utf8_cont_byte(
         #[case] input: &[u8],
         #[case] offset: u8,
-        #[case] pad: usize,
+        #[case] prefix: &[u8],
     ) {
-        // Construct input buffer with `pad` leading boring bytes so the bad sequence starts at a
-        // chosen content offset (to exercise SWAR/SIMD scan boundaries).
-        let mut buf = Vec::with_capacity(1 + pad + input.len());
+        // Construct input buffer with `prefix` as leading valid string content so the bad sequence
+        // starts at a chosen content offset (to exercise SWAR/SIMD scan boundaries) and after a
+        // chosen mix of fast-path and slow-path content.
+        let mut buf = Vec::with_capacity(1 + prefix.len() + input.len());
         buf.push(b'"');
-        buf.extend(core::iter::repeat(b'a').take(pad));
+        buf.extend_from_slice(prefix);
         buf.extend_from_slice(input);
+        // One column per ASCII byte or UTF-8 lead byte in the prefix (continuation bytes add none).
+        let prefix_cols = prefix.iter().filter(|b| **b & 0xc0 != 0x80).count();
 
         // Run test.
         let mut failures = Vec::new();
@@ -2955,7 +2979,7 @@ mod tests {
                 offset,
                 value: input[offset as usize],
             };
-            let err_pos = Pos::new(1 + pad, 1, 2 + pad);
+            let err_pos = Pos::new(1 + prefix.len(), 1, 2 + prefix_cols);
             if !item.matches_err(Pos::default(), err_pos, err_kind) {
                 let diff = item.diff_err(Pos::default(), err_pos, err_kind);
                 eprintln!(
