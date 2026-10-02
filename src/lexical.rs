@@ -162,7 +162,9 @@ macro_rules! parse_int {
         const MAX_DIGITS: usize = max_decimal_digits!($limit_val);
         if $sign == 1 && $slice[0] == b'-' {
             let digits = &$slice[1..];
-            if digits.len() < MAX_DIGITS {
+            if digits.is_empty() {
+                return Err(NumError::Format);
+            } else if digits.len() < MAX_DIGITS {
                 parse_int!(calculate, digits, $t, negative, cannot_overflow);
             } else if digits.len() == MAX_DIGITS {
                 parse_int!(calculate, digits, $t, negative, might_overflow);
@@ -3162,6 +3164,7 @@ mod tests {
     #[cfg(feature = "num")]
     #[rstest]
     #[case::empty("", NumError::Format)]
+    #[case::minus("-", NumError::Format)]
     #[case::token_arr_begin("[", NumError::Format)]
     #[case::token_arr_end("]", NumError::Format)]
     #[case::token_lit_false("false", NumError::Format)]
@@ -3220,6 +3223,7 @@ mod tests {
     #[cfg(feature = "num")]
     #[rstest]
     #[case::empty("", NumError::Format)]
+    #[case::minus("-", NumError::Format)]
     #[case::token_arr_begin("[", NumError::Format)]
     #[case::token_arr_end("]", NumError::Format)]
     #[case::token_lit_false("false", NumError::Format)]
@@ -3290,6 +3294,7 @@ mod tests {
     #[cfg(feature = "num_ext")]
     #[rstest]
     #[case::empty("", NumError::Format)]
+    #[case::minus("-", NumError::Format)]
     #[case::token_arr_begin("[", NumError::Format)]
     #[case::token_arr_end("]", NumError::Format)]
     #[case::token_lit_false("false", NumError::Format)]
