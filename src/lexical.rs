@@ -1565,11 +1565,11 @@ impl fmt::Display for Expect {
             Self::Boundary => f.write_str("boundary character or EOF"),
             Self::Char(c) => write!(f, "character '{c}'"),
             Self::Digit => f.write_str("digit character '0'..'9'"),
-            Self::DigitDotExpOrBoundary => f.write_str("digit character '0'..'9', boundary character, or EOF"),
-            Self::DigitExpOrBoundary => f.write_str("digit character '0'..'9', decimal point character '.', exponent character 'E' or 'e', boundary character, or EOF"),
+            Self::DigitDotExpOrBoundary => f.write_str("digit character '0'..'9', decimal point character '.', exponent character 'E' or 'e', boundary character, or EOF"),
+            Self::DigitExpOrBoundary => f.write_str("digit character '0'..'9', exponent character 'E' or 'e', boundary character, or EOF"),
             Self::DigitOrBoundary => f.write_str("digit character '0'..'9', boundary character, or EOF"),
             Self::DigitOrExpSign => f.write_str("exponent sign character '+' or '-', or exponent digit character '0'..'9'"),
-            Self::DotExpOrBoundary => f.write_str("decimal point character '.', 'exponent character 'E' or 'e', boundary character, or EOF"),
+            Self::DotExpOrBoundary => f.write_str("decimal point character '.', exponent character 'E' or 'e', boundary character, or EOF"),
             Self::EscChar => f.write_str("escape sequence character '\\', '\"', '/', 'r', 'n', 't', or 'u'"),
             Self::StrChar => f.write_str("string character"),
             Self::TokenStartChar => f.write_str("token start character"),
@@ -2764,6 +2764,16 @@ mod tests {
         expect: Expect::Digit,
         actual: 0x41,
     }, "expected digit character '0'..'9' but got character 'A' (ASCII 0x41) in number token")]
+    #[case(ErrorKind::UnexpectedByte {
+        token: Some(Token::Num),
+        expect: Expect::DigitDotExpOrBoundary,
+        actual: 0x41,
+    }, "expected digit character '0'..'9', decimal point character '.', exponent character 'E' or 'e', boundary character, or EOF but got character 'A' (ASCII 0x41) in number token")]
+    #[case(ErrorKind::UnexpectedByte {
+        token: Some(Token::Num),
+        expect: Expect::DigitExpOrBoundary,
+        actual: 0x41,
+    }, "expected digit character '0'..'9', exponent character 'E' or 'e', boundary character, or EOF but got character 'A' (ASCII 0x41) in number token")]
     #[case(ErrorKind::UnexpectedEof(Token::Str), "unexpected EOF in string token")]
     fn test_error_kind_display(#[case] kind: ErrorKind, #[case] expect: &str) {
         assert_eq!(expect, format!("{kind}"));
