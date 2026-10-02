@@ -509,6 +509,7 @@ impl Builder {
         {
             let ref_token = parsed_pointer.ref_token_of(self.level);
             if let Ok(index) = ref_token.parse::<u64>()
+                && ref_token.bytes().all(|b| b.is_ascii_digit())
                 && (ref_token.len() == 1 || !ref_token.starts_with('0'))
                 && !matches!(prev, Some(x) if x == index)
             {
@@ -1112,6 +1113,12 @@ mod tests {
         Node::new_trie("b", Some(0)),
         Node::new_trie("o", Some(1)),
     ], [0, 1, 2, 2])]
+    #[case::two_plus_1_and_slash_1(["/+1", "/1"], [
+        Node::default().with_child_index(1).with_name_children(2).with_index_children(1),
+        Node::new_name("+1", Some(0)),
+        Node::new_name("1", Some(1)),
+        Node::new_index(1, Some(1)),
+    ], [0, 0, 0])]
     #[case::two_index_node_sort(["/10", "/2"], [
         Node::default().with_child_index(1).with_name_children(2).with_index_children(2),
         Node::new_name("10", Some(0)),
