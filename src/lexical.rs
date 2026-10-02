@@ -514,12 +514,11 @@ pub fn parse_f64(literal: impl IntoBuf) -> Result<f64, NumError> {
 
         f64::from_str(s)
     } else {
-        let n = chunk.len();
         #[allow(unused_assignments)]
         {
             chunk = &[]; /* Drop the immutable borrow from `buf`. */
         }
-        if n <= MAX_INLINE_PARSE_LEN {
+        if rem <= MAX_INLINE_PARSE_LEN {
             let mut dst = InlineSink::<MAX_INLINE_PARSE_LEN>::new();
             sink(buf, &mut dst);
             // SAFETY: The `Buf` invariant requires that the entire sequence of bytes yielded by a
@@ -3349,16 +3348,11 @@ mod tests {
 
         let result = parse_f64(input);
         assert_eq!(Ok(expect), result);
-        // Only test ChunkedStr for short inputs; in test mode the inline buffer is 7 bytes, so
-        // multi-chunk inputs longer than that exercise the heap fallback which panics in
-        // InlineSink::reserve. Short inputs cover the multi-chunk paths adequately.
-        if input.len() <= 7 {
-            for chunked_str in ChunkedStr::chunkify(input) {
-                assert_eq!(Ok(expect), parse_f64(chunked_str));
+        for chunked_str in ChunkedStr::chunkify(input) {
+            assert_eq!(Ok(expect), parse_f64(chunked_str));
 
-                let content = chunked_str.into_content(false);
-                assert_eq!(Ok(expect), content.parse_f64());
-            }
+            let content = chunked_str.into_content(false);
+            assert_eq!(Ok(expect), content.parse_f64());
         }
     }
 
