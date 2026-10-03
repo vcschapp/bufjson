@@ -548,15 +548,19 @@ pub trait Buf {
 ///     T: IntoBuf,
 ///     T::Buf: std::fmt::Debug,
 /// {
-///     let buf = input.into_buf();
+///     let mut buf = input.into_buf();
 ///     let mut v = Vec::with_capacity(buf.remaining());
 ///     while buf.remaining() > 0 {
-///         v.extend_from_slice(buf.chunk());
+///         let chunk = buf.chunk();
+///         v.extend_from_slice(chunk);
+///         buf.advance(chunk.len());
 ///     }
 ///
 ///     v.try_into()
 ///         .expect("input must satisfy Buf invariant")
 /// }
+///
+/// assert_eq!("hello, world", collect_as_string("hello, world"));
 /// ```
 ///
 /// [`into_buf`]: method@Self::into_buf
