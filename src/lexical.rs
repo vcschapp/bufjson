@@ -509,12 +509,8 @@ pub fn parse_f64(literal: impl IntoBuf) -> Result<f64, NumError> {
     #[cfg(not(test))]
     const MAX_INLINE_PARSE_LEN: usize = 128;
 
-    let r = if chunk.len() == rem {
-        // SAFETY: The `Buf` invariant requires that the entire sequence of bytes yielded by a
-        //         `Buf` is valid UTF-8.
-        let s = unsafe { str::from_utf8_unchecked(chunk) };
-
-        f64::from_str(s)
+    if chunk.len() == rem {
+        parse_f64_bytes(chunk)
     } else {
         #[allow(unused_assignments)]
         {
@@ -523,23 +519,15 @@ pub fn parse_f64(literal: impl IntoBuf) -> Result<f64, NumError> {
         if rem <= MAX_INLINE_PARSE_LEN {
             let mut dst = InlineSink::<MAX_INLINE_PARSE_LEN>::new();
             sink(buf, &mut dst);
-            // SAFETY: The `Buf` invariant requires that the entire sequence of bytes yielded by a
-            //         `Buf` is valid UTF-8.
-            let s = unsafe { str::from_utf8_unchecked(dst.as_slice()) };
 
-            f64::from_str(s)
+            parse_f64_bytes(dst.as_slice())
         } else {
             let mut dst = Vec::new();
             sink(buf, &mut dst);
-            // SAFETY: The `Buf` invariant requires that the entire sequence of bytes yielded by a
-            //         `Buf` is valid UTF-8.
-            let s = unsafe { str::from_utf8_unchecked(&dst) };
 
-            f64::from_str(s)
+            parse_f64_bytes(&dst)
         }
-    };
-
-    parse_f64_result(r)
+    }
 }
 
 #[cfg(feature = "num")]
@@ -563,6 +551,71 @@ pub(crate) fn parse_int_err(mut buf: impl Buf, signed: bool) -> NumError {
             return NumError::Range;
         }
     }
+}
+
+#[cfg(feature = "num")]
+fn parse_f64_bytes(bytes: &[u8]) -> Result<f64, NumError> {
+    // `f64::from_str` accepts a wider grammar than JSON (leading `+`, `.5`, `5.`, leading zeros,
+    // `NaN`, `inf`, `infinity`), so we have to check the bytes against the JSON number grammar
+    // first. Otherwise when they get handed off to `f64::from_str`, numbers that aren't valid JSON
+    // tokens would convert OK, violating the documented behavior of `parse_f64`.
+    if !is_json_number(bytes) {
+        return Err(NumError::Format);
+    }
+
+    // SAFETY: The `Buf` invariant requires that the entire sequence of bytes yielded by a `Buf` is
+    //         valid UTF-8. (Also, we just validated that it's byte-for-byte a valid JSON number, so
+    //         it has to be ASCII-only at this point.)
+    parse_f64_result(f64::from_str(unsafe { str::from_utf8_unchecked(bytes) }))
+}
+
+// Returns true if `bytes` is exactly one JSON number per RFC 8259 section 6:
+//
+//     number = [ minus ] int [ frac ] [ exp ]
+//     int    = zero / ( digit1-9 *DIGIT )
+//     frac   = decimal-point 1*DIGIT
+//     exp    = e [ minus / plus ] 1*DIGIT
+#[cfg(feature = "num")]
+fn is_json_number(bytes: &[u8]) -> bool {
+    let mut i = usize::from(bytes.first() == Some(&b'-'));
+
+    match bytes.get(i) {
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => {
+            i += 1;
+            while matches!(bytes.get(i), Some(b'0'..=b'9')) {
+                i += 1;
+            }
+        }
+        _ => return false,
+    }
+
+    if bytes.get(i) == Some(&b'.') {
+        i += 1;
+        let frac = i;
+        while matches!(bytes.get(i), Some(b'0'..=b'9')) {
+            i += 1;
+        }
+        if i == frac {
+            return false;
+        }
+    }
+
+    if matches!(bytes.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(bytes.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        let exp = i;
+        while matches!(bytes.get(i), Some(b'0'..=b'9')) {
+            i += 1;
+        }
+        if i == exp {
+            return false;
+        }
+    }
+
+    i == bytes.len()
 }
 
 #[cfg(feature = "num")]
@@ -3353,6 +3406,9 @@ mod tests {
     #[case::exponent_negative("1e-2", 0.01)]
     #[case::exponent_upper("1E2", 100.0)]
     #[case::exponent_plus_sign("1e+2", 100.0)]
+    #[case::negative_exponent_zero("1.0e-0", 1.0)]
+    #[case::upper_exponent_plus_sign("1E+2", 100.0)]
+    #[case::decimal_negative_exponent("1.5e-10", 1.5e-10)]
     #[case::decimal_and_exponent("1.5e2", 150.0)]
     #[case::large_integer("9876543210", 9876543210.0)]
     #[case::f64_max(format!("{}", f64::MAX), f64::MAX)]
@@ -3381,6 +3437,34 @@ mod tests {
     #[case::token_str_one(r#""1""#, NumError::Format)]
     #[case::space_prefix(" 1", NumError::Format)]
     #[case::space_suffix("1 ", NumError::Format)]
+    // Sign.
+    #[case::lone_minus("-", NumError::Format)]
+    #[case::leading_plus("+1", NumError::Format)]
+    #[case::leading_plus_exponent("+1e5", NumError::Format)]
+    // Integer part.
+    #[case::leading_zero_zero("00", NumError::Format)]
+    #[case::leading_zero_one("01", NumError::Format)]
+    #[case::negative_leading_zero("-01", NumError::Format)]
+    // Fraction part.
+    #[case::leading_dot(".5", NumError::Format)]
+    #[case::negative_leading_dot("-.5", NumError::Format)]
+    #[case::trailing_dot("5.", NumError::Format)]
+    #[case::trailing_dot_exponent("1.e5", NumError::Format)]
+    #[case::dot_without_digits(".e5", NumError::Format)]
+    // Exponent part.
+    #[case::exponent_without_digits("1e", NumError::Format)]
+    #[case::exponent_plus_without_digits("1e+", NumError::Format)]
+    // Non-JSON spellings `f64::from_str` understands.
+    #[case::nan("NaN", NumError::Format)]
+    #[case::nan_lowercase("nan", NumError::Format)]
+    #[case::nan_signed("-NaN", NumError::Format)]
+    #[case::infinity_short("inf", NumError::Format)]
+    #[case::infinity_short_uppercase("INF", NumError::Format)]
+    #[case::infinity_long("infinity", NumError::Format)]
+    #[case::infinity_long_signed("+infinity", NumError::Format)]
+    // Other.
+    #[case::underscore("1_000", NumError::Format)]
+    #[case::unicode_digit("１", NumError::Format)]
     #[case::range_positive_overflow("1e309", NumError::Range)]
     #[case::range_negative_overflow("-1e309", NumError::Range)]
     fn test_parse_f64_err(#[case] input: impl AsRef<str>, #[case] expect: NumError) {

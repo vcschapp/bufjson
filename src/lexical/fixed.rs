@@ -1338,6 +1338,39 @@ mod tests {
         assert_eq!(Err(expect), lexical::Content::parse_f64(&content));
     }
 
+    #[cfg(feature = "num")]
+    #[rstest]
+    #[case("0")]
+    #[case("-0")]
+    #[case("1")]
+    #[case("-1")]
+    #[case("42")]
+    #[case("3.14159")]
+    #[case("-2.5")]
+    #[case("0e0")]
+    #[case("1e2")]
+    #[case("1e-2")]
+    #[case("1E2")]
+    #[case("1e+2")]
+    #[case("1.0e-0")]
+    #[case("1E+2")]
+    #[case("1.5e-10")]
+    #[case("1.5e2")]
+    #[case("9876543210")]
+    #[case(format!("{}", f64::MAX))]
+    #[case(format!("{}", f64::MIN_POSITIVE))]
+    #[case("5e-324")]
+    #[case("1e309")]
+    #[case("-1e309")]
+    fn test_content_parse_f64_agrees_with_lexical(#[case] input: impl AsRef<str>) {
+        // `Content::parse_f64` is an independent fast path. We need it to agree with
+        // `lexical::parse_f64` on every number the lexer accepts.
+        let input = input.as_ref();
+        let mut an = FixedAnalyzer::new(input.as_bytes().to_vec());
+        assert_eq!(Token::Num, an.next());
+        assert_eq!(lexical::parse_f64(input), an.content().parse_f64());
+    }
+
     #[rstest]
     #[case(
         ErrorKind::BadSurrogate { first: 0xd800, second: Some(0xd800), },
