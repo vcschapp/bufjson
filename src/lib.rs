@@ -647,12 +647,13 @@ impl Buf for StringBuf {
         let len = self.str.len();
         let pos = self.pos;
 
-        if len < pos + n {
+        let remaining = len - pos;
+        if n > remaining {
             panic!(
                 "{}",
                 &BufUnderflow {
                     requested: n,
-                    remaining: len - pos,
+                    remaining,
                 }
             );
         } else {
@@ -680,10 +681,11 @@ impl Buf for StringBuf {
         let len = self.str.len();
         let pos = self.pos;
 
-        if len < pos + dst.len() {
+        let remaining = len - pos;
+        if dst.len() > remaining {
             Err(BufUnderflow {
                 requested: dst.len(),
-                remaining: len - pos,
+                remaining,
             })
         } else {
             dst.copy_from_slice(&self.str.as_bytes()[pos..pos + dst.len()]);
@@ -1164,6 +1166,15 @@ mod tests {
         b.advance(n);
     }
 
+    #[test]
+    #[should_panic(expected = "not enough bytes in buffer")]
+    fn test_string_buf_advance_panic_no_overflow() {
+        let mut b = "hello, world".to_string().into_buf();
+        b.advance(7);
+
+        b.advance(usize::MAX - 6);
+    }
+
     #[rstest]
     #[case("foo", 0, "foo")]
     #[case("foo", 1, "oo")]
@@ -1254,33 +1265,42 @@ mod tests {
     }
 
     #[rstest]
-    #[case("", [0; 1])]
-    #[case("", [0; 2])]
-    #[case("a", [0; 2])]
-    #[case("foo", [0; 4])]
-    #[case("foo", [0; 99])]
-    fn test_buf_try_copy_to_slice_err<const N: usize>(#[case] s: &str, #[case] dst: [u8; N]) {
+    #[case("", 0, [0; 1])]
+    #[case("", 0, [0; 2])]
+    #[case("a", 0, [0; 2])]
+    #[case("foo", 0, [0; 4])]
+    #[case("foo", 0, [0; 99])]
+    #[case("foo", 1, [0; 3])]
+    #[case("foo", 3, [0; 1])]
+    #[case("hello, world", 7, [0; 6])]
+    fn test_buf_try_copy_to_slice_err<const N: usize>(
+        #[case] s: &str,
+        #[case] advance: usize,
+        #[case] dst: [u8; N],
+    ) {
         fn exec_test<T: IntoBuf + Clone + Debug + Deref<Target = str>, const N: usize>(
             t: T,
+            advance: usize,
             mut dst: [u8; N],
         ) {
             let u = t.clone();
             let mut b = t.into_buf();
+            b.advance(advance);
 
             let result = b.try_copy_to_slice(&mut dst);
 
             assert_eq!(
                 Err(BufUnderflow {
-                    remaining: u.len(),
+                    remaining: u.len() - advance,
                     requested: N
                 }),
                 result
             );
-            assert_eq!(&*u, str::from_utf8(b.chunk()).unwrap());
+            assert_eq!(&u[advance..], str::from_utf8(b.chunk()).unwrap());
         }
 
-        exec_test(s, dst);
-        exec_test(s.to_string(), dst);
+        exec_test(s, advance, dst);
+        exec_test(s.to_string(), advance, dst);
     }
 
     #[rstest]

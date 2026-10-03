@@ -569,12 +569,6 @@ fn parse_f64_bytes(bytes: &[u8]) -> Result<f64, NumError> {
     parse_f64_result(f64::from_str(unsafe { str::from_utf8_unchecked(bytes) }))
 }
 
-// Returns true if `bytes` is exactly one JSON number per RFC 8259 section 6:
-//
-//     number = [ minus ] int [ frac ] [ exp ]
-//     int    = zero / ( digit1-9 *DIGIT )
-//     frac   = decimal-point 1*DIGIT
-//     exp    = e [ minus / plus ] 1*DIGIT
 #[cfg(feature = "num")]
 fn is_json_number(bytes: &[u8]) -> bool {
     let mut i = usize::from(bytes.first() == Some(&b'-'));
