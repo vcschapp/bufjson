@@ -18,6 +18,9 @@ pub(crate) struct Node {
     pub(crate) child_index: Option<NonZero<u32>>,
     pub(crate) num_trie_children: u32,
     pub(crate) num_name_children: u32,
+    // KNOWN ISSUE: `index` children are duplicated as `name` children, leading to exponential
+    //              growth of the tree structure because every numeric reference token becomes two
+    //              different subtree. Degenerate inputs like `/0/0/0/0.../0` can lead to OOM.
     pub(crate) num_index_children: u32,
     pub(crate) inner: InnerNode,
     pub(crate) match_index: Option<usize>,
