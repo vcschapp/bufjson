@@ -1,0 +1,50 @@
+name: Miri
+
+on:
+  pull_request:
+    types: [opened, synchronize, edited, enqueued]
+  push:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'       # Mondays 06:00 UTC, off-peak for the full exploratory run
+
+jobs:
+  miri-targeted:
+    runs-on: ubuntu-latest
+    name: Miri Targeted Tests
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          components: miri
+      - run: cargo miri setup
+      # `--no-default-features` is required because the default `simd`/`simd_dyn` features pull in
+      # the `wide` crate's SIMD intrinsics and `is_x86_feature_detected!`, neither of which Miri can
+      # execute. The `tests::miri::` filter selects the Miri-only regression tests, which live in a
+      # `#[cfg(miri)] mod miri` nested inside each file's `mod tests`; Miri interprets the whole
+      # test harness, so filtering is what keeps this blocking job inside its time budget.
+      #
+      # MIRIFLAGS is intentionally unset. `-Zmiri-disable-isolation` is not needed: these tests use
+      # no clock, filesystem, or entropy, and both mpsc and RandomState work under isolation, which
+      # also keeps runs reproducible. `-Zmiri-strict-provenance` targets a different bug class and
+      # could fail inside dependencies (bytes, smallvec, bitvec) rather than in this crate.
+      - run: 'cargo miri test --lib --no-default-features --features num,num_ext,pipe,pointer,read,std -- --test-threads=1 tests::miri::'
+
+  # Exploratory coverage: runs the entire lib suite under Miri, not just the `tests::miri` modules.
+  # Slow and noisy, so it only runs on a schedule or on demand, and it is allowed to fail.
+  miri-full:
+    runs-on: ubuntu-latest
+    name: Miri Full Suite (Exploratory)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 120
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          components: miri
+      - run: cargo miri setup
+      - run: cargo miri test --lib --no-default-features --features num,num_ext,pipe,pointer,read,std -- --test-threads=1

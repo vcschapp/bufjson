@@ -38,7 +38,6 @@ use core::{
     convert::Infallible,
     fmt,
     hash::{Hash, Hasher},
-    mem::MaybeUninit,
     str::FromStr,
 };
 use smallvec::{SmallVec, smallvec};
@@ -1672,24 +1671,10 @@ impl<P: Pipe> PipeAnalyzer<P> {
                     src.len()
                 );
                 if *len <= INLINE_LEN {
-                    // SAFETY: We have length checked ☝️, the heap-based `src` can't overlap our new
-                    //         stack-based `InlineBuf`, and the range [start_pos..start_ops + len]
-                    //         is within `src`.
-                    unsafe {
-                        let mut dst: MaybeUninit<InlineBuf> = MaybeUninit::uninit();
-                        core::ptr::copy_nonoverlapping(
-                            src.as_ptr().add(*start_pos),
-                            dst.as_mut_ptr() as *mut u8,
-                            *len,
-                        );
+                    let mut dst: InlineBuf = [0; INLINE_LEN];
+                    dst[..*len].copy_from_slice(&src[*start_pos..*start_pos + *len]);
 
-                        Ok(Content(InnerLiteral::Inline(
-                            0,
-                            *len as u8,
-                            dst.assume_init(),
-                            *escaped,
-                        )))
-                    }
+                    Ok(Content(InnerLiteral::Inline(0, *len as u8, dst, *escaped)))
                 } else {
                     Ok(Content(InnerLiteral::Bytes(
                         src.slice(*start_pos..*start_pos + *len),
@@ -2921,6 +2906,28 @@ mod tests {
             }
 
             String::from_utf8(dst).expect("valid UTF-8")
+        }
+    }
+
+    // Tests that only have an effect under Miri's undefined behavior detection. They don't assert
+    // anything under a normal test build. They are compiled out unless you run them with
+    // `$ cargo miri test`.
+    #[cfg(miri)]
+    mod miri {
+        use super::*;
+
+        #[test]
+        fn test_try_content_inline_buffer_fully_initialized() {
+            // A one-byte token leaves INLINE_LEN - 1 tail bytes in the inline buffer.
+            let (tx, rx) = channel();
+            tx.send("{".into()).unwrap();
+            drop(tx);
+
+            let mut lexer = PipeAnalyzer::new(rx);
+            assert_ne!(Token::Err, lexer.next());
+
+            // `Debug` reads every byte of the inline buffer, including the tail past `len`.
+            let _ = format!("{:?}", lexer.content());
         }
     }
 }
