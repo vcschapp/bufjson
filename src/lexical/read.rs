@@ -13,6 +13,7 @@ use alloc::{
     collections::VecDeque,
     string::{String, ToString},
     sync::Arc,
+    vec,
     vec::Vec,
 };
 use core::{
@@ -1270,9 +1271,7 @@ impl Bufs {
             inner.capacity(),
             inner.len(),
         );
-        unsafe {
-            inner.set_len(self.buf_size);
-        }
+        inner.resize(self.buf_size, 0);
 
         match r.read(inner.as_mut_slice()) {
             Ok(0) => {
@@ -1356,12 +1355,7 @@ impl Bufs {
         }
 
         // There was no free buffer to reuse. Allocate a new one.
-        let mut v = Vec::with_capacity(self.buf_size);
-        #[allow(clippy::uninit_vec)]
-        unsafe {
-            v.set_len(self.buf_size);
-        };
-        v
+        vec![0; self.buf_size]
     }
 }
 
@@ -3539,6 +3533,37 @@ mod tests {
             }
 
             String::from_utf8(dst).expect("valid UTF-8")
+        }
+    }
+
+    // Tests that only have an effect under Miri's undefined behavior detection. They don't assert
+    // anything under a normal test build. They are compiled out unless you run them with
+    // `$ cargo miri test`.
+    #[cfg(miri)]
+    mod miri {
+        use super::*;
+
+        #[test]
+        fn test_read_buffer_is_initialized() {
+            struct PeekingRead(&'static [u8]);
+
+            impl io::Read for PeekingRead {
+                fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                    if !buf.is_empty() {
+                        // A safe `Read` may inspect `buf`; this must be well-defined.
+                        let _ = std::hint::black_box(buf[0]);
+                    }
+
+                    let n = self.0.len().min(buf.len());
+                    buf[..n].copy_from_slice(&self.0[..n]);
+                    self.0 = &self.0[n..];
+                    Ok(n)
+                }
+            }
+
+            let mut an = ReadAnalyzer::new(PeekingRead(b"null"));
+            assert_eq!(Token::LitNull, an.next());
+            assert_eq!(Token::Eof, an.next());
         }
     }
 }
