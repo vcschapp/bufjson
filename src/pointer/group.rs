@@ -250,8 +250,8 @@ macro_rules! enqueue_child {
 // The main input is a cloneable iterator over `parsed_pointers` (`$lead_iter) that represents the
 // group of pointers that may contain trie children. This iterator is then cloned into a second
 // iterator that is staggered one element ahead, and then the list of pairs (lead, trail), where
-// lead is the current pointer and trail is the next one after it, is traversed to to find groups
-// with a common non-empty prefix.
+// lead is the current pointer and trail is the next one after it, is traversed to find groups with
+// a common non-empty prefix.
 macro_rules! enqueue_trie_children {
     ($self:expr, $lead_iter:expr, $prev_prefix_len:expr, $new_node:ident) => {{
         let trail_iter = $lead_iter
@@ -275,7 +275,7 @@ macro_rules! enqueue_trie_children {
                     None => (0, ""),
                 };
                 match Self::common_prefix_len(lead_token, trail_token) {
-                    0 => {
+                    0 if trail.is_none() || lead_token != trail_token => {
                         let child_pointer_index = prev_index;
                         let part_len = prev_common_len;
 
@@ -1056,6 +1056,12 @@ mod tests {
         Node::new_name("~/", Some(1)),
         Node::new_name("~/", Some(1)),
     ], [0, 0, 2, 3, 4, 4, 5, 6])]
+    #[case::two_slash_empty_slash_a_slash_empty_slash_b(["//a", "//b"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("", None).with_child_index(2).with_name_children(2),
+        Node::new_name("a", Some(0)),
+        Node::new_name("b", Some(1)),
+    ], [0, 1, 1])]
     #[case::two_slash_a_and_slash_b(["/a", "/b"], [
         Node::default().with_child_index(1).with_name_children(2),
         Node::new_name("a", Some(0)),
@@ -1133,6 +1139,13 @@ mod tests {
         Node::new_name("", Some(1)),
         Node::new_name("a", Some(2)),
     ], [0, 0])]
+    #[case::three_slash_empty_slash_a_and_b_and_c(["//a", "//b", "//c"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("", None).with_child_index(2).with_name_children(3),
+        Node::new_name("a", Some(0)),
+        Node::new_name("b", Some(1)),
+        Node::new_name("c", Some(2)),
+    ], [0, 1, 1, 1])]
     #[case::three_slash_aa_slash_a_root(["/aa", "/a", ""], [
         Node::default().with_child_index(1).with_name_children(1).with_match_index(0),
         Node::new_name("a", Some(1)).with_child_index(2).with_trie_children(1),

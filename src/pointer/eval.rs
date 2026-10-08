@@ -1437,6 +1437,26 @@ mod tests {
             Event::Exit(Token::ObjEnd, Pointer::from_static("/ab"))
         ]
     )]
+    #[case::name_empty_then_non_empty(
+        ["//a", "//b", "//c"],
+        r#"{"":{"a":1,"b":2,"c":3}}"#,
+        [
+            Event::Match(Token::Num, Pointer::from_static("//a")),
+            Event::Match(Token::Num, Pointer::from_static("//b")),
+            Event::Match(Token::Num, Pointer::from_static("//c")),
+        ]
+    )]
+    #[case::name_empty_then_trie(
+        ["//a", "//ab", "//abc", "//ab/c"],
+        r#"{"":{"a":1,"b":2,"ab":{"c":3,"d":4},"abc":5}}"#,
+        [
+            Event::Match(Token::Num, Pointer::from_static("//a")),
+            Event::Enter(Token::ObjBegin, Pointer::from_static("//ab")),
+            Event::Match(Token::Num, Pointer::from_static("//ab/c")),
+            Event::Exit(Token::ObjEnd, Pointer::from_static("//ab")),
+            Event::Match(Token::Num, Pointer::from_static("//abc")),
+        ]
+    )]
     fn test_next_ascii_no_unescape<P, I, E>(
         #[case] pointers: I,
         #[case] input: &'static str,
