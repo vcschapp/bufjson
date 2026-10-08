@@ -55,7 +55,7 @@
 //! [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 
 use crate::{
-    Pos,
+    CacheAligned, Pos,
     lexical::{self, Error as _, Token},
 };
 use alloc::sync::Arc;
@@ -958,7 +958,7 @@ where
             };
         }
 
-        static ACTION: [Action; 128] = {
+        static ACTION: CacheAligned<[Action; 128]> = CacheAligned({
             let mut t = [Action::ErrSyntax; 128];
 
             macro_rules! set_inner {
@@ -1025,7 +1025,7 @@ where
             );
 
             t
-        };
+        });
 
         let token = self.lexer.next();
         let key = key!(self.context.expect, token);

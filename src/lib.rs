@@ -1112,6 +1112,52 @@ pub(crate) mod sink {
     }
 }
 
+// Align an inner type to CPU cache line as closely as possible.
+//
+// Attribution: The original `#[cfg_attr(...)]` directives are lifted from `crossbeam_utils` (dual
+//              licensed under MIT and Apache-2.0) on 10/8/2026.
+//
+// Some of the configurations are overbroad. For example, due to the inability to differentiate
+// between Apple Silicon and other ARM64 variants, the padding is grossed up to the 128 bytes used
+// by Apple even though other ARM64 architectures are 64 bytes.
+#[cfg_attr(
+    any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "arm64ec",
+        target_arch = "powerpc64",
+    ),
+    repr(align(128))
+)]
+#[cfg_attr(
+    any(
+        target_arch = "arm",
+        target_arch = "mips",
+        target_arch = "mips32r6",
+        target_arch = "mips64",
+        target_arch = "mips64r6",
+        target_arch = "sparc",
+        target_arch = "hexagon",
+    ),
+    repr(align(32))
+)]
+#[cfg_attr(target_arch = "m68k", repr(align(16)))]
+#[cfg_attr(target_arch = "s390x", repr(align(256)))]
+#[cfg_attr(
+    not(any(/* everything above */)),
+    repr(align(64))
+)]
+pub(crate) struct CacheAligned<T>(T);
+
+impl<T> core::ops::Deref for CacheAligned<T> {
+    type Target = T;
+
+    #[inline(always)]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

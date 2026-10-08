@@ -8,7 +8,7 @@
 //! [`lexical::Analyzer`]: crate::lexical::Analyzer
 
 use crate::{
-    Pos,
+    CacheAligned, Pos,
     lexical::{ErrorKind, Token},
 };
 use core::{fmt, ops::Deref};
@@ -167,7 +167,7 @@ const _: [(); 16] = [(); core::mem::size_of::<Next>()];
 #[repr(u8)]
 #[rustfmt::skip]
 enum Escape { Ok, Uni, Err, }
-static ESCAPE: [Escape; 256] = {
+static ESCAPE: CacheAligned<[Escape; 256]> = CacheAligned({
     use Escape::*;
     let mut t: [Escape; 256] = [Err; 256];
     t[b'"' as usize] = Ok;
@@ -181,9 +181,9 @@ static ESCAPE: [Escape; 256] = {
     t[b'u' as usize] = Uni;
 
     t
-};
+});
 
-static HEX: [u8; 256] = {
+static HEX: CacheAligned<[u8; 256]> = CacheAligned({
     let mut t: [u8; 256] = [0xff; 256];
     let mut i = 0u8;
     while i < 10 {
@@ -198,7 +198,7 @@ static HEX: [u8; 256] = {
     }
 
     t
-};
+});
 
 /// Finite state machine for identifying lexical tokens in a JSON text.
 #[derive(Debug, Clone)]
@@ -734,7 +734,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
         enum Class { Fine, Quot, Esc, Utf82, Utf83, Utf84, Bad }
         use Class::*;
         #[rustfmt::skip]
-        static CLASS: [Class; 256] = [
+        static CLASS: CacheAligned<[Class; 256]> = CacheAligned([
             /* 00-07 */ Bad  , Bad  , Bad  , Bad  , Bad  , Bad  , Bad  , Bad  ,
             /* 08-0f */ Bad  , Bad  , Bad  , Bad  , Bad  , Bad  , Bad  , Bad  ,
             /* 10-17 */ Bad  , Bad  , Bad  , Bad  , Bad  , Bad  , Bad  , Bad  ,
@@ -767,7 +767,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
             /* e8-ef */ Utf83, Utf83, Utf83, Utf83, Utf83, Utf83, Utf83, Utf83,
             /* f0-f7 */ Utf84, Utf84, Utf84, Utf84, Utf84, Bad  , Bad  , Bad  ,
             /* f8-ff */ Bad  , Bad  , Bad  , Bad  , Bad  , Bad  , Bad  , Bad  ,
-        ];
+        ]);
 
         let mut j = i;
         let mut last_j = j;
@@ -1341,7 +1341,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
 
     #[inline(always)]
     fn is_boundary_byte(b: u8) -> bool {
-        static TABLE: [bool; 256] = {
+        static TABLE: CacheAligned<[bool; 256]> = CacheAligned({
             let mut t = [false; 256];
             t[b'\t' as usize] = true;
             t[b'\n' as usize] = true;
@@ -1355,7 +1355,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
             t[b'{' as usize] = true;
             t[b'}' as usize] = true;
             t
-        };
+        });
 
         TABLE[b as usize]
     }
@@ -1519,7 +1519,7 @@ impl Machine<&[u8]> {
     }
 }
 
-static BORING: [bool; 256] = {
+static BORING: CacheAligned<[bool; 256]> = CacheAligned({
     let mut t = [false; 256];
     let mut i = 0u8;
     loop {
@@ -1530,7 +1530,7 @@ static BORING: [bool; 256] = {
         i += 1;
     }
     t
-};
+});
 
 #[inline(always)]
 fn str_boring(buf: &[u8], mut i: usize) -> usize {
