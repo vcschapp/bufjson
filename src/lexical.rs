@@ -162,7 +162,7 @@ macro_rules! parse_int {
         const MAX_DIGITS: usize = max_decimal_digits!($limit_val);
         if $sign == 1 && $slice[0] == b'-' {
             let digits = &$slice[1..];
-            if digits.is_empty() {
+            if digits.is_empty() || digits.len() > 1 && digits[0] == b'0' {
                 return Err(NumError::Format);
             } else if digits.len() < MAX_DIGITS {
                 parse_int!(calculate, digits, $t, negative, cannot_overflow);
@@ -171,7 +171,9 @@ macro_rules! parse_int {
             }
         } else {
             let digits = $slice;
-            if digits.len() < MAX_DIGITS {
+            if digits.len() > 1 && digits[0] == b'0' {
+                return Err(NumError::Format);
+            } else if digits.len() < MAX_DIGITS {
                 parse_int!(calculate, digits, $t, non_negative, cannot_overflow);
             } else if digits.len() == MAX_DIGITS {
                 parse_int!(calculate, digits, $t, non_negative, might_overflow);
@@ -3236,6 +3238,12 @@ mod tests {
     #[case::token_white("   ", NumError::Format)]
     #[case::space_prefix(" 1", NumError::Format)]
     #[case::space_suffix("1 ", NumError::Format)]
+    #[case::zero_zero("00", NumError::Format)]
+    #[case::zero_one("01", NumError::Format)]
+    #[case::zeros_3("007", NumError::Format)]
+    #[case::zeros_long("00000000000000000001", NumError::Format)]
+    #[case::minus_zero_zero("-00", NumError::Format)]
+    #[case::minus_zero_one("-01", NumError::Format)]
     #[case::decimal_zero("10.0", NumError::Format)]
     #[case::decimal("3.14159", NumError::Format)]
     #[case::exponent_zero("0e0", NumError::Format)]
@@ -3295,6 +3303,10 @@ mod tests {
     #[case::token_white("   ", NumError::Format)]
     #[case::space_prefix(" 1", NumError::Format)]
     #[case::space_suffix("1 ", NumError::Format)]
+    #[case::zero_zero("00", NumError::Format)]
+    #[case::zero_one("01", NumError::Format)]
+    #[case::zeros_3("007", NumError::Format)]
+    #[case::zeros_long("00000000000000000001", NumError::Format)]
     #[case::minus_zero("-0", NumError::Format)]
     #[case::minus_one("-1", NumError::Format)]
     #[case::minus_forty_two("-42", NumError::Format)]
@@ -3366,6 +3378,12 @@ mod tests {
     #[case::token_white("   ", NumError::Format)]
     #[case::space_prefix(" 1", NumError::Format)]
     #[case::space_suffix("1 ", NumError::Format)]
+    #[case::zero_zero("00", NumError::Format)]
+    #[case::zero_one("01", NumError::Format)]
+    #[case::zeros_3("007", NumError::Format)]
+    #[case::zeros_long("00000000000000000001", NumError::Format)]
+    #[case::minus_zero_zero("-00", NumError::Format)]
+    #[case::minus_zero_one("-01", NumError::Format)]
     #[case::decimal_zero("10.0", NumError::Format)]
     #[case::decimal("3.14159", NumError::Format)]
     #[case::exponent_zero("0e0", NumError::Format)]
