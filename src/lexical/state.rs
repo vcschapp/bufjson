@@ -133,7 +133,13 @@ pub enum Next {
     /// A lexical error was detected.
     ///
     /// This variant contains a single tuple field indicating the signed byte offset from the
-    /// previous scan position to the best position to report as the error position.
+    /// previous scan position to the best position to report as the error position. The value can
+    /// be negative when part of a multi-byte character or Unicode escape sequence provisionally
+    /// accepted across a buffer boundary turns out to be invalid. In these cases, the scan should
+    /// be rewound so the error can be reported at the start of the character or escape sequence.
+    ///
+    /// Adding the field value to the previous [`Machine::pos`] offset yields the current
+    /// [`Machine::pos`] offset.
     ///
     /// The specific error kind can be fetched via [`Machine::err_kind`].
     Err(i64),
@@ -870,9 +876,10 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
                     }
                     Next::Err(_) => {
                         col_delta += j - last_j;
-                        self.inline_advance_to_col(col_delta, j - self.buf_pos, j);
+                        let n = j - self.buf_pos;
+                        self.inline_advance_to_col(col_delta, n, j);
 
-                        return Next::Err(i64::try_from(j - self.buf_pos).unwrap_or(i64::MAX));
+                        return Next::Err(i64::try_from(n).unwrap_or(i64::MAX));
                     }
                     _ => unreachable!(),
                 },
@@ -889,9 +896,10 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
                     }
                     Next::Err(_) => {
                         col_delta += j - last_j;
-                        self.inline_advance_to_col(col_delta, j - self.buf_pos, j);
+                        let n = j - self.buf_pos;
+                        self.inline_advance_to_col(col_delta, n, j);
 
-                        return Next::Err(i64::try_from(j - self.buf_pos).unwrap_or(i64::MAX));
+                        return Next::Err(i64::try_from(n).unwrap_or(i64::MAX));
                     }
                     _ => unreachable!(),
                 },
@@ -1162,7 +1170,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
                     self.inline_adjust_for_err(0, -2);
                     self.set_err(ErrorKind::bad_utf8_cont_byte(3, n as u8, b[n]));
 
-                    Next::Err(m as i64 - 3)
+                    Next::Err(m as i64 - 2)
                 }
             }
         } else {
@@ -1419,13 +1427,21 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Machine<B> {
         hi: u16,
         lo: Option<u16>,
     ) -> Next {
-        if resumed {
-            self.inline_advance(anchor_pos - self.buf_pos, anchor_pos);
+        let err_delta = if resumed {
+            let n = anchor_pos - self.buf_pos;
+            self.inline_advance(n, anchor_pos);
             self.inline_adjust_for_err(pos_delta, pos_delta);
-        }
+
+            i64::try_from(n)
+                .ok()
+                .and_then(|n| n.checked_add(pos_delta))
+                .unwrap_or(i64::MAX)
+        } else {
+            pos_delta
+        };
         self.set_err(ErrorKind::bad_surrogate(hi, lo));
 
-        Next::Err(pos_delta)
+        Next::Err(err_delta)
     }
 
     #[inline(always)]
@@ -3720,6 +3736,8 @@ mod tests {
         let mut mach = Machine::new(buf);
         let mut items = Vec::new();
         let mut pos = *mach.pos();
+        // Machine offset at the start of each scan step, to check the `Next::Err` delta contract.
+        let mut before = mach.pos().offset; 
         let mut next = mach.next();
         let mut len = 0;
         loop {
@@ -3732,6 +3750,7 @@ mod tests {
                         escaped,
                     ));
                     pos = *mach.pos();
+                    before = mach.pos().offset;
                     next = mach.next();
                     len = 0;
                 }
@@ -3761,6 +3780,7 @@ mod tests {
                         }
                         (buf, rem) = split.apply(rem, split_count);
                         split_count += 1;
+                        before = mach.pos().offset;
                         next = mach.resume(buf);
                         match next {
                             Next::Done(token2, escaped, n) => {
@@ -3775,6 +3795,7 @@ mod tests {
                                     escaped,
                                 ));
                                 pos = *mach.pos();
+                                before = mach.pos().offset;
                                 next = mach.next();
                                 len = 0;
                                 break;
@@ -3790,7 +3811,15 @@ mod tests {
                         }
                     }
                 }
-                Next::Err(_) => {
+                Next::Err(n) => {
+                    // `Next::Err` is documented as the signed offset from the previous scan
+                    // position to the reported error position, so it must agree with `pos()`.
+                    assert_eq!(
+                        before as i64 + n,
+                        mach.pos().offset as i64,
+                        "Next::Err(n={n}) added to previous offset {before} must agree with current pos offset, but `{before} + {n} != {}`",
+                        mach.pos().offset
+                    );
                     items.push(Item::err(
                         pos,
                         *mach.pos(),
@@ -3804,6 +3833,7 @@ mod tests {
                         (buf, rem) = split.apply(rem, split_count);
                         split_count += 1;
                         pos = *mach.pos();
+                        before = mach.pos().offset;
                         next = mach.resume(buf);
                     } else {
                         items.push(Item::ok(Token::Eof, pos, &[], false));
