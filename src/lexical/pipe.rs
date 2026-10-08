@@ -460,6 +460,12 @@ impl IntoBuf for InnerLiteral {
 /// analyzer and, for large enough JSON texts, may lead to out-of-memory conditions. Therefore, it
 /// is advised that you retain `Literal` instances only as long as necessary to process them,
 /// extracting owned copies of their data if you need long-lived access to the token text.
+///
+/// # Hashing
+///
+/// Two `Literal` values with the same text always hash identically, regardless of how their bytes
+/// are laid out in memory. A `Literal` and an [`Unescaped`] of the same text also have the same
+/// hash value, again regardless of how the text is laid out across one or several memory buffers.
 #[derive(Clone, Debug)]
 pub struct Literal(InnerLiteral);
 
@@ -675,9 +681,9 @@ impl Hash for Literal {
             Repr::Together(s) => crate::buf::hash(s, state),
             Repr::Split(m) => crate::buf::hash(m.clone(), state),
         }
-        // Mirror `impl Hash for str`, which writes the bytes followed by a `0xff` terminator, so
-        // that a `Literal` and a `str` with the same text hash identically. `Unescaped` relies on
-        // this to satisfy the `Hash`/`Eq` contract across its `Literal` and `Expanded` variants.
+        // Replicate `impl Hash for str`, which writes the bytes followed by a `0xff` terminator.
+        // Under the Rust default SipHash-based hasher, this will cause a `Literal` and a `str` with
+        // the same text hash identically.
         state.write_u8(0xff);
     }
 }
@@ -1855,6 +1861,8 @@ mod tests {
 
     #[test]
     fn test_literal_compare() {
+        use crate::buf::tests::hasher_write_seq;
+
         let a_s = vec![
             Literal::from_static("a"),
             Literal::from_ref("a"),
@@ -1891,6 +1899,32 @@ mod tests {
                 1,
                 u8::MAX as usize,
                 true,
+            )),
+        ];
+        const LONG_LEN: usize = crate::buf::HASH_CHUNK * 2 + 3;
+        let long_s: Vec<Literal> = vec![
+            Literal::from_ref(&"a".repeat(LONG_LEN)),
+            Literal::from_string("a".repeat(LONG_LEN)),
+            Literal(InnerLiteral::test_new_multi(
+                [vec![b'a'; LONG_LEN]],
+                0,
+                LONG_LEN,
+                false,
+            )),
+            Literal(InnerLiteral::test_new_multi(
+                [
+                    vec![b'a'; crate::buf::HASH_CHUNK + 1],
+                    vec![b'a'; LONG_LEN - crate::buf::HASH_CHUNK - 1],
+                ],
+                0,
+                LONG_LEN,
+                false,
+            )),
+            Literal(InnerLiteral::test_new_multi(
+                ["a"; LONG_LEN],
+                0,
+                LONG_LEN,
+                false,
             )),
         ];
 
@@ -2021,11 +2055,35 @@ mod tests {
         check_hash!(&a_s[0], a_s.iter().skip(1));
         check_hash!(&aa_s[0], aa_s.iter().skip(1));
         check_hash!(&aab_s[0], aab_s.iter().skip(1));
+        check_hash!(&long_s[0], long_s.iter().skip(1));
 
-        // A `Literal` must hash identically to a `str` with the same text (see `impl Hash for
-        // Literal`), otherwise `Unescaped::Literal` and `Unescaped::Expanded` disagree.
+        // `Unescaped<Literal>` must issue the same `Hasher` call sequence as the bare `Literal` and
+        // as the `Expanded` form of the same text, for every representation and length.
+        for set in [&a_s, &aa_s, &aab_s, &long_s] {
+            let expanded = Unescaped::<Literal>::Expanded(set[0].to_string());
+            for lit in set {
+                let wrapped = Unescaped::Literal(lit.clone());
+                assert_eq!(hasher_write_seq(lit), hasher_write_seq(&wrapped), "{lit:?}");
+                assert_eq!(
+                    hasher_write_seq(&expanded),
+                    hasher_write_seq(&wrapped),
+                    "{lit:?}"
+                );
+            }
+        }
+
+        // `Literal` hashes identically to a `str` with the same text up to `HASH_CHUNK` bytes (see
+        // `impl Hash for Literal`), for any `Hasher` that does not override `write_str`. Longer
+        // text is hashed in `HASH_CHUNK` pieces so the result is independent of buffer layout.
+        // The sequence of `Hasher` calls does not match beyond `HASH_CHUNK`. Whether the computed
+        // hash codes match or not is dependent on the underlying `Hasher` implementation: yes for
+        // the standard SipHash-based `DefaultHasher`, but no for some others.
         assert_eq!(hash(&"a"), hash(&a_s[0]));
         assert_eq!(hash(&"a".repeat(INLINE_LEN).as_str()), hash(&aa_s[0]));
+        assert_ne!(
+            hasher_write_seq(&"a".repeat(LONG_LEN).as_str()),
+            hasher_write_seq(&long_s[0]),
+        );
 
         macro_rules! check_map {
             ($map:ident, $patient_zero:expr, $iter:expr) => {
@@ -2041,6 +2099,7 @@ mod tests {
         check_map!(hash_map1, a_s[0].clone(), a_s.clone());
         check_map!(hash_map1, aa_s[0].clone(), aa_s.clone());
         check_map!(hash_map1, aab_s[0].clone(), aab_s.clone());
+        check_map!(hash_map1, long_s[0].clone(), long_s.clone());
 
         let mut hash_map2 = HashMap::new();
 

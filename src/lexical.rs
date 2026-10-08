@@ -1048,6 +1048,18 @@ impl Deref for Unescaped<&str> {
     }
 }
 
+/// # Deprecated
+///
+/// This trait `impl` should be considered deprecated and not used. It will be removed at some
+/// point in the future.
+///
+/// It works for the SipHash-1-3 implementation that has been the Rust standard hasher since 2016
+/// (`std::hash::DefaultHasher`), but will not work for all alternative hashers, e.g.,
+/// `rustc_hash::FxHasher` and `ahash::AHasher`, because they mix each `write` call into the state
+/// as a unit rather than buffering bytes into a continuous stream, so splitting the same bytes
+/// across `write` calls at different boundaries produces different hashes. If you are doing
+/// anything with a non-standard hasher, it is not safe to rely on `Unescaped<&str>` being
+/// `Borrow<str>` for text longer than 1024 bytes.
 impl Borrow<str> for Unescaped<&str> {
     #[inline]
     fn borrow(&self) -> &str {
@@ -1086,13 +1098,21 @@ where
 
 impl<T> Hash for Unescaped<T>
 where
-    T: Hash,
+    T: Clone + IntoBuf,
 {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // Both variants cause an identical sequence of `Hasher` calls for identical text,
+        // regardless of length, as mandated by the `Hash`/`Eq` contract. The text is hashed in
+        // fixed-size chunks (see `buf::hash`) so the result is also independent of how a literal
+        // value's bytes are split across buffers. The trailing `0xff` mirrors `impl Hash for str`,
+        // so unescaped text up to the chunk size matches the hash of a `str` of the same text.
+        // Beyond the chunk size, the computed hash can diverge from the hash of the same text
+        // `str`, which is why the `Borrow<str>` impl is effectively deprecated.
         match self {
-            Unescaped::Literal(t) => t.hash(state),
-            Unescaped::Expanded(e) => e.hash(state),
+            Unescaped::Literal(t) => crate::buf::hash(t.clone(), state),
+            Unescaped::Expanded(e) => crate::buf::hash(e.as_str(), state),
         }
+        state.write_u8(0xff);
     }
 }
 
@@ -2662,6 +2682,49 @@ mod tests {
 
         assert_eq!(0, b.remaining());
         assert_eq!(b"", b.chunk())
+    }
+
+    #[rstest]
+    #[case::empty("")]
+    #[case::one("a")]
+    #[case::chunk_minus_1("a".repeat(crate::buf::HASH_CHUNK - 1))]
+    #[case::chunk("a".repeat(crate::buf::HASH_CHUNK))]
+    #[case::chunk_plus_1("a".repeat(crate::buf::HASH_CHUNK + 1))]
+    #[case::two_chunks_plus_3("a".repeat(crate::buf::HASH_CHUNK * 2 + 3))]
+    #[case::multibyte("é".repeat(crate::buf::HASH_CHUNK))]
+    fn test_unescaped_hash_variants_agree(#[case] s: impl AsRef<str>) {
+        use crate::buf::tests::{BoundaryHasher, hasher_write_seq};
+        use core::hash::Hasher;
+
+        let s = s.as_ref();
+        let literal: Unescaped<&str> = Unescaped::Literal(s);
+        let expanded: Unescaped<&str> = Unescaped::Expanded(s.to_string());
+
+        // `Eq` says they are equal, so `Hash` must issue identical write sequences.
+        assert_eq!(literal, expanded);
+        assert_eq!(hasher_write_seq(&literal), hasher_write_seq(&expanded));
+
+        // Both must agree with `buf::hash` plus the terminator, the crate's one definition of how
+        // text hashes.
+        let mut expect = BoundaryHasher::default();
+        crate::buf::hash(s, &mut expect);
+        expect.write_u8(0xff);
+        assert_eq!(expect.0, hasher_write_seq(&literal));
+    }
+
+    #[test]
+    fn test_unescaped_hash_map_lookup_across_variants() {
+        let long = "a".repeat(crate::buf::HASH_CHUNK * 2 + 3);
+        let longer = "b".repeat(crate::buf::HASH_CHUNK + 1);
+        let mut map = HashMap::new();
+
+        map.insert(Unescaped::Literal(long.as_str()), 1);
+        assert_eq!(Some(&1), map.get(&Unescaped::Expanded(long.clone())));
+
+        map.insert(Unescaped::Expanded(longer.clone()), 2);
+        assert_eq!(Some(&2), map.get(&Unescaped::Literal(longer.as_str())));
+
+        assert_eq!(2, map.len());
     }
 
     #[test]

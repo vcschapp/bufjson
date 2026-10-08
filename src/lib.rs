@@ -835,7 +835,6 @@ macro_rules! stringify_known_utf8 {
     };
 }
 
-#[cfg(any(feature = "pipe", feature = "read"))]
 pub(crate) mod buf {
     use super::*;
     use core::hash::Hasher;
@@ -848,6 +847,7 @@ pub(crate) mod buf {
     // This is crate-internal, because it's not functionality we particularly need to export, as we
     // don't want to acquire responsibility for supporting every aspect of someone else's `Buf`
     // implementation.
+    #[cfg(any(feature = "pipe", feature = "read"))]
     pub fn to_string<T: IntoBuf>(t: T) -> String {
         let mut b = t.into_buf();
         let mut v = Vec::with_capacity(b.remaining());
@@ -865,6 +865,7 @@ pub(crate) mod buf {
     //
     // SAFETY: This function is only safe to call if the `Buf` passed in only contains valid UTF-8 byte
     //         sequences.
+    #[cfg(any(feature = "pipe", feature = "read"))]
     pub fn display<T: IntoBuf>(t: T, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut b = t.into_buf();
 
@@ -916,8 +917,34 @@ pub(crate) mod buf {
     }
 
     #[cfg(test)]
-    mod tests {
+    pub(crate) mod tests {
         use super::*;
+        use core::hash::{Hash, Hasher};
+
+        /// A fake `Hasher` whose only purpose is to record the exact sequence of `write` calls so
+        /// that tests can make assertions at that level of granularity.
+        ///
+        /// The returned hash code is always zero.
+        #[derive(Default)]
+        pub(crate) struct BoundaryHasher(pub(crate) Vec<Vec<u8>>);
+
+        impl Hasher for BoundaryHasher {
+            fn write(&mut self, bytes: &[u8]) {
+                self.0.push(bytes.into());
+            }
+
+            fn finish(&self) -> u64 {
+                0
+            }
+        }
+
+        /// The `write` sequence a value issues when hashed.
+        pub(crate) fn hasher_write_seq<T: Hash>(t: &T) -> Vec<Vec<u8>> {
+            let mut h = BoundaryHasher::default();
+            t.hash(&mut h);
+
+            h.0
+        }
 
         #[test]
         #[cfg(feature = "read")]

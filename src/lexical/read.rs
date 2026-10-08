@@ -362,6 +362,12 @@ impl From<InnerContent> for InnerLiteral {
 /// for large enough JSON texts, may lead to out-of-memory conditions. Therefore, it is strongly
 /// advised that you retain `Literal` instances only as long as necessary to process them,
 /// extracting owned copies of their data if you need long-lived access to the token text.
+///
+/// # Hashing
+///
+/// Two `Literal` values with the same text always hash identically, regardless of how their bytes
+/// are laid out in memory. A `Literal` and an [`Unescaped`] of the same text also have the same
+/// hash value, again regardless of how the text is laid out across one or several memory buffers.
 #[derive(Clone, Debug)]
 pub struct Literal(InnerLiteral);
 
@@ -568,9 +574,9 @@ impl Hash for Literal {
             Repr::Together(s) => crate::buf::hash(s, state),
             Repr::Split(r) => crate::buf::hash(r.clone(), state),
         }
-        // Mirror `impl Hash for str`, which writes the bytes followed by a `0xff` terminator, so
-        // that a `Literal` and a `str` with the same text hash identically. `Unescaped` relies on
-        // this to satisfy the `Hash`/`Eq` contract across its `Literal` and `Expanded` variants.
+        // Replicate `impl Hash for str`, which writes the bytes followed by a `0xff` terminator.
+        // Under the Rust default SipHash-based hasher, this will cause a `Literal` and a `str` with
+        // the same text hash identically.
         state.write_u8(0xff);
     }
 }
@@ -2300,6 +2306,8 @@ mod tests {
 
     #[test]
     fn test_literal_compare() {
+        use crate::buf::tests::hasher_write_seq;
+
         let a_s = vec![
             Literal::from_static("a"),
             Literal::from_ref("a"),
@@ -2333,6 +2341,26 @@ mod tests {
             Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(
                 ["a".repeat(u8::MAX as usize - 1), "abc".to_string()],
                 1..u8::MAX as usize + 1,
+            )))),
+        ];
+        const LONG_LEN: usize = crate::buf::HASH_CHUNK * 2 + 3;
+        let long_s: Vec<Literal> = vec![
+            Literal::from_ref(&"a".repeat(LONG_LEN)),
+            Literal::from_string("a".repeat(LONG_LEN)),
+            Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(
+                [vec![b'a'; LONG_LEN]],
+                0..LONG_LEN,
+            )))),
+            Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(
+                [
+                    vec![b'a'; crate::buf::HASH_CHUNK + 1],
+                    vec![b'a'; LONG_LEN - crate::buf::HASH_CHUNK - 1],
+                ],
+                0..LONG_LEN,
+            )))),
+            Literal(InnerLiteral::Multi(Box::new(MultiRef::test_new(
+                ["a"; LONG_LEN],
+                0..LONG_LEN,
             )))),
         ];
 
@@ -2432,6 +2460,21 @@ mod tests {
             }
         }
 
+        // `Unescaped<Literal>` must issue the same `Hasher` call sequence as the bare `Literal` and
+        // as the `Expanded` form of the same text, for every representation and length.
+        for set in [&a_s, &aa_s, &aab_s, &long_s] {
+            let expanded = Unescaped::<Literal>::Expanded(set[0].to_string());
+            for lit in set {
+                let wrapped = Unescaped::Literal(lit.clone());
+                assert_eq!(hasher_write_seq(lit), hasher_write_seq(&wrapped), "{lit:?}");
+                assert_eq!(
+                    hasher_write_seq(&expanded),
+                    hasher_write_seq(&wrapped),
+                    "{lit:?}"
+                );
+            }
+        }
+
         macro_rules! check_map {
             ($map:ident, $patient_zero:expr, $iter:expr) => {
                 assert!($map.insert($patient_zero, $patient_zero).is_none());
@@ -2446,6 +2489,7 @@ mod tests {
         check_map!(hash_map1, a_s[0].clone(), a_s.clone());
         check_map!(hash_map1, aa_s[0].clone(), aa_s.clone());
         check_map!(hash_map1, aab_s[0].clone(), aab_s.clone());
+        check_map!(hash_map1, long_s[0].clone(), long_s.clone());
 
         let mut hash_map2 = HashMap::new();
 
