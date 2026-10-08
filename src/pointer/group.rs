@@ -18,9 +18,15 @@ pub(crate) struct Node {
     pub(crate) child_index: Option<NonZero<u32>>,
     pub(crate) num_trie_children: u32,
     pub(crate) num_name_children: u32,
-    // KNOWN ISSUE: `index` children are duplicated as `name` children, leading to exponential
+    // KNOWN ISSUE: `name` children are duplicated as `index` children, leading to exponential
     //              growth of the tree structure because every numeric reference token becomes two
     //              different subtree. Degenerate inputs like `/0/0/0/0.../0` can lead to OOM.
+    // PLANNED FIX: Rather than duplicating the `name` subtree under the corresponding `index` node,
+    //              let's find a way to have index children refer back to their equivalent name
+    //              node. So if an index child matches, you would descend into the matching name
+    //              subtree. Is it as simple as adding an Option<NonZero<u32>> referring to the
+    //              correct name sibling into the `InnerNode::Index` variant? It'll still be smaller
+    //              than the other variants if so.
     pub(crate) num_index_children: u32,
     pub(crate) inner: InnerNode,
     pub(crate) match_index: Option<usize>,
