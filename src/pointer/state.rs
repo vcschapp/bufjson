@@ -561,6 +561,26 @@ impl<G: AsRef<Group>> Machine<G> {
     const MAX_LINEAR_SEARCH_LEN: usize = 2;
 
     fn find_index_child(&self, node_index: usize, item_index: usize) -> Option<usize> {
+        let child_index = self.find_index_key(node_index, item_index)?;
+
+        let index_node = &self.group().nodes[child_index];
+        debug_assert!(
+            index_node.is_leaf(),
+            "index node must be a leaf: {index_node:?}"
+        );
+
+        // The index node at `child_index` is a leaf, since all index nodes are leaves. Its subtree,
+        // if any, is the sibling name/trie subtree for the same digit string. This subtree exists
+        // only for non-terminal nodes. If the subtree does exist, we yield the name/trie node that
+        // corresponds to it. If it doesn't, the child index node we found will carry a terminal
+        // pointer and we yield that.
+        Some(
+            self.resolve_index_to_name(node_index, item_index)
+                .unwrap_or(child_index),
+        )
+    }
+
+    fn find_index_key(&self, node_index: usize, item_index: usize) -> Option<usize> {
         let node = self.node_at_index(node_index);
         let i = node
             .child_index
@@ -590,6 +610,15 @@ impl<G: AsRef<Group>> Machine<G> {
                 .ok()
                 .map(|idx| i + idx)
         }
+    }
+
+    fn resolve_index_to_name(&self, parent_index: usize, item_index: usize) -> Option<usize> {
+        let parent = self.node_at_index(parent_index);
+        let start = parent.child_index?.get() as usize;
+        let end = start + parent.num_trie_children as usize + parent.num_name_children as usize;
+        let mut digits = Digits::new(item_index as u64).peekable();
+
+        self.find_name_child_iter(start..end, &mut digits)
     }
 
     fn find_name_child<C: lexical::Content>(
@@ -911,6 +940,43 @@ impl<'a, B: Buf> Iterator for BufIter<'a, B> {
             c
         } else {
             panic!("invalid {m}-byte UTF-8 character: {:02x?}", &tmp[..m]);
+        }
+    }
+}
+
+// Iterator over the digits in a `u64`.
+struct Digits {
+    buf: [u8; 20],
+    pos: usize,
+}
+
+impl Digits {
+    fn new(mut n: u64) -> Self {
+        let mut buf = [0u8; 20];
+        let mut pos = 20;
+        loop {
+            pos -= 1;
+            buf[pos] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+
+        Self { buf, pos }
+    }
+}
+
+impl Iterator for Digits {
+    type Item = char;
+
+    fn next(&mut self) -> Option<char> {
+        if self.pos < self.buf.len() {
+            let c = self.buf[self.pos] as char;
+            self.pos += 1;
+            Some(c)
+        } else {
+            None
         }
     }
 }

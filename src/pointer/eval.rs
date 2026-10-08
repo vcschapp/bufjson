@@ -1353,6 +1353,15 @@ mod tests {
             Event::Exit(Token::ArrEnd, Pointer::default()),
         ]
     )]
+    #[case::index_descends_through_trie_split(
+        ["/1/x", "/10/y", "/0/0/0"],
+        r#"[[[7]],{"x":1},2,3,4,5,6,7,8,9,{"y":2}]"#,
+        [
+            Event::Match(Token::Num, Pointer::from_static("/0/0/0")),
+            Event::Match(Token::Num, Pointer::from_static("/1/x")),
+            Event::Match(Token::Num, Pointer::from_static("/10/y")),
+        ]
+    )]
     #[case::name_diverges_after_common_prefix_1(Some("/foo"), r#"{"fox":"🦊"}"#, NO_EVENTS)]
     #[case::name_diverges_after_common_prefix_2(
         ["/a", "/b", "/foo"],

@@ -18,15 +18,14 @@ pub(crate) struct Node {
     pub(crate) child_index: Option<NonZero<u32>>,
     pub(crate) num_trie_children: u32,
     pub(crate) num_name_children: u32,
-    // KNOWN ISSUE: `name` children are duplicated as `index` children, leading to exponential
-    //              growth of the tree structure because every numeric reference token becomes two
-    //              different subtree. Degenerate inputs like `/0/0/0/0.../0` can lead to OOM.
-    // PLANNED FIX: Rather than duplicating the `name` subtree under the corresponding `index` node,
-    //              let's find a way to have index children refer back to their equivalent name
-    //              node. So if an index child matches, you would descend into the matching name
-    //              subtree. Is it as simple as adding an Option<NonZero<u32>> referring to the
-    //              correct name sibling into the `InnerNode::Index` variant? It'll still be smaller
-    //              than the other variants if so.
+    // INVARIANT: `Index` nodes are always leaves, so for them `child_index` is always `None` and
+    //            each `num_*_children` field is always zero. An index node only exists as a sorted
+    //            integer key for `Machine::find_index_child`. Because every index node has a
+    //            corresponding name or trie node, the index node's subtree is reached by following
+    //            tracing the index's decimal digits down the name/trie subtree. This avoids the
+    //            exponential duplication that occurred in previous implementations for inputs like
+    //            `/0/0/0/.../0` because the name/trie and index subtrees both duplicated the same
+    //            children.
     pub(crate) num_index_children: u32,
     pub(crate) inner: InnerNode,
     pub(crate) match_index: Option<usize>,
@@ -112,6 +111,13 @@ impl Node {
             InnerNode::Trie(ref s) | InnerNode::Name(ref s) => s,
             InnerNode::Index(_) => panic!("index node does not have a name part: {self:?}"),
         }
+    }
+
+    pub(crate) fn is_leaf(&self) -> bool {
+        self.child_index.is_none()
+            && self.num_trie_children == 0
+            && self.num_name_children == 0
+            && self.num_index_children == 0
     }
 }
 
@@ -432,6 +438,12 @@ impl Builder {
                 }
             }
 
+            debug_assert!(
+                !matches!(self.node.inner, InnerNode::Index(_)) || self.node.is_leaf(),
+                "index node must be a leaf: {:?}",
+                self.node
+            );
+
             // Push the current node, now completed, into the nodes list.
             self.nodes.push(self.node);
 
@@ -494,7 +506,6 @@ impl Builder {
         // main queue.
         struct LocalChild {
             index: u64,
-            start_index: usize,
             pointer_index: usize,
         }
         let mut local_buf = Vec::new();
@@ -517,14 +528,8 @@ impl Builder {
                 && !matches!(prev, Some(x) if x == index)
             {
                 prev = Some(index);
-                let start_index = if parsed_pointer.has_more_tokens(self.level) {
-                    pointer_index
-                } else {
-                    pointer_index + 1
-                };
                 local_buf.push(LocalChild {
                     index,
-                    start_index,
                     pointer_index,
                 });
             }
@@ -537,14 +542,10 @@ impl Builder {
         // Push the new index nodes into the queue.
         for n in local_buf {
             let child = Node::new_index(n.index, self.matched(true, n.pointer_index));
-            enqueue_child!(
-                self,
-                child,
-                n.start_index,
-                self.level + 1,
-                n.pointer_index,
-                0
-            );
+            // Index nodes are always leaves. An index node's subtree is reached through the sibling
+            // name/trie subtree for the same digit string, which the evaluator resolves on a hit
+            // (see `Machine::find_index_child`). Passing `end_index` as the start index makes `build()` find no next-level children.
+            enqueue_child!(self, child, end_index, self.level + 1, n.pointer_index, 0);
         }
     }
 
@@ -958,10 +959,9 @@ mod tests {
     #[case::slash_0_slash_empty("/0/", [
         Node::default().with_child_index(1).with_name_children(1).with_index_children(1),
         Node::new_name("0", None).with_child_index(3).with_name_children(1),
-        Node::new_index(0, None).with_child_index(4).with_name_children(1),
+        Node::new_index(0, None),
         Node::new_name("", Some(0)),
-        Node::new_name("", Some(0)),
-    ], [0, 0, 1, 2])]
+    ], [0, 0, 1])]
     #[case::slash_empty_slash_a("//a", [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("", None).with_child_index(2).with_name_children(1),
@@ -981,12 +981,10 @@ mod tests {
     #[case::slash_0_slash_1("/0/1", [
         Node::default().with_child_index(1).with_name_children(1).with_index_children(1),
         Node::new_name("0", None).with_child_index(3).with_name_children(1).with_index_children(1),
-        Node::new_index(0, None).with_child_index(5).with_name_children(1).with_index_children(1),
+        Node::new_index(0, None),
         Node::new_name("1", Some(0)),
         Node::new_index(1, Some(0)),
-        Node::new_name("1", Some(0)),
-        Node::new_index(1, Some(0)),
-    ], [0, 0, 1, 1, 2, 2])]
+    ], [0, 0, 1, 1])]
     #[case::triple_empty("///", [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("", None).with_child_index(2).with_name_children(1),
@@ -1058,10 +1056,9 @@ mod tests {
         Node::new_name("bar", None).with_child_index(4).with_name_children(1),
         Node::new_name("baz", None).with_child_index(5).with_name_children(1).with_index_children(1),
         Node::new_name("13", None).with_child_index(7).with_name_children(1),
-        Node::new_index(13, None).with_child_index(8).with_name_children(1),
+        Node::new_index(13, None),
         Node::new_name("~/", Some(1)),
-        Node::new_name("~/", Some(1)),
-    ], [0, 0, 2, 3, 4, 4, 5, 6])]
+    ], [0, 0, 2, 3, 4, 4, 5])]
     #[case::two_slash_empty_slash_a_slash_empty_slash_b(["//a", "//b"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("", None).with_child_index(2).with_name_children(2),
@@ -1097,12 +1094,10 @@ mod tests {
     #[case::two_slash_0_and_slash_0_slash_1(["/0", "/0/1"], [
         Node::default().with_child_index(1).with_name_children(1).with_index_children(1),
         Node::new_name("0", Some(0)).with_child_index(3).with_name_children(1).with_index_children(1),
-        Node::new_index(0, Some(0)).with_child_index(5).with_name_children(1).with_index_children(1),
+        Node::new_index(0, Some(0)),
         Node::new_name("1", Some(1)),
         Node::new_index(1, Some(1)),
-        Node::new_name("1", Some(1)),
-        Node::new_index(1, Some(1)),
-    ], [0, 0, 1, 1, 2, 2])]
+    ], [0, 0, 1, 1])]
     #[case::two_slash_ab_and_slash_ac(["/ab", "/ac"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("a", None).with_child_index(2).with_trie_children(2),
@@ -1283,8 +1278,8 @@ mod tests {
         /*  2 */ Node::new_name("1", Some(2)).with_child_index(8).with_trie_children(1).with_name_children(2).with_index_children(2),
         /*  3 */ Node::new_name("3", Some(6)).with_child_index(13).with_name_children(1).with_index_children(1),
         /*  4 */ Node::new_index(0, Some(1)),
-        /*  5 */ Node::new_index(1, Some(2)).with_child_index(15).with_name_children(2).with_index_children(2),
-        /*  6 */ Node::new_index(3, Some(6)).with_child_index(19).with_name_children(1).with_index_children(1),
+        /*  5 */ Node::new_index(1, Some(2)),
+        /*  6 */ Node::new_index(3, Some(6)),
         /*  7 */ Node::new_index(10, Some(5)),
         // Level 2.
         /*  8 */ Node::new_trie("0", Some(5)),
@@ -1294,13 +1289,7 @@ mod tests {
         /* 12 */ Node::new_index(3, Some(4)),
         /* 13 */ Node::new_name("0", Some(7)),
         /* 14 */ Node::new_index(0, Some(7)),
-        /* 15 */ Node::new_name("1", Some(3)),
-        /* 16 */ Node::new_name("3", Some(4)),
-        /* 17 */ Node::new_index(1, Some(3)),
-        /* 18 */ Node::new_index(3, Some(4)),
-        /* 19 */ Node::new_name("0", Some(7)),
-        /* 20 */ Node::new_index(0, Some(7)),
-    ], [0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 3, 3, 5, 5, 5, 5, 6, 6])]
+    ], [0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 3, 3])]
     #[case::big2(["", "/0", "/bar", "/foo", "/foo", "/foo/0", "/foo/1/ish", "/foo/baz", "/fool", "/fool/ish", "/fool/ish", "/foolish", "/foolish/ness", "/foolishness/~0", "/foot", "/qux/corge"], [
         // Root.
         /*  0 */ Node::default().with_child_index(1).with_name_children(4).with_index_children(1).with_match_index(0),
@@ -1317,19 +1306,18 @@ mod tests {
         /*  9 */ Node::new_name("1", None).with_child_index(16).with_name_children(1),
         /* 10 */ Node::new_name("baz", Some(6)),
         /* 11 */ Node::new_index(0, Some(4)),
-        /* 12 */ Node::new_index(1, None).with_child_index(17).with_name_children(1),
+        /* 12 */ Node::new_index(1, None),
         /* 13 */ Node::new_name("corge", Some(13)),
         // Level 3.
-        /* 14 */ Node::new_trie("ish", Some(9)).with_child_index(18).with_trie_children(1).with_name_children(1),
+        /* 14 */ Node::new_trie("ish", Some(9)).with_child_index(17).with_trie_children(1).with_name_children(1),
         /* 15 */ Node::new_name("ish", Some(8)),
         /* 16 */ Node::new_name("ish", Some(5)),
-        /* 17 */ Node::new_name("ish", Some(5)),
         // Level 4.
-        /* 18 */ Node::new_trie("ness", None).with_child_index(20).with_name_children(1),
-        /* 19 */ Node::new_name("ness", Some(10)),
+        /* 17 */ Node::new_trie("ness", None).with_child_index(19).with_name_children(1),
+        /* 18 */ Node::new_name("ness", Some(10)),
         // Level 5.
-        /* 20  */ Node::new_name("~", Some(11)),
-    ], [0, 0, 0, 0, 0, 3, 3, 3, 3, 3, 3, 3, 4, 6, 6, 9, 12, 14, 14, 18])]
+        /* 19 */ Node::new_name("~", Some(11)),
+    ], [0, 0, 0, 0, 0, 3, 3, 3, 3, 3, 3, 3, 4, 6, 6, 9, 14, 14, 17])]
     fn test_group_from_pointers<I, J, K>(
         #[case] pointers: I,
         #[case] expect_nodes: J,
@@ -1456,5 +1444,25 @@ mod tests {
         let group: Group = pointers.into_iter().collect();
 
         assert_eq!(expect, group.pointers);
+    }
+
+    #[test]
+    fn test_group_from_pointer_linear_memory() {
+        // Regression test verifying that JSON Pointers with deep repetition of integer values don't
+        // OOM due to exponential memory usage. In previous implementations, every index node
+        // duplicated the child nodes of the name/trie subtree that matched its digits, causing
+        // every non-negative integer reference token in a JSON Pointer to double its size. The
+        // current implementation solves the problem by making index nodes into leaves.
+        const DEPTH: usize = 32;
+        let ptr = "/0".repeat(DEPTH);
+        let g = Group::from_pointer(Pointer::from_owned(ptr).unwrap());
+
+        assert_eq!(1 + 2 * DEPTH, g.nodes.len());
+        assert_eq!(2 * DEPTH, g.parents.len());
+        for node in &g.nodes {
+            if let InnerNode::Index(_) = node.inner {
+                assert!(node.is_leaf(), "index node must be a leaf: {node:?}");
+            }
+        }
     }
 }
