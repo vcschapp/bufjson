@@ -3737,7 +3737,7 @@ mod tests {
         let mut items = Vec::new();
         let mut pos = *mach.pos();
         // Machine offset at the start of each scan step, to check the `Next::Err` delta contract.
-        let mut before = mach.pos().offset; 
+        let mut before = mach.pos().offset;
         let mut next = mach.next();
         let mut len = 0;
         loop {

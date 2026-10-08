@@ -701,21 +701,14 @@ impl core::error::Error for Error {
     }
 }
 
-#[repr(u8)]
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
 enum State {
     // Parser is operating normally.
-    //
-    // The assigned value of zero means that when bitwise OR'd with a `u8` lookup table key, the key
-    // is unchanged.
     #[default]
-    Ok = 0x00,
+    Ok,
 
     // Parser is in the permanent error state.
-    //
-    // The assigned value of `0xff` means that when bitwise OR'd with a `u8` lookup table key, the
-    // key changes to `Err`.
-    Err = 0xff,
+    Err,
 }
 
 /// Parses JSON text at a syntax level.
@@ -944,30 +937,34 @@ where
     #[allow(clippy::should_implement_trait)]
     #[inline]
     pub fn next(&mut self) -> Token {
+        if self.state == State::Err {
+            return Token::Err;
+        }
+
         #[repr(u8)]
         #[rustfmt::skip]
         #[derive(Clone, Copy, Debug)]
         enum Action {
             ArrBegin, ArrElement, ArrElementSep, Ignore, Name, NameSep, ObjBegin, ObjValueSep,
-            StructEnd, Value, ErrLexical, ErrSyntax, ErrCached,
+            StructEnd, Value, ErrLexical, ErrSyntax
         }
 
+        // Compile-time assertion that keys for the action table will fit into 128 slots.
+        const _: () = assert!((Expect::Value as usize) < 8 && (Token::Eof as usize) < 16);
+
         macro_rules! key {
-            ($state:expr, $expect:expr, $token:expr) => {
-                ($state as usize) | (($expect as usize) << 4) | ($token as usize)
+            ($expect:expr, $token:expr) => {
+                (($expect as usize) << 4) | ($token as usize)
             };
         }
 
-        static ACTION: [Action; 256] = {
-            let mut t = [Action::ErrSyntax; 256];
-
-            // If we're already in an error state, stay there.
-            t[key!(State::Err, 0, 0)] = Action::ErrCached;
+        static ACTION: [Action; 128] = {
+            let mut t = [Action::ErrSyntax; 128];
 
             macro_rules! set_inner {
                 ($expect:ident, [$($token:ident),+], $action:ident) => {
                     $(
-                        t[key!(State::Ok, Expect::$expect, Token::$token)] = Action::$action;
+                        t[key!(Expect::$expect, Token::$token)] = Action::$action;
                     )+
                 };
             }
@@ -1031,7 +1028,7 @@ where
         };
 
         let token = self.lexer.next();
-        let key = key!(self.state, self.context.expect, token);
+        let key = key!(self.context.expect, token);
         match ACTION[key] {
             Action::ArrBegin => {
                 let level = self.level();
@@ -1063,7 +1060,6 @@ where
             Action::ObjValueSep => self.context.expect = Expect::ObjName,
             Action::StructEnd => self.got_value(true),
             Action::Value => self.got_value(false),
-            Action::ErrCached => return Token::Err,
             Action::ErrLexical => {
                 self.err_lexical();
                 return Token::Err;
@@ -2216,6 +2212,122 @@ mod tests {
         assert_eq!(expect_token, parser.next_end());
         assert_eq!(expect_level, parser.level());
         assert_eq!(expect_next, parser.next());
+    }
+
+    #[rstest]
+    #[case::lexical_lit(
+        "falsetto",
+        0,
+        ErrorKind::Lexical(lexical::ErrorKind::expect_boundary(Token::LitFalse, b't')),
+        Pos::default()
+    )]
+    #[case::lexical_num(
+        " 01,",
+        1,
+        ErrorKind::Lexical(lexical::ErrorKind::expect_dot_exp_or_boundary(b'1')),
+        Pos::new(1, 1, 2)
+    )]
+    #[case::syntax_value(
+        "]0",
+        0,
+        ErrorKind::Syntax { context: Context::with_expect(Expect::Value), token: Token::ArrEnd },
+        Pos::default()
+    )]
+    #[case::syntax_eof(
+        "1 2",
+        2,
+        ErrorKind::Syntax { context: Context::with_expect(Expect::Eof), token: Token::Num },
+        Pos::new(2, 1, 3)
+    )]
+    #[case::syntax_arr_element_or_end(
+        "[}1",
+        1,
+        ErrorKind::Syntax { context: Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementOrEnd), token: Token::ObjEnd },
+        Pos::new(1, 1, 2)
+    )]
+    #[case::syntax_arr_element_sep_or_end(
+        "[1:2",
+        2,
+        ErrorKind::Syntax { context: Context::with_struct([StructKind::Arr]).and_expect(Expect::ArrElementSepOrEnd), token: Token::NameSep },
+        Pos::new(2, 1, 3)
+    )]
+    #[case::syntax_obj_name_or_end(
+        "{1}",
+        1,
+        ErrorKind::Syntax { context: Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameOrEnd), token: Token::Num },
+        Pos::new(1, 1, 2)
+    )]
+    #[case::syntax_obj_name_sep(
+        r#"{"a",1"#,
+        2,
+        ErrorKind::Syntax { context: Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjNameSep), token: Token::ValueSep },
+        Pos::new(4, 1, 5)
+    )]
+    #[case::syntax_obj_value_sep_or_end(
+        r#"{"a":1]2"#,
+        4,
+        ErrorKind::Syntax { context: Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjValueSepOrEnd), token: Token::ArrEnd },
+        Pos::new(6, 1, 7)
+    )]
+    #[case::syntax_obj_name(
+        r#"{"a":1,}2"#,
+        5,
+        ErrorKind::Syntax { context: Context::with_struct([StructKind::Obj]).and_expect(Expect::ObjName), token: Token::ObjEnd },
+        Pos::new(7, 1, 8)
+    )]
+    fn test_parser_next_err_state(
+        #[case] input: &str,
+        #[case] skip: usize,
+        #[case] expect_kind: ErrorKind,
+        #[case] expect_pos: Pos,
+    ) {
+        // Regression test for the case where calling `next()` on a parser already in a syntax error
+        // state would silently advance the lexer even though all parser state remained outwardly
+        // correct. The effect is that `.into_inner()` would return a lexer that may have advanced
+        // beyond the error state.
+        //
+        // For maximum generality, the test cases for thsi function test lexical and syntactic
+        // errors (even though this crate's lexical are designed to be sticky in lexical errors and
+        // won't advance beyond them).
+        let mut parser = FixedAnalyzer::new(input.as_bytes()).into_parser();
+
+        for i in 0..skip {
+            let token = parser.next();
+
+            assert!(
+                !token.is_terminal(),
+                "skipped token {i} is unexpectedly terminal {token}, for input {input:?}"
+            );
+        }
+
+        // Verify the expected parser error.
+        let token = parser.next();
+        assert_eq!(Token::Err, token);
+        let parser_err = parser.err();
+        let parser_pos = *parser.pos();
+        assert_eq!(expect_kind, *parser_err.kind());
+        assert_eq!(expect_pos, parser_pos);
+
+        // Verify that a repeat `next()` call gives the same result.
+        let token = parser.next();
+        assert_eq!(Token::Err, token);
+        let parser_err = parser.err();
+        let parser_pos = *parser.pos();
+        assert_eq!(expect_kind, *parser_err.kind());
+        assert_eq!(expect_pos, parser_pos);
+
+        // Unwrap the lexer and verify it hasn't moved.
+        let lexer = parser.into_inner();
+        let lexer_pos = *lexer.pos();
+        assert_eq!(expect_pos, lexer_pos);
+        match expect_kind {
+            ErrorKind::Lexical(inner_kind) => {
+                let lexer_err = lexer.err();
+                assert_eq!(inner_kind, lexer_err.kind());
+            }
+
+            _ => assert!(lexer.try_content().is_ok()),
+        }
     }
 
     #[rstest]
