@@ -164,12 +164,6 @@ impl ParsedPointer {
 
     #[cfg(feature = "ignore_case")]
     fn case_fold<'a>(ref_token: Cow<'a, str>) -> String {
-        // We expect all the input Cows to be borrowed, because they all come from
-        // Pointer::ref_tokens, which borrows. If there was a chance or receiving owned Cows, we
-        // might want to check for non-lowercase characters in the ASCII branch to see if we ned to
-        // call `.to_lowercase()` (always allocates) or if we can get away with `.into_owned()`.
-        debug_assert!(matches!(ref_token, Cow::Borrowed(_)));
-
         if ref_token.is_ascii() {
             ref_token.to_lowercase()
         } else {
@@ -1351,6 +1345,19 @@ mod tests {
 
     #[rstest]
     #[cfg(feature = "ignore_case")]
+    #[case(["/~0"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("~", Some(0)),
+    ], [0])]
+    #[case(["/~1"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("/", Some(0)),
+    ], [0])]
+    #[case(["/~0~1/~0"], [
+        Node::default().with_child_index(1).with_name_children(1),
+        Node::new_name("~/", None).with_child_index(2).with_name_children(1),
+        Node::new_name("~", Some(0))
+    ], [0, 1])]
     #[case(["/strasse"], [
         Node::default().with_child_index(1).with_name_children(1),
         Node::new_name("strasse", Some(0)),
