@@ -1235,6 +1235,16 @@ impl Bufs {
         }
     }
 
+    fn renew(&mut self) {
+        let current = core::mem::replace(&mut self.current, Arc::new(Vec::new()));
+        self.maybe_free.push_back(current);
+        self.maybe_free.extend(self.used.drain(..));
+        self.i = 0;
+        self.j = 0;
+        self.k = 0;
+        self.eof = false;
+    }
+
     #[inline]
     fn advance(&mut self, n: usize) {
         debug_assert!(
@@ -1441,7 +1451,8 @@ impl<R: std::io::Read> Read for R {
 /// Since `ReadAnalyzer` already buffers its reads from the input [`Read`] stream, wrapping the
 /// input stream in an added layer of buffering (for example, a [`std::io::BufReader`]) will only
 /// result in double copying from one buffer to the next, decreasing efficiency rather than
-/// increasing it. Avoid adding extra buffering layers.
+/// increasing it. Avoid adding extra buffering layers unless you have a well-justified reason for
+/// doing so.
 ///
 /// `ReadAnalyzer` is the best choice when your `Read` implementation represents some kind of I/O
 /// device, such as a file or network stream. If you already have your entire JSON text in memory,
@@ -1527,7 +1538,8 @@ impl<R: Read> ReadAnalyzer<R> {
     /// The reader can be anything that implements [`Read`], such as a file or network connection.
     ///
     /// This method creates a `ReadAnalyzer` with a default buffer size of 8 KiB. To control the
-    /// buffer size, construct using [`with_buf_size`] instead.
+    /// buffer size, construct using [`with_buf_size`] instead. To reuse the internal buffer
+    /// allocations to scan a new stream, use [`renew`].
     ///
     /// # Example
     ///
@@ -1538,6 +1550,7 @@ impl<R: Read> ReadAnalyzer<R> {
     /// let mut lexer = ReadAnalyzer::new(File::open("example.json").unwrap());
     /// ```
     ///
+    /// [`renew`]: method@Self::renew
     /// [`with_buf_size`]: method@Self::with_buf_size
     pub fn new(read: R) -> Self {
         Self::with_buf_size(read, Bufs::DEFAULT_BUF_SIZE)
@@ -1895,24 +1908,81 @@ impl<R: Read> ReadAnalyzer<R> {
     /// ```
     pub fn with_buf_size(mut read: R, buf_size: usize) -> Self {
         let mut bufs = Bufs::new(buf_size);
-        let content_pos = Pos::default();
-        let (content, mach) = match bufs.read(&mut read) {
+        let (content, mach) = Self::start(&mut bufs, &mut read);
+
+        Self {
+            bufs,
+            content,
+            content_pos: Pos::default(),
+            mach,
+            read,
+        }
+    }
+
+    /// Restarts the lexer on a new JSON text from a fresh reader, reusing internal buffers.
+    ///
+    /// The previous reader is dropped.
+    ///
+    /// This provides an efficient way to tokenize many separate JSON texts from different streams
+    /// in sequence: reusing the same `ReadAnalyzer` across all streams, call `renew` on every new
+    /// stream.
+    ///
+    /// Buffers still referenced by a live [`Content`] or [`Literal`] from the previous text are not
+    /// reused until those values are dropped, so drop them before calling `renew` to get full
+    /// buffer reuse. Any error state from the previous stream is cleared.
+    ///
+    /// # Separate streams only
+    ///
+    /// This method is intended for separate input sources. The analyzer reads ahead at its own
+    /// discretion. Because this method drops the previous reader, any bytes the analyzer has read
+    /// ahead from the stream and buffered internally are lost.
+    ///
+    /// Do not use `renew` at a document boundary to continue scanning a concatenated JSON, JSONL,
+    /// NDJSON, or other JSON token sequence through another reader. Simply continue tokenizing the
+    /// existing reader. The lexer will produce JSON tokens from the underlying stream as long as
+    /// they are available.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, read::ReadAnalyzer};
+    ///
+    /// let docs: [&[u8]; 2] = [b"[0]", b"[1]"];
+    ///
+    /// let mut lexer = ReadAnalyzer::new(docs[0]);
+    /// assert_eq!(Token::ArrBegin, lexer.next());
+    /// assert_eq!(Token::Num, lexer.next());
+    /// assert_eq!("0", lexer.content().literal());
+    ///
+    /// lexer.renew(docs[1]);
+    /// assert_eq!(Token::ArrBegin, lexer.next());
+    /// assert_eq!(Token::Num, lexer.next());
+    /// assert_eq!("1", lexer.content().literal());
+    /// ```
+    pub fn renew(&mut self, read: R) {
+        self.read = read;
+        self.mach = state::Machine::default(); // Drop its reference to current buffer.
+        self.content = StoredContent::default(); // Drop possible references to buffers.
+        self.bufs.renew();
+        let (content, mach) = Self::start(&mut self.bufs, &mut self.read);
+        self.content = content;
+        self.content_pos = Pos::default();
+        self.mach = mach;
+    }
+
+    fn start(
+        bufs: &mut Bufs,
+        read: &mut R,
+    ) -> (StoredContent<R::Error>, state::Machine<MachineBuf>) {
+        match bufs.read(read) {
             Ok(_) => (
                 StoredContent::default(),
                 state::Machine::new(MachineBuf::new(Arc::clone(&bufs.current))),
             ),
             Err(err) => (
-                StoredContent::Err(Error::read(err, content_pos)),
+                StoredContent::Err(Error::read(err, Pos::default())),
                 state::Machine::default(),
             ),
-        };
-
-        Self {
-            bufs,
-            content,
-            content_pos,
-            mach,
-            read,
         }
     }
 
@@ -2799,6 +2869,55 @@ mod tests {
             assert!(!content.is_escaped());
             assert_eq!("", content.unescaped().into_string());
         }
+    }
+
+    #[test]
+    fn test_analyzer_renew_reuses_buffer() {
+        let mut an = ReadAnalyzer::new(&b"[1]"[..]);
+        assert_eq!(Token::ArrBegin, an.next());
+        assert_eq!(Token::Num, an.next());
+        assert_eq!("1", an.content().literal());
+        assert_eq!(Token::ArrEnd, an.next());
+        assert_eq!(Token::Eof, an.next());
+        let first_buf = Arc::as_ptr(&an.bufs.current);
+
+        // No live `Content`, so the previous buffer must be recycled rather than reallocated.
+        an.renew(&b"[22]"[..]);
+        assert_eq!(first_buf, Arc::as_ptr(&an.bufs.current));
+        assert_eq!(Pos::default(), *an.pos());
+        assert_eq!(Token::ArrBegin, an.next());
+        assert_eq!(Token::Num, an.next());
+        assert_eq!("22", an.content().literal());
+        assert_eq!(Token::ArrEnd, an.next());
+        assert_eq!(Token::Eof, an.next());
+    }
+
+    #[test]
+    fn test_analyzer_renew_with_live_content() {
+        let mut an = ReadAnalyzer::new(&br#"["hello"]"#[..]);
+        assert_eq!(Token::ArrBegin, an.next());
+        assert_eq!(Token::Str, an.next());
+        let held = an.content().literal();
+        let first_buf = Arc::as_ptr(&an.bufs.current);
+
+        // The held literal shares the first buffer, so it must not be reused or clobbered.
+        an.renew(&br#"["world"]"#[..]);
+        assert_ne!(first_buf, Arc::as_ptr(&an.bufs.current));
+        assert_eq!(Token::ArrBegin, an.next());
+        assert_eq!(Token::Str, an.next());
+        assert_eq!(r#""world""#, an.content().literal());
+        assert_eq!(r#""hello""#, held);
+    }
+
+    #[test]
+    fn test_analyzer_renew_after_error() {
+        let mut an = ReadAnalyzer::new(&b"tru"[..]);
+        assert_eq!(Token::Err, an.next());
+        assert_eq!(Token::Err, an.next());
+
+        an.renew(&b"true"[..]);
+        assert_eq!(Token::LitTrue, an.next());
+        assert_eq!(Token::Eof, an.next());
     }
 
     #[test]
