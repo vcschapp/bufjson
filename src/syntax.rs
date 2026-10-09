@@ -56,11 +56,16 @@
 
 use crate::{
     CacheAligned, Pos,
-    lexical::{self, Error as _, Token},
+    lexical::{self, Error as _, Token, fixed::FixedAnalyzer},
 };
 use alloc::sync::Arc;
 use bitvec::prelude::*;
-use core::{fmt, iter::Take};
+use core::{fmt, iter::Take, ops::Deref};
+
+#[cfg(feature = "pipe")]
+use crate::lexical::pipe::{Pipe, PipeAnalyzer};
+#[cfg(feature = "read")]
+use crate::lexical::read::{Read, ReadAnalyzer};
 
 /// Type of structured JSON value: [`Arr`][Self::Arr] or [`Obj`][Self::Obj].
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1626,10 +1631,103 @@ where
     }
 }
 
+impl<B> Parser<FixedAnalyzer<B>>
+where
+    B: Deref<Target = [u8]> + fmt::Debug,
+{
+    /// Constructs a new parser to parse JSON text from a fixed in-memory buffer.
+    ///
+    /// This is a convenience method equivalent to calling [`new`] passing a lexer created with
+    /// [`FixedAnalyzer::new(buf)`].
+    ///
+    /// The buffer can be any `B` for which `B: Deref<Target = [u8]> + Debug`, including `&[u8]`,
+    /// `Vec<u8>`, `Cow<'_, [u8]>` and data types such as `bytes::Bytes` from the `bytes` crate.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bufjson::{lexical::Token, syntax::Parser};
+    /// let mut parser = Parser::new_fixed(&b"[1, 2, 3]"[..]);
+    ///
+    /// assert_eq!(Token::ArrBegin, parser.next());
+    /// assert_eq!(Token::Num, parser.next());
+    /// ```
+    ///
+    /// [`new`]: method@Self::new
+    /// [`FixedAnalyzer::new(buf)`]: FixedAnalyzer::new
+    pub fn new_fixed(buf: B) -> Self {
+        FixedAnalyzer::new(buf).into_parser()
+    }
+}
+
+#[cfg(feature = "pipe")]
+impl<P: Pipe> Parser<PipeAnalyzer<P>> {
+    /// Constructs a new parser to parse JSON text arriving as a stream of `Bytes` buffers.
+    ///
+    /// Requires the `pipe` feature to be enabled.
+    ///
+    /// This is a convenience method equivalent to calling [`new`] passing a lexer created with
+    /// [`PipeAnalyzer::new(pipe)`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bufjson::{lexical::Token, syntax::Parser};
+    /// use std::sync::mpsc::channel;
+    ///
+    /// let (tx, rx) = channel();
+    /// tx.send("[1, 2, 3]".into()).unwrap();
+    /// drop(tx);
+    /// let mut parser = Parser::new_pipe(rx);
+    ///
+    /// assert_eq!(Token::ArrBegin, parser.next());
+    /// assert_eq!(Token::Num, parser.next());
+    /// ```
+    ///
+    /// [`new`]: method@Self::new
+    /// [`PipeAnalyzer::new(pipe)`]: PipeAnalyzer::new
+    pub fn new_pipe(pipe: P) -> Self {
+        PipeAnalyzer::new(pipe).into_parser()
+    }
+}
+
+#[cfg(feature = "read")]
+impl<R> Parser<ReadAnalyzer<R>>
+where
+    R: Read,
+    R::Error: core::error::Error + Send + Sync + 'static,
+{
+    /// Constructs a new parser to parse JSON text streamed from a reader.
+    ///
+    /// Requires the `read` feature to be enabled.
+    ///
+    /// This is a convenience method equivalent to calling [`new`] passing a lexer created with
+    /// [`ReadAnalyzer::new(read)`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bufjson::{lexical::Token, syntax::Parser};
+    /// let mut parser = Parser::new_read(&b"[1, 2, 3]"[..]);
+    ///
+    /// assert_eq!(Token::ArrBegin, parser.next());
+    /// assert_eq!(Token::Num, parser.next());
+    /// ```
+    ///
+    /// [`new`]: method@Self::new
+    /// [`ReadAnalyzer::new(read)`]: ReadAnalyzer::new
+    pub fn new_read(read: R) -> Self {
+        ReadAnalyzer::new(read).into_parser()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexical::fixed::FixedAnalyzer;
+    use crate::{
+        IntoBuf,
+        lexical::{Content as _, fixed::FixedAnalyzer},
+    };
     use rstest::rstest;
 
     #[rstest]
@@ -2697,6 +2795,61 @@ mod tests {
                 content.literal(),
                 "i = {i}, token = {actual_token}"
             );
+        }
+    }
+
+    const CONSTRUCTOR_JSON_TEXT: &str = r#"{"k":[true,null]}"#;
+    const CONSTRUCTOR_EXPECT: &[(Token, &str)] = &[
+        (Token::ObjBegin, "{"),
+        (Token::Str, r#""k""#),
+        (Token::NameSep, ":"),
+        (Token::ArrBegin, "["),
+        (Token::LitTrue, "true"),
+        (Token::ValueSep, ","),
+        (Token::LitNull, "null"),
+        (Token::ArrEnd, "]"),
+        (Token::ObjEnd, "}"),
+        (Token::Eof, ""),
+    ];
+
+    // Sends the text as two chunks split inside the `true` literal, so a token spans a buffer
+    // boundary and the pipe analyzer's resume path is exercised.
+    #[cfg(feature = "pipe")]
+    fn new_pipe_parser(
+        split_offset: usize,
+    ) -> Parser<PipeAnalyzer<std::sync::mpsc::Receiver<bytes::Bytes>>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(CONSTRUCTOR_JSON_TEXT[..split_offset].into())
+            .unwrap();
+        tx.send(CONSTRUCTOR_JSON_TEXT[split_offset..].into())
+            .unwrap();
+        drop(tx);
+
+        Parser::new_pipe(rx)
+    }
+
+    #[rstest]
+    #[case::fixed(Parser::new_fixed(CONSTRUCTOR_JSON_TEXT.as_bytes().to_vec()))]
+    #[cfg_attr(feature = "pipe", case::pipe(new_pipe_parser(7)))]
+    #[cfg_attr(
+        feature = "read",
+        case::read(Parser::new_read(std::io::Cursor::new(CONSTRUCTOR_JSON_TEXT.as_bytes().to_vec())))
+    )]
+    fn test_parser_new<L>(#[case] mut parser: Parser<L>)
+    where
+        L: lexical::Analyzer,
+        L::Error: 'static,
+    {
+        fn literal_string(buf: impl IntoBuf) -> String {
+            let mut v = Vec::new();
+            crate::sink(buf.into_buf(), &mut v);
+
+            String::from_utf8(v).expect("literal is valid UTF-8")
+        }
+
+        for (expect_token, expect_literal) in CONSTRUCTOR_EXPECT {
+            assert_eq!(*expect_token, parser.next());
+            assert_eq!(*expect_literal, literal_string(parser.content().literal()));
         }
     }
 }
