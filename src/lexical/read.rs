@@ -2879,11 +2879,11 @@ mod tests {
         assert_eq!("1", an.content().literal());
         assert_eq!(Token::ArrEnd, an.next());
         assert_eq!(Token::Eof, an.next());
-        let first_buf = Arc::as_ptr(&an.bufs.current);
+        let first_buf = an.bufs.current.as_ptr();
 
         // No live `Content`, so the previous buffer must be recycled rather than reallocated.
         an.renew(&b"[22]"[..]);
-        assert_eq!(first_buf, Arc::as_ptr(&an.bufs.current));
+        assert_eq!(first_buf, an.bufs.current.as_ptr());
         assert_eq!(Pos::default(), *an.pos());
         assert_eq!(Token::ArrBegin, an.next());
         assert_eq!(Token::Num, an.next());
@@ -2898,11 +2898,11 @@ mod tests {
         assert_eq!(Token::ArrBegin, an.next());
         assert_eq!(Token::Str, an.next());
         let held = an.content().literal();
-        let first_buf = Arc::as_ptr(&an.bufs.current);
+        let first_buf = an.bufs.current.as_ptr();
 
         // The held literal shares the first buffer, so it must not be reused or clobbered.
         an.renew(&br#"["world"]"#[..]);
-        assert_ne!(first_buf, Arc::as_ptr(&an.bufs.current));
+        assert_ne!(first_buf, an.bufs.current.as_ptr());
         assert_eq!(Token::ArrBegin, an.next());
         assert_eq!(Token::Str, an.next());
         assert_eq!(r#""world""#, an.content().literal());
