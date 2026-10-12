@@ -62,9 +62,9 @@
 //!    Targets that don't support one of these instruction sets fall back to portable word-at-a-time
 //!    (SWAR) scanning.
 //! 2. The `simd_dyn` feature, which implicitly turns on `simd`, selects between AVX2 and SSE2 at
-//!    runtime on x86 and x86-64, so a binary compiled for a generic x86-64 CPU target be able to
-//!    use AVX2 on CPUs that have it. This feature currently has no effect on other architectures
-//!    where the best instruction set to target is already known at compile time.
+//!    runtime on x86 and x86-64, so a binary compiled for a generic x86-64 CPU target can use AVX2
+//!    on CPUs that have it. This feature currently has no effect on other architectures where the
+//!    best instruction set to target is already known at compile time.
 //!
 //! ## Advanced JSON parsing feature flags
 //!
