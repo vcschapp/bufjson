@@ -22,7 +22,10 @@
 
 use crate::{
     Buf, BufUnderflow, EqStr, IntoBuf, OrdStr, Pos,
-    lexical::{self, ErrorKind, Token, Unescaped, state, unescaped_cmp},
+    lexical::{
+        self, ErrorKind, Token, Unescaped, Unquote, Unquoted, state, unescaped_cmp,
+        unquote::unquote_buf,
+    },
     syntax,
 };
 use alloc::{
@@ -88,8 +91,13 @@ impl USizeBool {
 
 #[derive(Clone, Debug)]
 struct MultiBytes {
+    // Array of buffers. Those "behind" the current position are empty because they have been fully
+    // consumed. Those "at" and "ahead" of the current position may be non-empty, and cumulatively
+    // have exactly `rem` available bytes.
     arr: Box<[Bytes]>,
+    // Number of bytes remaining across all buffers in `arr`.
     rem: usize,
+    // Combines both the `escaped` flag (as a single bit) and the index position into `arr`.
     pos_escaped: USizeBool,
 }
 
@@ -214,6 +222,48 @@ impl IntoBuf for MultiBytes {
     type Buf = Self;
 
     fn into_buf(self) -> Self::Buf {
+        self
+    }
+}
+
+impl Unquote for MultiBytes {
+    type Unquoted = Self;
+
+    fn unquote(mut self) -> Self::Unquoted {
+        if self.rem < 2 {
+            return self;
+        }
+
+        let mut pos = self.pos_escaped.get_usize();
+        loop {
+            match self.arr[pos].first() {
+                Some(b'"') => break,
+                Some(_) => return self,
+                None => pos += 1,
+            }
+        }
+
+        let mut n = self.arr.len();
+        let last = loop {
+            match self.arr[n - 1].last() {
+                Some(b'"') => break &mut self.arr[n - 1],
+                Some(_) => return self,
+                None => n -= 1,
+            }
+        };
+
+        let _ = last.split_off(last.len() - 1); // Throw away the closing '"'.
+        self.arr[pos] = self.arr[pos].slice(1..);
+        while self.arr[pos].is_empty() {
+            pos += 1;
+            if pos == self.arr.len() {
+                break;
+            }
+        }
+
+        self.pos_escaped.set_usize(pos);
+        self.rem -= 2;
+
         self
     }
 }
@@ -394,7 +444,7 @@ impl Buf for InnerLiteral {
                 }
             }
 
-            InnerLiteral::Inline(i, j, b, _) => {
+            Self::Inline(i, j, b, _) => {
                 let len = (*j - *i) as usize;
                 if len < dst.len() {
                     Err(BufUnderflow {
@@ -409,7 +459,7 @@ impl Buf for InnerLiteral {
                 }
             }
 
-            InnerLiteral::Bytes(b, _) => {
+            Self::Bytes(b, _) => {
                 if b.len() < dst.len() {
                     Err(BufUnderflow {
                         requested: dst.len(),
@@ -423,7 +473,7 @@ impl Buf for InnerLiteral {
                 }
             }
 
-            InnerLiteral::Multi(m) => m.try_copy_to_slice(dst),
+            Self::Multi(m) => m.try_copy_to_slice(dst),
         }
     }
 }
@@ -433,6 +483,32 @@ impl IntoBuf for InnerLiteral {
 
     fn into_buf(self) -> Self::Buf {
         self
+    }
+}
+
+impl Unquote for InnerLiteral {
+    type Unquoted = Self;
+
+    fn unquote(self) -> Self::Unquoted {
+        match self {
+            Self::Static(s, escaped) => Self::Static(s.unquote(), escaped),
+
+            Self::Inline(mut i, mut j, b, escaped) => {
+                unquote_buf(&mut i, &mut j, &b[..]);
+
+                Self::Inline(i, j, b, escaped)
+            }
+
+            Self::Bytes(mut b, escaped) => {
+                if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
+                    b = b.slice(1..b.len() - 1);
+                }
+
+                Self::Bytes(b, escaped)
+            }
+
+            Self::Multi(m) => Self::Multi(m.unquote()),
+        }
     }
 }
 
@@ -624,6 +700,14 @@ impl IntoBuf for Literal {
     }
 }
 
+impl Unquote for Literal {
+    type Unquoted = Self;
+
+    fn unquote(self) -> Self::Unquoted {
+        Self(self.0.unquote())
+    }
+}
+
 impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.repr() {
@@ -643,6 +727,13 @@ impl From<Literal> for String {
             Repr::Together(s) => s.to_string(),
             Repr::Split(r) => crate::buf::to_string(r.clone()),
         }
+    }
+}
+
+#[cfg(test)]
+impl From<InnerLiteral> for Literal {
+    fn from(value: InnerLiteral) -> Self {
+        Self(value)
     }
 }
 
@@ -953,6 +1044,10 @@ impl Content {
 
     /// Returns the number of bytes in the [`literal`] value.
     ///
+    /// This is an inherent implementation of [`lexical::Content::literal_len`] for convenience, so
+    /// it is available even when you don't have the trait imported. Refer to the trait
+    /// documentation for conceptual details.
+    ///
     /// [`literal`]: method@Self::literal
     #[inline(always)]
     pub fn literal_len(&self) -> usize {
@@ -1009,6 +1104,24 @@ impl Content {
     pub fn unescaped_cmp(&self, other: &str) -> Ordering {
         unescaped_cmp(self.literal(), other)
     }
+
+    /// Strips leading and trailing quotation marks, consuming `self` in the process.
+    ///
+    /// This is an inherent implementation of [`lexical::Content::unquoted`] for convenience, so it
+    /// is available even when you don't have the trait imported. Refer to the trait documentation
+    /// for conceptual details.
+    ///
+    /// # Performance considerations
+    ///
+    /// Does not allocate directly. In rare cases where the content is split across multiple
+    /// buffers, an indirect allocation may be needed later if and when [`Unquoted::literal`] is
+    /// called.
+    ///
+    /// [`literal`]: method@Self::literal
+    #[inline(always)]
+    pub fn unquoted(self) -> Unquoted<Self> {
+        Unquoted(self)
+    }
 }
 
 impl fmt::Display for Content {
@@ -1038,6 +1151,16 @@ impl super::Content for Content {
     #[inline(always)]
     fn unescaped<'a>(&'a self) -> Unescaped<Self::Literal<'a>> {
         Content::unescaped(self)
+    }
+
+    #[inline(always)]
+    fn unescaped_cmp(&self, other: &str) -> Ordering {
+        Content::unescaped_cmp(self, other)
+    }
+
+    #[inline(always)]
+    fn unquoted(self) -> Unquoted<Self> {
+        Content::unquoted(self)
     }
 }
 
@@ -1841,6 +1964,7 @@ mod tests {
     #[case(Literal(InnerLiteral::test_new_multi(["b", "a", "z"], 0, 3, true)), 3)]
     #[case(Literal(InnerLiteral::test_new_multi(["_f", "o", "o_"], 1, 3, false)), 3)]
     #[case(Literal(InnerLiteral::test_new_multi(["_f", "oo", ""], 1, 3, true)), 3)]
+    #[case(Literal(InnerLiteral::test_new_multi([r#"""#, "", r#"a""#], 0, 3, false)).unquote(), 1)]
     fn test_literal_convert(#[case] literal: Literal, #[case] expect_len: usize) {
         assert_eq!(expect_len, literal.len());
         assert_eq!(expect_len == 0, literal.is_empty());
@@ -2222,6 +2346,112 @@ mod tests {
             b.try_copy_to_slice(&mut dst)
         );
         assert_eq!(0, b.remaining());
+    }
+
+    #[rstest]
+    #[case::empty_static(Literal::from_static(""), [""])]
+    #[case::empty_inline(Literal::from_ref(""), [""])]
+    #[case::empty_bytes(InnerLiteral::test_new_bytes("", false), [""])]
+    #[case::empty_multi_1(InnerLiteral::test_new_multi([""], 0, 0, false), [""])]
+    #[case::empty_multi_2(InnerLiteral::test_new_multi(["", ""], 0, 0, true), [""])]
+    #[case::empty_multi_3(InnerLiteral::test_new_multi(["", "", ""], 0, 0, true), [""])]
+    #[case::a_static(Literal::from_static("a"), ["a"])]
+    #[case::a_inline_1(Literal::from_ref("a"), ["a"])]
+    #[case::a_inline_len(Literal::from_string("a".repeat(INLINE_LEN)), ["a".repeat(INLINE_LEN)])]
+    #[case::a_bytes(InnerLiteral::test_new_bytes("a", true), ["a"])]
+    #[case::a_multi_1(InnerLiteral::test_new_multi(["bar"], 1, 1, false), ["a"])]
+    #[case::a_multi_2(InnerLiteral::test_new_multi(["ba", ""], 1, 1, false), ["a"])]
+    #[case::quote_1_static(Literal::from_static(r#"""#), [r#"""#])]
+    #[case::quote_1_inline(Literal::from_ref(r#"""#), [r#"""#])]
+    #[case::quote_1_bytes(InnerLiteral::test_new_bytes(r#"""#, false), [r#"""#])]
+    #[case::quote_1_multi(InnerLiteral::test_new_multi([r#"""#], 0, 1, false), [r#"""#])]
+    #[case::quote_2_static(Literal::from_static(r#""""#), [""])]
+    #[case::quote_2_inline(Literal::from_ref(r#""""#), [""])]
+    #[case::quote_2_bytes(InnerLiteral::test_new_bytes(r#""""#, false), [""])]
+    #[case::quote_2_multi(InnerLiteral::test_new_multi([r#"""#, "", r#""xxx"#], 0, 2, false), [""])]
+    #[case::quote_3_static(Literal::from_static(r#"""""#), [r#"""#])]
+    #[case::quote_3_inline(Literal::from_ref(r#"""""#), [r#"""#])]
+    #[case::quote_3_bytes(InnerLiteral::test_new_bytes(r#"""""#, false), [r#"""#])]
+    #[case::quote_3_multi(InnerLiteral::test_new_multi([r#"""""#], 0, 3, false), [r#"""#])]
+    #[case::quote_4_static(Literal::from_static(r#""""""#), [r#""""#, ""])]
+    #[case::quote_4_inline(Literal::from_ref(r#""""""#), [r#""""#, ""])]
+    #[case::quote_4_bytes(InnerLiteral::test_new_bytes(r#""""""#, false), [r#""""#, ""])]
+    #[case::quote_4_multi(InnerLiteral::test_new_multi([r#"aa""#, r#""""a"#], 2, 4, true), [r#""""#, ""])]
+    #[case::quote_5_static(Literal::from_static(r#"""""""#), [r#"""""#, r#"""#])]
+    #[case::quote_5_inline(Literal::from_ref(r#"""""""#), [r#"""""#, r#"""#])]
+    #[case::quote_5_bytes(InnerLiteral::test_new_bytes(r#"""""""#, false), [r#"""""#, r#"""#])]
+    #[case::quote_5_multi(InnerLiteral::test_new_multi([r#"""#; 5], 0, 5, false), [r#"""""#, r#"""#])]
+    #[case::quote_a_quote_static(Literal::from_static(r#""a""#), ["a"])]
+    #[case::quote_a_quote_inline(Literal::from_ref(r#""a""#), ["a"])]
+    #[case::quote_a_quote_bytes(InnerLiteral::test_new_bytes(r#""a""#, true), ["a"])]
+    #[case::quote_a_quote_multi(InnerLiteral::test_new_multi([r#""a""#], 0, 3, false), ["a"])]
+    #[case::quote_a_quote_2_static(Literal::from_static(r#""a"""#), [r#"a""#])]
+    #[case::quote_a_quote_2_inline(Literal::from_ref(r#""a"""#), [r#"a""#])]
+    #[case::quote_a_quote_2_bytes(InnerLiteral::test_new_bytes(r#""a"""#, true), [r#"a""#])]
+    #[case::quote_a_quote_2_multi(InnerLiteral::test_new_multi([r#""a"""#], 0, 4, false), [r#"a""#])]
+    #[case::quote_2_a_quote_static(Literal::from_static(r#"""a""#), [r#""a"#])]
+    #[case::quote_2_a_quote_inline(Literal::from_ref(r#"""a""#), [r#""a"#])]
+    #[case::quote_2_a_quote_bytes(InnerLiteral::test_new_bytes(r#"""a""#, false), [r#""a"#])]
+    #[case::quote_2_a_quote_multi(InnerLiteral::test_new_multi([r#""""#, "a", r#"""#], 0, 4, false), [r#""a"#])]
+    #[case::quote_2_a_quote_2_static(Literal::from_static(r#"""a"""#), [r#""a""#, "a"])]
+    #[case::quote_2_a_quote_2_inline(Literal::from_ref(r#"""a"""#), [r#""a""#, "a"])]
+    #[case::quote_2_a_quote_2_bytes(InnerLiteral::test_new_bytes(r#"""a"""#, false), [r#""a""#, "a"])]
+    #[case::quote_2_a_quote_2_multi(InnerLiteral::test_new_multi([r#"""a"""#], 0, 5, false), [r#""a""#, "a"])]
+    #[case::quote_slash_quote_static(Literal::from_static(r#""\""#), [r#"\"#])]
+    #[case::quote_slash_quote_inline(Literal::from_ref(r#""\""#), [r#"\"#])]
+    #[case::quote_slash_quote_bytes(InnerLiteral::test_new_bytes(r#""\""#, true), [r#"\"#])]
+    #[case::quote_slash_quote_multi(InnerLiteral::test_new_multi([r#""\""#], 0, 3, true), [r#"\"#])]
+    #[case::quote_a_slash_quote_static(Literal::from_static(r#""a\""#), [r#"a\"#])]
+    #[case::quote_a_slash_quote_inline(Literal::from_ref(r#""a\""#), [r#"a\"#])]
+    #[case::quote_a_slash_quote_bytes(InnerLiteral::test_new_bytes(r#""a\""#, true), [r#"a\"#])]
+    #[case::quote_a_slash_quote_multi(InnerLiteral::test_new_multi([r#""a\""#], 0, 4, true), [r#"a\"#])]
+    #[case::quote_inline_len(Literal::from_string(r#"""#.repeat(INLINE_LEN)), (0..=INLINE_LEN).rev().step_by(2).skip(1).map(|n| r#"""#.repeat(n)))]
+    #[case::quote_inline_len(Literal::from_string(r#"""#.repeat(INLINE_LEN+1)), (0..=(INLINE_LEN+1)).rev().step_by(2).skip(1).map(|n| r#"""#.repeat(n)))]
+    fn test_literal_unquote<L, I, T>(#[case] literal: L, #[case] expect: I)
+    where
+        L: Into<Literal>,
+        I: IntoIterator<Item = T>,
+        T: AsRef<str> + fmt::Display,
+    {
+        let literal = literal.into();
+        let desc = format!("{literal} (debug: {literal:?})");
+        let mut iter = expect.into_iter().enumerate();
+
+        // Test the first case.
+        let (_, expect) = iter
+            .next()
+            .expect("there must be at least one expected case");
+        let mut actual = literal.unquote();
+        assert_eq!(
+            expect.as_ref(),
+            actual,
+            "expected first unquote of {desc} to equal {expect}, but it was {actual}"
+        );
+
+        // Test the remaining cases.
+        let mut prev_actual = actual.clone();
+        let mut prev_expect = expect;
+        for (i, expect) in iter {
+            actual = actual.unquote();
+            assert_eq!(
+                expect.as_ref(),
+                actual,
+                "expected unquote #{} of {desc} to equal {expect}, but it was {actual} (previous was {prev_actual:?})",
+                i + 1,
+            );
+
+            prev_expect = expect;
+            prev_actual = actual.clone();
+        }
+
+        // Repeat test of the last case.
+        let expect = prev_expect;
+        let actual = prev_actual.clone().unquote();
+        assert_eq!(
+            expect.as_ref(),
+            actual,
+            "expected repeat of final unquote of {desc} to requal {expect}, but it was {actual} (previous was {prev_actual:?})"
+        );
     }
 
     #[rstest]

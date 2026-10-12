@@ -3,7 +3,11 @@
 use crate::{
     Buf, BufUnderflow, EqStr, IntoBuf, OrdStr, Pos,
     lexical::{
-        self, state, {Analyzer, ErrorKind, Token, Unescaped, unescaped_cmp},
+        self, state,
+        {
+            Analyzer, ErrorKind, Token, Unescaped, Unquote, Unquoted, unescaped_cmp,
+            unquote::unquote_buf,
+        },
     },
     syntax,
 };
@@ -103,6 +107,21 @@ impl IntoBuf for UniRef {
     }
 }
 
+impl Unquote for UniRef {
+    type Unquoted = Self;
+
+    fn unquote(mut self) -> Self::Unquoted {
+        let i = self.rng.start as usize;
+        let j = self.rng.end as usize;
+        if i + 2 <= j && self.buf[i] == b'"' && self.buf[j - 1] == b'"' {
+            self.rng.start += 1;
+            self.rng.end -= 1;
+        }
+
+        self
+    }
+}
+
 #[derive(Clone, Debug)]
 struct MultiRef {
     // Method to the madness of the very nesty Arc/Slice/Arc/Vec:
@@ -120,11 +139,15 @@ struct MultiRef {
     // `Literal` value can implement `IntoBuf` (because the `Buf`) state is stored directly in the
     // member fields.
     bufs: Arc<[Arc<Vec<u8>>]>,
-    // Index into `bufs`.
+    // Index into `bufs` of buffer holding current chunk.
     //   INVARIANT: `buf <= bufs.len()`; so it can be one past the end, hence invalid
     //   INVARIANT: `buf == bufs.len()` <=> rng.start == rng.end
     buf: usize,
+    // Offset into `bufs[buf]` where current chunk begins.
     off: usize,
+    // Available range of bytes within `bufs` where the first byte of `bufs[0]` has index zero, and
+    // the first byte of each subsequent buffer has the index of the last byte of the previous
+    // buffer plus one. The value `rng.start` indexes the same byte as `bufs[buf][off]`.
     rng: Range<usize>,
 }
 
@@ -182,6 +205,57 @@ impl MultiRef {
         );
 
         n
+    }
+
+    fn last_byte(&self) -> Option<u8> {
+        if self.rng.is_empty() {
+            return None;
+        }
+
+        let mut rng = self.rng.clone();
+        let mut buf = self.buf;
+        let mut off = self.off;
+        loop {
+            let rem_rng = rng.end - rng.start;
+            let rem_buf = self.bufs[buf].len() - off;
+            debug_assert!(rem_rng > 0);
+
+            // If more bytes are available in the remainder of the range than are left in the
+            // current buffer, skip right to the next buffer.
+            if rem_rng > rem_buf {
+                buf += 1;
+                rng.start += rem_buf;
+                off = 0;
+                continue;
+            }
+
+            // Since `rem_buf` is not less than `rem_rng`, which is positive, `rem_buf` must be
+            // positive too. In other words, if we get here, we are at the last buffer that
+            // contains an available byte.
+            debug_assert!(rem_buf > 0);
+
+            // Return the last byte.
+            return Some(self.bufs[buf][off + rem_rng - 1]);
+        }
+    }
+
+    fn unquote(&mut self) {
+        if self.remaining() < 2 {
+            return;
+        }
+
+        let chunk = self.chunk();
+        if !matches!(chunk, [b'"', ..]) || !matches!(self.last_byte(), Some(b'"')) {
+            return;
+        }
+
+        self.off += 1;
+        if self.off == self.bufs[self.buf].len() {
+            self.buf += 1;
+            self.off = 0;
+        }
+        self.rng.start += 1;
+        self.rng.end -= 1;
     }
 }
 
@@ -516,6 +590,34 @@ impl IntoBuf for Literal {
     }
 }
 
+impl Unquote for Literal {
+    type Unquoted = Self;
+
+    fn unquote(self) -> Self::Unquoted {
+        match self.0 {
+            InnerLiteral::Static(b @ [b'"', .., b'"']) => {
+                Self(InnerLiteral::Static(&b[1..b.len() - 1]))
+            }
+
+            InnerLiteral::Static(b) => Self(InnerLiteral::Static(b)),
+
+            InnerLiteral::Inline(mut i, mut j, b) => {
+                unquote_buf(&mut i, &mut j, &b[..]);
+
+                Self(InnerLiteral::Inline(i, j, b))
+            }
+
+            InnerLiteral::Uni(r) => Self(InnerLiteral::Uni(r.unquote())),
+
+            InnerLiteral::Multi(mut r) => {
+                r.unquote();
+
+                Self(InnerLiteral::Multi(r))
+            }
+        }
+    }
+}
+
 impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.repr() {
@@ -528,6 +630,20 @@ impl fmt::Display for Literal {
 impl EqStr for Literal {}
 
 impl Eq for Literal {}
+
+#[cfg(test)]
+impl From<UniRef> for Literal {
+    fn from(value: UniRef) -> Self {
+        Self(InnerLiteral::Uni(value))
+    }
+}
+
+#[cfg(test)]
+impl From<MultiRef> for Literal {
+    fn from(value: MultiRef) -> Self {
+        Self(InnerLiteral::Multi(Box::new(value)))
+    }
+}
 
 impl From<Literal> for String {
     fn from(value: Literal) -> Self {
@@ -917,6 +1033,10 @@ impl Content {
 
     /// Returns the number of bytes in the [`literal`] value.
     ///
+    /// This is an inherent implementation of [`lexical::Content::literal_len`] for convenience, so
+    /// it is available even when you don't have the trait imported. Refer to the trait
+    /// documentation for conceptual details.
+    ///
     /// [`literal`]: method@Self::literal
     #[inline]
     pub fn literal_len(&self) -> usize {
@@ -1017,6 +1137,35 @@ impl Content {
     #[inline(always)]
     pub fn unescaped_cmp(&self, other: &str) -> Ordering {
         unescaped_cmp(self.literal(), other)
+    }
+
+    /// Strips leading and trailing quotation marks, consuming `self` in the process.
+    ///
+    /// This is an inherent implementation of [`lexical::Content::unquoted`] for convenience, so it
+    /// is available even when you don't have the trait imported. Refer to the trait documentation
+    /// for conceptual details.
+    ///
+    /// # Performance considerations
+    ///
+    /// Does not allocate directly. In rare cases where the content is split across multiple
+    /// buffers, an indirect allocation may be needed later if and when [`Unquoted::literal`] is
+    /// called.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, read::ReadAnalyzer};
+    ///
+    /// let mut an = ReadAnalyzer::new(&br#""hello, world!""#[..]);
+    ///
+    /// assert_eq!(Token::Str, an.next());
+    /// assert_eq!("hello, world!", an.content().unquoted().literal());
+    /// ```
+    ///
+    /// [`literal`]: method@Self::literal
+    #[inline(always)]
+    pub fn unquoted(self) -> Unquoted<Self> {
+        Unquoted(self)
     }
 
     fn from_static(s: &'static str) -> Self {
@@ -1125,6 +1274,16 @@ impl super::Content for Content {
     #[inline(always)]
     fn unescaped<'a>(&'a self) -> Unescaped<Self::Literal<'a>> {
         Content::unescaped(self)
+    }
+
+    #[inline(always)]
+    fn unescaped_cmp(&self, other: &str) -> Ordering {
+        Content::unescaped_cmp(self, other)
+    }
+
+    #[inline(always)]
+    fn unquoted(self) -> Unquoted<Self> {
+        Content::unquoted(self)
     }
 }
 
@@ -2061,7 +2220,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IntoBuf, lexical::Expect};
+    use crate::{IntoBuf, lexical::Expect, sink};
     use rstest::rstest;
     use std::{
         collections::{BTreeMap, HashMap},
@@ -2677,8 +2836,114 @@ mod tests {
     }
 
     #[rstest]
+    #[case::empty_static(Literal::from_static(""), [""])]
+    #[case::empty_from_ref(Literal::from_ref(""), [""])]
+    #[case::empty_uni(UniRef::test_new("", 0..0), [""])]
+    #[case::empty_multi_1(MultiRef::test_new([""], 0..0), [""])]
+    #[case::empty_multi_2(MultiRef::test_new(["a", ""], 0..0), [""])]
+    #[case::empty_multi_3(MultiRef::test_new(["a", "b", ""], 0..0), [""])]
+    #[case::a_static(Literal::from_static("a"), ["a"])]
+    #[case::a_inline_1(Literal::from_ref("a"), ["a"])]
+    #[case::a_inline_len(Literal::from_string("a".repeat(INLINE_LEN)), ["a".repeat(INLINE_LEN)])]
+    #[case::a_uni(UniRef::test_new("a", 0..1), ["a"])]
+    #[case::a_multi_1(MultiRef::test_new(["bar"], 1..2), ["a"])]
+    #[case::a_multi_2(MultiRef::test_new(["ba", ""], 1..2), ["a"])]
+    #[case::quote_1_static(Literal::from_static(r#"""#), [r#"""#])]
+    #[case::quote_1_from_ref(Literal::from_ref(r#"""#), [r#"""#])]
+    #[case::quote_1_uni(UniRef::test_new(r#"""#, 0..1), [r#"""#])]
+    #[case::quote_1_multi(MultiRef::test_new([r#"""#], 0..1), [r#"""#])]
+    #[case::quote_2_static(Literal::from_static(r#""""#), [""])]
+    #[case::quote_2_from_ref(Literal::from_ref(r#""""#), [""])]
+    #[case::quote_2_uni(UniRef::test_new(r#""""#, 0..2), [""])]
+    #[case::quote_2_multi(MultiRef::test_new([r#"""#, r#""xxx"#], 0..2), [""])]
+    #[case::quote_3_static(Literal::from_static(r#"""""#), [r#"""#])]
+    #[case::quote_3_from_ref(Literal::from_ref(r#"""""#), [r#"""#])]
+    #[case::quote_3_uni(UniRef::test_new(r#"""""#, 0..3), [r#"""#])]
+    #[case::quote_3_multi(MultiRef::test_new([r#"""""#], 0..3), [r#"""#])]
+    #[case::quote_4_static(Literal::from_static(r#""""""#), [r#""""#, ""])]
+    #[case::quote_4_from_ref(Literal::from_ref(r#""""""#), [r#""""#, ""])]
+    #[case::quote_4_uni(UniRef::test_new(r#""""""#, 0..4), [r#""""#, ""])]
+    #[case::quote_4_multi(MultiRef::test_new([r#"aa""#, r#""""a"#], 2..6), [r#""""#, ""])]
+    #[case::quote_5_static(Literal::from_static(r#"""""""#), [r#"""""#, r#"""#])]
+    #[case::quote_5_from_ref(Literal::from_ref(r#"""""""#), [r#"""""#, r#"""#])]
+    #[case::quote_5_uni(UniRef::test_new(r#"""""""#, 0..5), [r#"""""#, r#"""#])]
+    #[case::quote_5_multi(MultiRef::test_new([r#"""#; 5], 0..5), [r#"""""#, r#"""#])]
+    #[case::quote_a_quote_static(Literal::from_static(r#""a""#), ["a"])]
+    #[case::quote_a_quote_from_ref(Literal::from_ref(r#""a""#), ["a"])]
+    #[case::quote_a_quote_uni(UniRef::test_new(r#""a""#, 0..3), ["a"])]
+    #[case::quote_a_quote_multi(MultiRef::test_new([r#""a""#], 0..3), ["a"])]
+    #[case::quote_a_quote_2_static(Literal::from_static(r#""a"""#), [r#"a""#])]
+    #[case::quote_a_quote_2_from_ref(Literal::from_ref(r#""a"""#), [r#"a""#])]
+    #[case::quote_a_quote_2_uni(UniRef::test_new(r#""a"""#, 0..4), [r#"a""#])]
+    #[case::quote_a_quote_2_multi(MultiRef::test_new([r#""a"""#], 0..4), [r#"a""#])]
+    #[case::quote_2_a_quote_static(Literal::from_static(r#"""a""#), [r#""a"#])]
+    #[case::quote_2_a_quote_from_ref(Literal::from_ref(r#"""a""#), [r#""a"#])]
+    #[case::quote_2_a_quote_uni(UniRef::test_new(r#"""a""#, 0..4), [r#""a"#])]
+    #[case::quote_2_a_quote_multi(MultiRef::test_new([r#""""#, "a", r#"""#], 0..4), [r#""a"#])]
+    #[case::quote_2_a_quote_2_static(Literal::from_static(r#"""a"""#), [r#""a""#, "a"])]
+    #[case::quote_2_a_quote_2_from_ref(Literal::from_ref(r#"""a"""#), [r#""a""#, "a"])]
+    #[case::quote_2_a_quote_2_uni(UniRef::test_new(r#"""a"""#, 0..5), [r#""a""#, "a"])]
+    #[case::quote_2_a_quote_2_multi(MultiRef::test_new([r#"""a"""#], 0..5), [r#""a""#, "a"])]
+    #[case::quote_slash_quote_static(Literal::from_static(r#""\""#), [r#"\"#])]
+    #[case::quote_slash_quote_from_ref(Literal::from_ref(r#""\""#), [r#"\"#])]
+    #[case::quote_slash_quote_uni(UniRef::test_new(r#""\""#, 0..3), [r#"\"#])]
+    #[case::quote_slash_quote_multi(MultiRef::test_new([r#""\""#], 0..3), [r#"\"#])]
+    #[case::quote_a_slash_quote_static(Literal::from_static(r#""a\""#), [r#"a\"#])]
+    #[case::quote_a_slash_quote_from_ref(Literal::from_ref(r#""a\""#), [r#"a\"#])]
+    #[case::quote_a_slash_quote_uni(UniRef::test_new(r#""a\""#, 0..4), [r#"a\"#])]
+    #[case::quote_a_slash_quote_multi(MultiRef::test_new([r#""a\""#], 0..4), [r#"a\"#])]
+    #[case::quote_inline_len(Literal::from_string(r#"""#.repeat(INLINE_LEN)), (0..=INLINE_LEN).rev().step_by(2).skip(1).map(|n| r#"""#.repeat(n)))]
+    #[case::quote_inline_len(Literal::from_string(r#"""#.repeat(INLINE_LEN+1)), (0..=(INLINE_LEN+1)).rev().step_by(2).skip(1).map(|n| r#"""#.repeat(n)))]
+    fn test_literal_unquote<L, I, T>(#[case] literal: L, #[case] expect: I)
+    where
+        L: Into<Literal>,
+        I: IntoIterator<Item = T>,
+        T: AsRef<str> + fmt::Display,
+    {
+        let literal = literal.into();
+        let desc = format!("{literal} (debug: {literal:?})");
+        let mut iter = expect.into_iter().enumerate();
+
+        // Test the first case.
+        let (_, expect) = iter
+            .next()
+            .expect("there must be at least one expected case");
+        let mut actual = literal.unquote();
+        assert_eq!(
+            expect.as_ref(),
+            actual,
+            "expected first unquote of {desc} to equal {expect}, but it was {actual}"
+        );
+
+        // Test the remaining cases.
+        let mut prev_actual = actual.clone();
+        let mut prev_expect = expect;
+        for (i, expect) in iter {
+            actual = actual.unquote();
+            assert_eq!(
+                expect.as_ref(),
+                actual,
+                "expected unquote #{} of {desc} to equal {expect}, but it was {actual} (previous was {prev_actual:?})",
+                i + 1,
+            );
+
+            prev_expect = expect;
+            prev_actual = actual.clone();
+        }
+
+        // Repeat test of the last case.
+        let expect = prev_expect;
+        let actual = prev_actual.clone().unquote();
+        assert_eq!(
+            expect.as_ref(),
+            actual,
+            "expected repeat of final unquote of {desc} to requal {expect}, but it was {actual} (previous was {prev_actual:?})"
+        );
+    }
+
+    #[rstest]
     #[case(Content::from_static(""), "", None)]
-    #[case(Content::from_static(""), "", None)]
+    #[case(Content::from_static(r#""""#), r#""""#, None)]
     #[case(
         Content::from_static(concat!(
             "................................................................................",
@@ -2695,24 +2960,29 @@ mod tests {
         None,
     )]
     #[case(Content(InnerContent::Inline(0, [0; INLINE_LEN])), "", None)]
+    #[case(Content(InnerContent::Inline(INLINE_LEN as u8, [b'"'; INLINE_LEN])), r#"""#.repeat(INLINE_LEN), None)]
     #[case(Content(InnerContent::NotEscapedUni(UniRef::test_new("", 0..0))), "", None)]
+    #[case(Content(InnerContent::NotEscapedUni(UniRef::test_new(r#"a""b"#, 1..3))), r#""""#, None)]
     #[case(Content(InnerContent::NotEscapedUni(UniRef::test_new("foo", 0..3))), "foo", None)]
     #[case(Content(InnerContent::NotEscapedUni(UniRef::test_new("a barge", 2..5))), "bar", None)]
     #[case(Content(InnerContent::NotEscapedMulti(Box::new(MultiRef::test_new([""], 0..0)))), "", None)]
     #[case(Content(InnerContent::NotEscapedMulti(Box::new(MultiRef::test_new(["a b", "a", "rge"], 2..5)))), "bar", None)]
+    #[case(Content(InnerContent::NotEscapedMulti(Box::new(MultiRef::test_new([r#"""#, r#"""#], 0..2)))), r#""""#, None)]
     #[case(Content(InnerContent::EscapedUni(UniRef::test_new("", 0..0))), "", Some(""))]
     #[case(Content(InnerContent::EscapedUni(UniRef::test_new("foo", 0..3))), "foo", Some("foo"))]
     #[case(Content(InnerContent::EscapedUni(UniRef::test_new("a b\\u0061rge", 2..10))), "b\\u0061r", Some("bar"))]
     #[case(Content(InnerContent::EscapedMulti(Box::new(MultiRef::test_new([""], 0..0)))), "", Some(""))]
     #[case(Content(InnerContent::EscapedMulti(Box::new(MultiRef::test_new(["tomf", "oo", "lery"], 3..6)))), "foo", Some("foo"))]
     #[case(Content(InnerContent::EscapedMulti(Box::new(MultiRef::test_new(["\\", "u", "006", "6\\u", "0", "06", "fox"], 0..13)))), "\\u0066\\u006fo", Some("foo"))]
+    #[case(Content(InnerContent::EscapedMulti(Box::new(MultiRef::test_new([r#"x""#, r#"\"", r#""x"#], 1..5)))), r#""\"""#, Some(r#"""""#))]
     #[case(Content::from_bufs(&Bufs::new(Bufs::MIN_BUF_SIZE), 0..0, false), "", None)]
     #[case(Content::from_bufs(&Bufs::new(Bufs::MIN_BUF_SIZE), 0..0, true), "", Some(""))]
     fn test_content(
         #[case] content: Content,
-        #[case] expect_literal: &str,
+        #[case] expect_literal: impl AsRef<str>,
         #[case] expect_unescaped: Option<&str>,
     ) {
+        let expect_literal: &str = expect_literal.as_ref();
         assert_eq!(expect_literal, content.literal());
         assert_eq!(expect_literal, super::Content::literal(&content));
         assert_eq!(expect_literal, content.literal().into_string());
@@ -2730,6 +3000,26 @@ mod tests {
                 Ordering::Equal,
                 super::Content::unescaped_cmp(&content, expect)
             );
+        }
+        let raw_literal: String = {
+            let mut raw = Vec::with_capacity(content.literal_len());
+            sink(content.literal().into_buf(), &mut raw);
+            raw.try_into().expect("literal content must be valid UTF-8")
+        };
+        let is_quoted = matches!(raw_literal.as_bytes(), [b'"', .., b'"']);
+        let unquoted = content.unquoted();
+        if is_quoted {
+            assert_eq!(&raw_literal[1..raw_literal.len() - 1], unquoted.literal());
+        } else {
+            assert_eq!(expect_literal, unquoted.literal());
+        }
+        if let Some(expect) = expect_unescaped {
+            let actual = unquoted.unescaped().into_string();
+            if is_quoted {
+                assert_eq!(&expect[1..expect.len() - 1], actual);
+            } else {
+                assert_eq!(expect, actual);
+            }
         }
     }
 

@@ -68,7 +68,8 @@
 //!
 //! For string tokens ([`Token::Str`]), the [`Content`] trait provides the literal content of the
 //! string as it appears in the JSON text, *including* the quotation marks that surround it, without
-//! attempting to expand the escape sequences.
+//! attempting to expand the escape sequences. Quotation marks can be stripped using
+//! [`Content::unquoted`].
 //!
 //! Escape sequences can be expanded by explicitly requesting [`Content::unescaped`] instead of
 //! [`Content::literal`]. Note that getting the unescaped content will trigger an allocation if the
@@ -83,6 +84,8 @@
 //! assert_eq!(Token::Str, lexer.next());
 //! assert_eq!(r#""foo""#, lexer.content().literal()); // Note the surrounding quotes.
 //! assert_eq!(r#""foo""#, lexer.content().unescaped()); // No allocation, returns same value.
+//! assert_eq!("foo", lexer.content().unquoted().literal()); // Surrounding quotes stripped.
+//! assert_eq!("foo", lexer.content().unquoted().unescaped()); // No allocation, returns same value.
 //! ```
 //!
 //! Example of a string token containing an escape sequence.
@@ -93,6 +96,8 @@
 //! assert_eq!(Token::Str, lexer.next());
 //! assert_eq!(r#""foo\u0020bar""#, lexer.content().literal()); // Note the surrounding quotes.
 //! assert_eq!(r#""foo bar""#, lexer.content().unescaped()); // Allocates, expands \u0020 -> ' '.
+//! assert_eq!(r#"foo\u0020bar"#, lexer.content().unquoted().literal()); // No surrounding quotes.
+//! assert_eq!("foo bar", lexer.content().unquoted().unescaped()); // No quotes, also allocates.
 //! ```
 //!
 //! # Roll your own lexer
@@ -107,12 +112,8 @@
 //! [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 //! [`syntax`]: crate::syntax
 
-use crate::{Buf, EqStr, IntoBuf, OrdStr, Pos, Sink, StringBuf};
-#[cfg(feature = "num")]
-use crate::{sink, sink::InlineSink};
-use alloc::string::String;
-#[cfg(feature = "num")]
-use alloc::vec::Vec;
+use crate::{Buf, EqStr, IntoBuf, OrdStr, Pos, Sink, StringBuf, sink, sink::InlineSink};
+use alloc::{string::String, vec::Vec};
 use core::{
     borrow::Borrow,
     cmp::{Ord, Ordering},
@@ -1302,6 +1303,262 @@ impl<B: Buf> Buf for UnescapedBuf<B> {
     }
 }
 
+/// String that can be unquoted (have surrounding double quotes removed).
+pub trait Unquote: IntoBuf {
+    /// Type that contains the *unquoted* value.
+    type Unquoted: IntoBuf;
+
+    /// Returns the string with any surrounding double quotes removed.
+    ///
+    /// A string that begins and ends with double quotation marks (`'"'`) has those double quotes
+    /// stripped, while all other values are unchanged.
+    ///
+    /// # Invariant
+    ///
+    /// Only values at least two characters in length that both begin and end with a double quote
+    /// character (`'"'`, U+0022) are changed; and the change is to remove the beginning and ending
+    /// double quote characters.
+    ///
+    /// Escape sequences are ignored. If the value begins and ends with double quote characters,
+    /// both are stripped, regardless of whether the ending double quote might appear to be
+    /// "escaped".
+    ///
+    /// All other values are returned unchanged.
+    ///
+    /// # Performance considerations
+    ///
+    /// Implementations of this method should not allocate or copy.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::lexical::Unquote;
+    ///
+    /// assert_eq!("1", "1".unquote());
+    /// assert_eq!("foo", r#""foo""#.unquote());
+    /// assert_eq!("", "".unquote());
+    /// assert_eq!("", r#""""#.unquote());
+    /// assert_eq!(r#"bar\"#, r#""bar\""#.unquote()); // Unquoting is not escape-aware.
+    /// ```
+    fn unquote(self) -> Self::Unquoted;
+}
+
+impl<'a> Unquote for &'a str {
+    type Unquoted = &'a str;
+
+    #[inline]
+    fn unquote(self) -> Self::Unquoted {
+        match self.as_bytes() {
+            // SAFETY: If both end bytes are `"`, which is ASCII, then indices 1 and len - 1 must be
+            //         character boundaries.
+            [b'"', .., b'"'] => unsafe { self.get_unchecked(1..self.len() - 1) },
+            _ => self,
+        }
+    }
+}
+
+#[cfg(any(feature = "pipe", feature = "read"))]
+mod unquote {
+    pub fn unquote_buf(i: &mut u8, j: &mut u8, buf: &[u8]) {
+        let a = *i as usize;
+        let b = *j as usize;
+        debug_assert!(a <= b);
+        debug_assert!(b <= buf.len());
+
+        if a + 2 <= b && buf[a] == b'"' && buf[b - 1] == b'"' {
+            *i += 1;
+            *j -= 1;
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use rstest::rstest;
+
+        #[rstest]
+        #[case::empty("", (0, 0), (0, 0))]
+        #[case::empty_middle("ab", (1, 1), (1, 1))]
+        #[case::empty_right("foo", (3, 3), (3, 3))]
+        #[case::a("a", (0, 1), (0, 1))]
+        #[case::ab("ab", (0, 2), (0, 2))]
+        #[case::bar("foo bar baz", (3, 6), (3, 6))]
+        #[case::quote_1(r#"""#, (0, 1), (0, 1))]
+        #[case::quote_2(r#""""#, (0, 2), (1, 1))]
+        #[case::quote_2_middle(r#"foo"""bar"#, (3, 5), (4, 4))]
+        #[case::quote_3(r#"""""#, (0, 3), (1, 2))]
+        #[case::quote_4(r#""""""#, (0, 4), (1, 3))]
+        #[case::quote_5(r#"a"""""a"#, (1, 6), (2, 5))]
+        #[case::quote_slash_quote(r#""\""#, (0, 3), (1, 2))]
+        fn test_unquote_buf(#[case] s: &str, #[case] input: (u8, u8), #[case] expect: (u8, u8)) {
+            let buf = s.as_bytes();
+            let mut i = input.0;
+            let mut j = input.1;
+
+            unquote_buf(&mut i, &mut j, buf);
+
+            let actual = (i, j);
+
+            assert_eq!(
+                expect,
+                actual,
+                "expected `unquote_buf({}, {}, {})` to produce i={}, j={} ({}), but got i={}, j={}",
+                input.0,
+                input.1,
+                s,
+                expect.0,
+                expect.1,
+                &s[expect.0 as usize..expect.1 as usize],
+                actual.0,
+                actual.1
+            );
+        }
+    }
+}
+
+/// Removes surrounding double quotes from the text content of a JSON token.
+///
+/// An `Unquoted` value represents the textual *content* of a JSON token read from the JSON text
+/// except that for string tokens, which begin and end with double quotation mark characters
+/// (`'"'`), the beginning and ending double quotes are removed. This is a zero-cost abstraction
+/// wrapping an inner [`Content`] value.
+///
+/// For example, consider the following JSON text:
+///
+/// ```json
+/// ["foo",1]
+/// ```
+///
+/// This text consists of five tokens (excluding the EOF pseudo-token). The table below shows how
+/// the token content changes when it is wrapped in `Unquoted`.
+///
+/// | # | [`Token`]    | [`Content`] | `Unquoted` | Note                   |
+/// |---|--------------|-------------|------------|------------------------|
+/// | 1 | [`ArrBegin`] | `[`         | `[`        | Unchanged              |
+/// | 2 | [`Str`]      | `"foo"`     | `foo`      | Double quotes stripped |
+/// | 3 | [`ValueSep`] | `,`         | `,`        | Unchanged              |
+/// | 4 | [`Num`]      | `1`         | `1`        | Unchanged              |
+/// | 5 | [`ArrEnd`]   | `]`         | `]`        | Unchanged              |
+///
+/// [`ArrBegin`]: Token::ArrBegin
+/// [`ArrEnd`]: Token::ArrEnd
+/// [`Num`]: Token::Num
+/// [`Str`]: Token::Str
+/// [`ValueSep`]: Token::ValueSep
+#[derive(Clone, Debug)]
+pub struct Unquoted<T>(T);
+
+impl<T: Content> Unquoted<T> {
+    /// Returns the literal content of the token after stripping leading and trailing double quotes.
+    #[inline]
+    pub fn literal<'a>(&'a self) -> <T::Literal<'a> as Unquote>::Unquoted
+    where
+        T::Literal<'a>: Unquote,
+    {
+        self.0.literal().unquote()
+    }
+
+    /// Returns the number of bytes in the [`literal`] value.
+    ///
+    /// [`literal`]: method@Self::literal
+    #[inline]
+    pub fn literal_len<'a>(&'a self) -> usize
+    where
+        T::Literal<'a>: Unquote,
+    {
+        self.literal().into_buf().remaining()
+    }
+
+    /// Indicates whether the token content contains escape sequences.
+    #[inline(always)]
+    pub fn is_escaped(&self) -> bool {
+        self.0.is_escaped()
+    }
+
+    /// Returns a normalized version of [`literal`] with all escape sequences fully expanded.
+    ///
+    /// This method has the same effect as [`Content::unescaped`] except that it returns the
+    /// unescaped token content after stripping leading and trailing double quotes, whereas
+    /// `Content::unescaped` includes the quotes.
+    ///
+    /// [`literal`]: method@Self::literal
+    pub fn unescaped<'a>(&'a self) -> Unescaped<<T::Literal<'a> as Unquote>::Unquoted>
+    where
+        T::Literal<'a>: Unquote,
+    {
+        if self.0.is_escaped() {
+            let mut dst = Vec::with_capacity(self.literal_len());
+            unescape(self.literal(), &mut dst);
+
+            // SAFETY: The input was valid UTF-8 and unescaping preserves UTF-8 validity.
+            Unescaped::Expanded(unsafe { String::from_utf8_unchecked(dst) })
+        } else {
+            Unescaped::Literal(self.literal())
+        }
+    }
+
+    /// Compares the unquoted token content to another string, expanding embedded escape sequences.
+    ///
+    /// For non-string tokens, and string tokens for which [`is_escaped`] returns `false`, this
+    /// method returns the equivalent of `self.literal().cmp(other)`.
+    ///
+    /// For string tokens with one or more escape sequences, this method compares a normalized
+    /// version of the string value, with escape sequences expanded, to `other`. It gives the same
+    /// result as `self.unescaped().cmp(other)`, but is faster because it avoids the accompanying
+    /// allocations and copying.
+    ///
+    /// Note two important details. First, no unescaping is done on `other`, which is assumed to
+    /// contain a string with escape sequences fully expanded. Second, apart from expanding escape
+    /// sequences, `self` is compared byte-for-byte against `other`. Since `self` is unquoted, this
+    /// means that when comparing identical string tokens, `other` must also be unquoted in order to
+    /// get an equal result.
+    ///
+    /// # Performance considerations
+    ///
+    /// Since this method is marginally less efficient than comparing directly against the literal
+    /// value, it is preferable to use it only when `is_escaped` returns `true`.
+    ///
+    /// [`is_escaped`]: method@Self::is_escaped
+    #[inline]
+    pub fn unescaped_cmp<'a>(&'a self, other: &str) -> Ordering
+    where
+        T::Literal<'a>: Unquote,
+    {
+        unescaped_cmp(self.literal(), other)
+    }
+
+    /// Consumes the `Unquoted` content, returning the wrapped [`Content`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    /// let mut lexer = FixedAnalyzer::new(&br#""foo""#[..]);
+    /// assert_eq!(Token::Str, lexer.next());
+    ///
+    /// let unquoted = lexer.content().unquoted();
+    /// assert_eq!("foo", unquoted.literal());
+    ///
+    /// let quoted = unquoted.into_inner();
+    /// assert_eq!(r#""foo""#, quoted.literal());
+    /// ```
+    #[inline(always)]
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> fmt::Display for Unquoted<T>
+where
+    T: Content,
+    for<'a> T::Literal<'a>: Unquote,
+    for<'a> <T::Literal<'a> as Unquote>::Unquoted: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.literal().unquote().fmt(f)
+    }
+}
+
 /// An error encountered when converting the content of a JSON number token to a Rust numeric type.
 #[cfg(feature = "num")]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1333,6 +1590,13 @@ pub enum NumError {
 ///
 /// The above JSON text contains one token whose type is [`Token::Str`] and whose content is
 /// `"foo"`.
+///
+/// # Invariant
+///
+/// The [`literal`] text of every `Content` value must be either a valid JSON token or the empty
+/// string. No value implementing `Content` may be created unless it satisfies this invariant.
+///
+/// [`literal`]: method@Self::literal
 pub trait Content: fmt::Debug {
     /// Type that contains the literal string of the token exactly as it appears in the JSON text.
     type Literal<'a>: IntoBuf
@@ -1340,6 +1604,8 @@ pub trait Content: fmt::Debug {
         Self: 'a;
 
     /// Returns the literal content of the token exactly as it appears in the JSON text.
+    ///
+    /// The value returned must be either a valid JSON token or the empty string.
     ///
     /// # Static content tokens
     ///
@@ -1354,8 +1620,8 @@ pub trait Content: fmt::Debug {
     ///
     /// For string tokens, the value returned is the literal text of the string token *including*
     /// the opening and closing double quote (`"`) characters. Therefore, every string token has
-    /// length at least two and the unquoted value can be extracted by dropping the first and last
-    /// characters.
+    /// length at least two. To extract the unquoted value, use [`unquoted`] (or drop the first and
+    /// last characters).
     ///
     /// Because the return value contains the entire literal string token as it appears in the JSON
     /// text, any escape sequences the string may contain are not expanded. This has the benefit
@@ -1371,6 +1637,7 @@ pub trait Content: fmt::Debug {
     ///
     /// [`is_escaped`]: method@Self::is_escaped
     /// [`unescaped`]: method@Self::unescaped
+    /// [`unquoted`]: method@Self::unquoted
     ///
     /// # Whitespace
     ///
@@ -1440,8 +1707,8 @@ pub trait Content: fmt::Debug {
     /// Note two important details. First, no unescaping is done on `other`, which is assumed to
     /// contain a string with escape sequences fully expanded. Second, apart from expanding escape
     /// sequences, `self` is compared byte-for-byte against `other`, so if `self` contains the
-    /// content of a string token, then `other` will need to begin and end with a quotation mark
-    /// character, `"` (U+0022) in order to compare equal.
+    /// content of a string token, then `other` will need to begin and end with a double quotation
+    /// mark character, `"` (U+0022), in order to compare equal.
     ///
     /// # Performance considerations
     ///
@@ -1454,6 +1721,35 @@ pub trait Content: fmt::Debug {
     #[inline(always)]
     fn unescaped_cmp(&self, other: &str) -> Ordering {
         unescaped_cmp(self.literal(), other)
+    }
+
+    /// Strips leading and trailing quotation marks, consuming `self` in the process.
+    ///
+    /// For non-string tokens, this has no effect: the value returned by [`literal`] before the
+    /// conversion and the value returned by [`Unquoted::literal`] afterward are the same.
+    ///
+    /// For string tokens, this conversion strips the leading and trailing double quotes (`'"'`).
+    /// The effect is that a string token whose [`literal`] value in the JSON text is `"foo"`
+    /// becomes an unquoted value with the [`Unquoted::literal`] representation `foo`.
+    ///
+    /// This is a convenience method for working with string tokens in contexts where the
+    /// surrounding quotation marks are not wanted.
+    ///
+    /// # Performance considerations
+    ///
+    /// Implementations of this method should never allocate or copy. Since this method hands back
+    /// an [`Unquoted`] value, which is a zero-cost wrapper, doing either is almost impossible
+    /// anyway.
+    ///
+    /// [`literal`]: method@Self::literal
+    #[inline(always)]
+    fn unquoted(self) -> Unquoted<Self>
+    where
+        Self: Sized,
+    {
+        // This is effectively a final method: the ability to construct `Unquoted` is private to
+        // this crate, which means that no outside crates can provide their own implementation.
+        Unquoted(self)
     }
 
     /// Converts the token content to a 64-bit signed integer.
@@ -2377,6 +2673,119 @@ pub fn unescaped_cmp(literal: impl IntoBuf, other: &str) -> Ordering {
     }
 }
 
+/// Strips leading and trailing quotation marks from a string.
+///
+/// The unquoted string is appended to the given [`Sink`].
+///
+/// If the input string does not begin and end with the double quote character, `"` (U+0022), its
+/// value is appended to the destination sink unchanged. If it does begin and end with double
+/// quotes, only the characters between the beginning and ending quote are appended to the
+/// destination.
+///
+/// # Performance considerations
+///
+/// This function is strictly less efficient than [`Content::unquoted`]. At minimum, it requires a
+/// copy into the destination sink and whatever allocation that entails. In contrast,
+/// `Content::unquoted` is a zero cost abstraction and never allocates or copies. Consequently, the
+/// latter should be preferred whenever it is an option.
+///
+/// # Examples
+///
+/// Remove surrounding double quote characters from a string:
+///
+/// ```
+/// use bufjson::lexical::unquote;
+///
+/// let mut dst = Vec::new();
+/// unquote(r#""hello, world""#, &mut dst);
+/// assert_eq!(&b"hello, world"[..], &dst);
+/// ```
+///
+/// If the input isn't surrounded by double quotes, nothing changes...
+///
+/// ```
+/// use bufjson::lexical::unquote;
+///
+/// let mut dst = Vec::new();
+/// unquote("foo, bar", &mut dst);
+/// assert_eq!(&b"foo, bar"[..], &dst);
+/// ```
+///
+/// ...Even if there's a stray quote at the start or end:
+///
+/// ```
+/// use bufjson::lexical::unquote;
+///
+/// let mut dst = Vec::new();
+/// unquote("\" <-- stray", &mut dst);
+/// assert_eq!(&b"\" <-- stray"[..], &dst);
+/// unquote(" and stray --> \"", &mut dst);
+/// assert_eq!(&b"\" <-- stray and stray --> \""[..], &mut dst);
+/// ```
+pub fn unquote(literal: impl IntoBuf, dst: &mut impl Sink) {
+    let mut literal = literal.into_buf();
+
+    let chunk = literal.chunk();
+    match chunk {
+        [b'"', .., b'"'] if literal.remaining() == chunk.len() => {
+            dst.extend_from_slice(&chunk[1..chunk.len() - 1]);
+        }
+
+        [b'"', ..] => {
+            literal.advance(1);
+
+            const MAX_INLINE_BUF_LEN: usize = if cfg!(test) {
+                2
+            } else if cfg!(not(feature = "std")) {
+                128
+            } else if cfg!(target_os = "espidf") {
+                512
+            } else {
+                1024
+            };
+
+            // The extra copying and/or allocating in this arm is a bit painful, but it is also
+            // improbable, since in practice most string values won't span buffers.
+            //
+            // The choice to copy/allocate rather than, say, panic if the quotes don't match was
+            // made with eyes open for consistency with how literals work. The invariant in the
+            // crate is that a `Content` always has to contain valid JSON token text or the empty
+            // string, but a literal value (e.g., `lexical::read::Literal`) might not; because you
+            // are allowed to instantiate these values (e.g., `Literal::from_static`) and anyway,
+            // `fixed::Content::Literal` is just a `&str`. Since literal values are allowed to not
+            // be valid JSON, `Unquote` is forgiving of values that don't start and end with double
+            // quotes. Long story short, this is primarily a convenience function, and it is more
+            // valuable to keep it consistent with `Unquote` than it is to maximize performance in
+            // all cases.
+
+            if literal.remaining() <= MAX_INLINE_BUF_LEN {
+                let mut buf = InlineSink::<MAX_INLINE_BUF_LEN>::new();
+                sink(literal, &mut buf);
+                let rem = buf.as_slice();
+                if matches!(rem, [.., b'"']) {
+                    dst.extend_from_slice(&rem[..rem.len() - 1]);
+                } else {
+                    dst.reserve(1 + rem.len());
+                    dst.push(b'"');
+                    dst.extend_from_slice(rem);
+                }
+            } else {
+                let mut rem = Vec::with_capacity(literal.remaining());
+                sink(literal, &mut rem);
+                if matches!(rem.as_slice(), [.., b'"']) {
+                    dst.extend_from_slice(&rem[..rem.len() - 1]);
+                } else {
+                    dst.reserve(1 + rem.len());
+                    dst.push(b'"');
+                    dst.extend_from_slice(&rem);
+                }
+            }
+        }
+
+        _ => sink(literal, dst),
+    }
+}
+
 fn append_code_point(code_point: u32, dst: &mut impl Sink) {
     match char::from_u32(code_point) {
         Some(c) => {
@@ -2858,6 +3267,92 @@ mod tests {
         assert!(!m2.contains_key("aa"));
         assert_eq!(Some("a2"), m2.remove("a"));
         assert_eq!(Some("b2"), m2.remove("bb"));
+    }
+
+    #[rstest]
+    #[case::empty("", "")]
+    #[case::a("a", "a")]
+    #[case::ab("ab", "ab")]
+    #[case::escaped_quote(r#"\""#, r#"\""#)]
+    #[case::quotes_1(r#"""#, r#"""#)]
+    #[case::quotes_2(r#""""#, r#""#)]
+    #[case::quotes_3(r#"""""#, r#"""#)]
+    #[case::quotes_4(r#""""""#, r#""""#)]
+    #[case::quotes_5(r#"""""""#, r#"""""#)]
+    #[case::quote_a(r#""a"#, r#""a"#)]
+    #[case::quote_a_quote(r#""a""#, r#"a"#)]
+    #[case::quote_ab(r#""ab"#, r#""ab"#)]
+    #[case::quote_ab_quote(r#""ab""#, r#"ab"#)]
+    #[case::quote_escaped_quote(r#""\""#, r#"\"#)]
+    #[case::quote_escaped_quote_quote(r#""\"""#, r#"\""#)]
+    fn test_unquote_str(#[case] input: &str, #[case] expect: &str) {
+        let actual = input.unquote();
+
+        assert_eq!(expect, actual);
+    }
+
+    #[rstest]
+    #[case::empty("", "", None, &[(Ordering::Less, "a"), (Ordering::Equal, "")])]
+    #[case::a("a", "a", None, &[(Ordering::Less, "b"), (Ordering::Less, "aa"), (Ordering::Equal, "a"), (Ordering::Greater, "")])]
+    #[case::ab("ab", "ab", None, &[(Ordering::Less, "b"), (Ordering::Less, "abc"), (Ordering::Equal, "ab"), (Ordering::Greater, "a")])]
+    #[case::quotes_1(r#"""#, r#"""#, None, &[(Ordering::Less, r#""""#), (Ordering::Equal, r#"""#), (Ordering::Greater, "")])]
+    #[case::quotes_2(r#""""#, "", None, &[(Ordering::Less, "a"), (Ordering::Equal, "")])]
+    #[case::quotes_3(r#"""""#, r#"""#, None, &[(Ordering::Less, "a"), (Ordering::Equal, r#"""#), (Ordering::Greater, "")])]
+    #[case::quotes_4(r#""""""#, r#""""#, None, &[(Ordering::Less, "a"), (Ordering::Equal, r#""""#), (Ordering::Greater, r#"""#)])]
+    #[case::quotes_5(r#"""""""#, r#"""""#, None, &[(Ordering::Less, "a"), (Ordering::Equal, r#"""""#), (Ordering::Greater, r#""""#)])]
+    #[case::quote_a(r#""a"#, r#""a"#, None, &[(Ordering::Less, r#""ab"#), (Ordering::Less, r#""aa"#), (Ordering::Equal, r#""a"#), (Ordering::Greater, r#"""#)])]
+    #[case::quote_a_quote(r#""a""#, "a", None, &[(Ordering::Less, "ab"), (Ordering::Less, "aa"), (Ordering::Equal, "a"), (Ordering::Greater, "")])]
+    #[case::quote_ab(r#""ab"#, r#""ab"#, None, &[(Ordering::Less, r#""b"#), (Ordering::Less, r#""abc"#), (Ordering::Equal, r#""ab"#), (Ordering::Greater, r#""a"#)])]
+    #[case::quote_ab_quote(r#""ab""#, "ab", None, &[(Ordering::Less, "b"), (Ordering::Less, "abc"), (Ordering::Equal, "ab"), (Ordering::Greater, "a")])]
+    #[case::slash_quote(r#"\""#, r#"\""#, Some(r#"""#), &[(Ordering::Less, "a"), (Ordering::Equal, r#"""#), (Ordering::Greater, "")])]
+    #[case::quote_slash_quote(r#""\""#, r#"\"#, None, &[(Ordering::Less, r#"a"#), (Ordering::Equal, r#"\"#), (Ordering::Greater, r#"""#)])]
+    #[case::quote_slash_quote_quote(r#""\"""#, r#"\""#, Some(r#"""#), &[(Ordering::Less, "a"), (Ordering::Equal, r#"""#), (Ordering::Greater, r#""#)])]
+    #[case::slash_slash(r#"\\"#, r#"\\"#, Some(r#"\"#), &[(Ordering::Less, "a"), (Ordering::Equal, r#"\"#), (Ordering::Greater, " ")])]
+    #[case::lorem_no_quotes(r#"Lorem ipsum dolor sit 🌍 \" \\ \/ \b \f \n \r \t amet"#, r#"Lorem ipsum dolor sit 🌍 \" \\ \/ \b \f \n \r \t amet"#, Some("Lorem ipsum dolor sit 🌍 \" \\ / \u{08} \u{0c} \n \r \t amet"), &[(Ordering::Less, "lorem"), (Ordering::Equal, "Lorem ipsum dolor sit 🌍 \" \\ / \u{08} \u{0c} \n \r \t amet"), (Ordering::Greater, "Lorem ipsum"), (Ordering::Greater, "Lorem ipsum dolor sit 🌍")])]
+    #[case::lorem_leading_quote(r#""Lorem ipsum dolor sit 🌍 \" \\ \/ \b \f \n \r \t amet"#, r#""Lorem ipsum dolor sit 🌍 \" \\ \/ \b \f \n \r \t amet"#, Some("\"Lorem ipsum dolor sit 🌍 \" \\ / \u{08} \u{0c} \n \r \t amet"), &[(Ordering::Less, r#""lorem"#), (Ordering::Equal, "\"Lorem ipsum dolor sit 🌍 \" \\ / \u{08} \u{0c} \n \r \t amet"), (Ordering::Greater, r#""Lorem ipsum"#), (Ordering::Greater, r#""Lorem ipsum dolor sit 🌍"#)])]
+    #[case::lorem_trailing_quote(r#"Lorem ipsum dolor sit 🌍 \" \\ \/ \b \f \n \r \t amet""#, r#"Lorem ipsum dolor sit 🌍 \" \\ \/ \b \f \n \r \t amet""#, Some("Lorem ipsum dolor sit 🌍 \" \\ / \u{08} \u{0c} \n \r \t amet\""), &[(Ordering::Less, "lorem"), (Ordering::Equal, "Lorem ipsum dolor sit 🌍 \" \\ / \u{08} \u{0c} \n \r \t amet\""), (Ordering::Greater, r#"Lorem ipsum"#), (Ordering::Greater, r#"Lorem ipsum dolor sit 🌍"#)])]
+    #[case::lorem_quoted(r#""Lorem ipsum dolor sit 🌍 \" \\ \/ \b \f \n \r \t amet""#, r#"Lorem ipsum dolor sit 🌍 \" \\ \/ \b \f \n \r \t amet"#, Some("Lorem ipsum dolor sit 🌍 \" \\ / \u{08} \u{0c} \n \r \t amet"), &[(Ordering::Less, "lorem"), (Ordering::Equal, "Lorem ipsum dolor sit 🌍 \" \\ / \u{08} \u{0c} \n \r \t amet"), (Ordering::Greater, "Lorem ipsum"), (Ordering::Greater, "Lorem ipsum dolor sit 🌍")])]
+    #[case::lorem_quoted_twice(r#"""Lorem ipsum dolor sit 🌍 \" \\ \/ \b \f \n \r \t amet"""#, r#""Lorem ipsum dolor sit 🌍 \" \\ \/ \b \f \n \r \t amet""#, Some("\"Lorem ipsum dolor sit 🌍 \" \\ / \u{08} \u{0c} \n \r \t amet\""), &[(Ordering::Less, r#""lorem"#), (Ordering::Equal, "\"Lorem ipsum dolor sit 🌍 \" \\ / \u{08} \u{0c} \n \r \t amet\""), (Ordering::Greater, r#""Lorem ipsum"#), (Ordering::Greater, r#""Lorem ipsum dolor sit 🌍"#)])]
+    fn test_unquoted(
+        #[case] input: &str,
+        #[case] expect: &str,
+        #[case] unescaped: Option<&str>,
+        #[case] rels: &[(Ordering, &str)],
+        #[values(None, Some(1), Some(2), Some(3), Some(4))] chunk_len: Option<usize>,
+    ) {
+        let lit = match chunk_len {
+            Some(n) => ChunkedStr::new(input, n),
+            None => ChunkedStr::new(input, input.len()),
+        };
+        let content = ChunkedContent {
+            lit,
+            esc: unescaped.is_some(),
+        };
+        let unquoted = content.unquoted();
+
+        assert_eq!(
+            expect,
+            unquoted.literal(),
+            "literal value <{}> of unquoted value {unquoted:?} should be equal to <{expect}>, but is not",
+            unquoted.literal(),
+        );
+        assert_eq!(expect.len(), unquoted.literal_len());
+        assert_eq!(unescaped.is_some(), unquoted.is_escaped());
+        assert_eq!(unescaped.unwrap_or(expect), unquoted.unescaped());
+        for (expect_ordering, value) in rels {
+            let actual_ordering = if unescaped.is_some() {
+                unquoted.unescaped_cmp(value)
+            } else {
+                unquoted.literal().cmp(value)
+            };
+            assert_eq!(
+                *expect_ordering, actual_ordering,
+                "unquoted value {unquoted:?} of {input:?} should be {expect_ordering:?} {value:?}, but it is {actual_ordering:?}"
+            );
+        }
+        let inner = unquoted.into_inner();
+        assert_eq!(input, str::from_utf8(inner.lit.buf).unwrap());
+        assert_eq!(unescaped.is_some(), inner.esc);
     }
 
     #[rstest]
@@ -3659,7 +4154,7 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Clone, Debug)]
     struct ChunkedContent<'a> {
         lit: ChunkedStr<'a>,
         esc: bool,
@@ -3792,6 +4287,22 @@ mod tests {
 
                 Ok(())
             }
+        }
+    }
+
+    impl<'a> Unquote for ChunkedStr<'a> {
+        type Unquoted = &'a str;
+
+        fn unquote(self) -> Self::Unquoted {
+            assert!(self.pos == 0);
+
+            let buf = if matches!(self.buf, [b'"', .., b'"']) {
+                &self.buf[1..self.buf.len() - 1]
+            } else {
+                self.buf
+            };
+
+            str::from_utf8(buf).unwrap()
         }
     }
 

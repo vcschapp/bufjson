@@ -5,7 +5,7 @@ use crate::lexical::{NumError, parse_f64_result, parse_int_err};
 use crate::{
     Pos,
     lexical::{
-        self, state, {Analyzer, ErrorKind, Token, Unescaped},
+        self, state, {Analyzer, ErrorKind, Token, Unescaped, Unquoted},
     },
     syntax,
 };
@@ -108,6 +108,10 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
 
     /// Returns the number of bytes in the [`literal`] value.
     ///
+    /// This is an inherent implementation of [`lexical::Content::literal_len`] for convenience, so
+    /// it is available even when you don't have the trait imported. Refer to the trait
+    /// documentation for conceptual details.
+    ///
     /// [`literal`]: method@Self::literal
     #[inline]
     pub fn literal_len(&self) -> usize {
@@ -165,26 +169,16 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
 
     /// Compares the token content to another string, expanding embedded escape sequences.
     ///
-    /// For non-string tokens, and string tokens for which [`is_escaped`] returns `false`, this
-    /// method returns the equivalent of `self.literal().cmp(other)`.
-    ///
-    /// For string tokens with one or more escape sequences, this method compares a normalized
-    /// version of the string value with escape sequences expanded to `other`. It gives the same
-    /// result as `self.unescaped().cmp(other)`, but is faster because it avoids the accompanying
-    /// allocations and copying.
-    ///
-    /// Note two important details. First, no unescaping is done on `other`, which is assumed to
-    /// contain a string with escape sequences fully expanded. Second, apart from expanding escape
-    /// sequences, `self` is compared byte-for-byte against `other`, so if `self` contains the
-    /// content of a string token, then `other` will need to begin and end with a quotation mark
-    /// character, `"` (U+0022) in order to compare equal.
+    /// This is an inherent implementation of [`lexical::Content::unescaped_cmp`] for convenience,
+    /// so it is available even when you don't have the trait imported. Refer to the trait
+    /// documentation for conceptual details.
     ///
     /// # Performance considerations
     ///
     /// Does not allocate.
     ///
     /// Since this method is marginally less efficient than comparing directly against the literal
-    /// value, it is preferable to use it only when `is_escaped` returns `true`.
+    /// value, it is preferable to use it only when [`is_escaped`] returns `true`.
     ///
     /// # Example
     ///
@@ -235,6 +229,33 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
                 }
             }
         }
+    }
+
+    /// Strips leading and trailing quotation marks, consuming `self` in the process.
+    ///
+    /// This is an inherent implementation of [`lexical::Content::unquoted`] for convenience, so it
+    /// is available even when you don't have the trait imported. Refer to the trait documentation
+    /// for conceptual details.
+    ///
+    /// # Performance considerations
+    ///
+    /// Does not allocate, either directly or indirectly via [`Unquoted::literal`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, fixed::FixedAnalyzer};
+    ///
+    /// let mut an = FixedAnalyzer::new(&br#""hello, world!""#[..]);
+    ///
+    /// assert_eq!(Token::Str, an.next());
+    /// assert_eq!("hello, world!", an.content().unquoted().literal());
+    /// ```
+    ///
+    /// [`literal`]: method@Self::literal
+    #[inline(always)]
+    pub fn unquoted(self) -> Unquoted<Self> {
+        Unquoted(self)
     }
 
     /// Converts the token content to a 64-bit signed integer.
@@ -1020,20 +1041,28 @@ mod tests {
     }
 
     #[rstest]
-    #[case::static_a(Content(InnerContent::Static("a")), "a", "a")]
-    #[case::inline_empty(Content(inline_buf(b"").into()), "", "")]
-    #[case::inline_a_1(Content(inline_buf(b"a").into()), "a", "a")]
-    #[case::inline_a_inline_len(Content(inline_buf(&[b'a'; INLINE_LEN]).into()), "a".repeat(INLINE_LEN), "a".repeat(INLINE_LEN))]
-    #[case::not_escaped_empty(Content(InnerContent::NotEscaped(Ref::new(Arc::new(b"".to_vec()), 0..0))), "", "")]
-    #[case::not_escaped_a(Content(InnerContent::NotEscaped(Ref::new(Arc::new(b"a".to_vec()), 0..1))), "a", "a")]
-    #[case::escaped_empty(Content(InnerContent::Escaped(Ref::new(Arc::new(b"".to_vec()), 0..0))), "", "")]
-    #[case::escaped_a(Content(InnerContent::Escaped(Ref::new(Arc::new(b"a".to_vec()), 0..1))), "a", "a")]
-    #[case::escaped_nl(Content(InnerContent::Escaped(Ref::new(Arc::new(b"\\n".to_vec()), 0..2))), "\\n", "\n")]
-    #[case::escaped_nul(Content(InnerContent::Escaped(Ref::new(Arc::new(b"\\u0000".to_vec()), 0..6))), "\\u0000", "\u{0000}")]
+    #[case::static_a(Content(InnerContent::Static("a")), "a", "a", false)]
+    #[case::static_quote(Content(InnerContent::Static(r#"""#)), r#"""#, r#"""#, false)]
+    #[case::static_quote_quote(Content(InnerContent::Static(r#""""#)), r#""""#, r#""""#, true)]
+    #[case::static_quote_a_quote(Content(InnerContent::Static(r#""a""#)), r#""a""#, r#""a""#, true)]
+    #[case::inline_empty(Content(inline_buf(b"").into()), "", "", false)]
+    #[case::inline_a_1(Content(inline_buf(b"a").into()), "a", "a", false)]
+    #[case::inline_a_inline_len(Content(inline_buf(&[b'a'; INLINE_LEN]).into()), "a".repeat(INLINE_LEN), "a".repeat(INLINE_LEN), false)]
+    #[case::inline_quote(Content(inline_buf(br#"""#).into()), r#"""#, r#"""#, false)]
+    #[case::inline_quote_quote(Content(inline_buf(br#""""#).into()), r#""""#, r#""""#, true)]
+    #[case::inline_quote_a_quote_1(Content(inline_buf(br#""a""#).into()), r#""a""#, r#""a""#, true)]
+    #[case::not_escaped_empty(Content(InnerContent::NotEscaped(Ref::new(Arc::new(b"".to_vec()), 0..0))), "", "", false)]
+    #[case::not_escaped_a(Content(InnerContent::NotEscaped(Ref::new(Arc::new(b"a".to_vec()), 0..1))), "a", "a", false)]
+    #[case::escaped_empty(Content(InnerContent::Escaped(Ref::new(Arc::new(b"".to_vec()), 0..0))), "", "", false)]
+    #[case::escaped_a(Content(InnerContent::Escaped(Ref::new(Arc::new(b"a".to_vec()), 0..1))), "a", "a", false)]
+    #[case::escaped_nl(Content(InnerContent::Escaped(Ref::new(Arc::new(b"\\n".to_vec()), 0..2))), "\\n", "\n", false)]
+    #[case::escaped_nul(Content(InnerContent::Escaped(Ref::new(Arc::new(b"\\u0000".to_vec()), 0..6))), "\\u0000", "\u{0000}", false)]
+    #[case::escaped_quote_foo_tab_bar_quote(Content(InnerContent::Escaped(Ref::new(Arc::new(br#""foo\tbar""#.to_vec()), 0..10))), r#""foo\tbar""#, "\"foo\tbar\"", true)]
     fn test_content(
         #[case] content: Content<Vec<u8>>,
         #[case] literal: impl AsRef<str>,
         #[case] unescaped: impl AsRef<str>,
+        #[case] quoted: bool,
     ) {
         let literal = literal.as_ref();
         let unescaped = unescaped.as_ref();
@@ -1051,6 +1080,31 @@ mod tests {
             Ordering::Equal,
             lexical::Content::unescaped_cmp(&content, unescaped)
         );
+
+        let check_quotes = |unquoted: Unquoted<Content<Vec<u8>>>| {
+            if quoted {
+                assert_eq!(&literal[1..literal.len() - 1], unquoted.literal());
+                assert_eq!(literal.len() - 2, unquoted.literal_len());
+                assert_eq!(&unescaped[1..unescaped.len() - 1], unquoted.unescaped());
+                assert_eq!(
+                    Ordering::Equal,
+                    unquoted.unescaped_cmp(&unescaped[1..unescaped.len() - 1])
+                );
+            } else {
+                assert_eq!(literal, unquoted.literal());
+                assert_eq!(literal.len(), unquoted.literal_len());
+                assert_eq!(unescaped, unquoted.unescaped());
+                assert_eq!(Ordering::Equal, unquoted.unescaped_cmp(unescaped));
+            }
+
+            unquoted.into_inner()
+        };
+
+        let content = check_quotes(content.unquoted());
+        assert_eq!(literal, content.literal());
+
+        let content = check_quotes(lexical::Content::unquoted(content));
+        assert_eq!(literal, content.literal());
     }
 
     #[rstest]

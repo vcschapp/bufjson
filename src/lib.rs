@@ -164,7 +164,8 @@
 //! These design principles lead to the following nuanced consequences:
 //!
 //! 1. Strings are quoted. If the JSON contains the string token `"foo"`, the token content returned
-//!    is `"foo"` including the opening and closing double quotes.
+//!    is `"foo"` including the opening and closing double quotes. (When not needed, those quotes
+//!    can be trivially removed with [`Content::unquoted`][lexical::Content::unquoted].)
 //! 2. Escape sequence expansion is deferred until you ask for it. There are several ways to do
 //!    this, including [`Content::unescaped`][lexical::Content::unescaped] and
 //!    [`unescape`][lexical::unescape].
@@ -1031,7 +1032,6 @@ impl Sink for Vec<u8> {
     }
 }
 
-#[cfg(any(feature = "num", feature = "pointer"))]
 pub(crate) mod sink {
     use core::mem::MaybeUninit;
 
