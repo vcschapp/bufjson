@@ -128,7 +128,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
         matches!(self.0, InnerContent::Escaped(_))
     }
 
-    /// Returns a normalized version of [`literal`]` with all escape sequences in the JSON text
+    /// Returns a normalized version of [`literal`] with all escape sequences in the JSON text
     /// fully expanded.
     ///
     /// This is an inherent implementation of [`lexical::Content::unescaped`] for convenience, so
