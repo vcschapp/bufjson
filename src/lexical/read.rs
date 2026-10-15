@@ -3,7 +3,7 @@
 use crate::{
     Buf, BufUnderflow, EqStr, IntoBuf, OrdStr, Pos,
     lexical::{
-        self, state, {Analyzer, ErrorKind, Token, Unescaped},
+        self, state, {Analyzer, ErrorKind, Token, Unescaped, unescaped_cmp},
     },
     syntax,
 };
@@ -984,6 +984,39 @@ impl Content {
 
             _ => Unescaped::Literal(self.literal()),
         }
+    }
+
+    /// Compares the token content to another string, expanding embedded escape sequences.
+    ///
+    /// This is an inherent implementation of [`lexical::Content::unescaped_cmp`] for convenience,
+    /// so it is available even when you don't have the trait imported. Refer to the trait
+    /// documentation for conceptual details.
+    ///
+    /// # Performance considerations
+    ///
+    /// Does not allocate.
+    ///
+    /// Since this method is marginally less efficient than comparing directly against the literal
+    /// value, it is preferable to use it only when [`is_escaped`] returns `true`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bufjson::lexical::{Token, read::ReadAnalyzer};
+    /// use std::cmp::Ordering;
+    ///
+    /// let mut an = ReadAnalyzer::new(&br#""hello\nworld! \ud83c\udf0d""#[..]);
+    ///
+    /// assert_eq!(Token::Str, an.next());
+    /// assert_eq!(
+    ///     Ordering::Equal, an.content().unescaped_cmp(r#""hello
+    /// world! 🌍""#));
+    /// ```
+    ///
+    /// [`is_escaped`]: method@Self::is_escaped
+    #[inline(always)]
+    pub fn unescaped_cmp(&self, other: &str) -> Ordering {
+        unescaped_cmp(self.literal(), other)
     }
 
     fn from_static(s: &'static str) -> Self {
@@ -2681,12 +2714,22 @@ mod tests {
         #[case] expect_unescaped: Option<&str>,
     ) {
         assert_eq!(expect_literal, content.literal());
+        assert_eq!(expect_literal, super::Content::literal(&content));
         assert_eq!(expect_literal, content.literal().into_string());
+        assert_eq!(
+            expect_literal,
+            super::Content::literal(&content).into_string()
+        );
         assert_eq!(expect_literal.len(), content.literal_len());
         assert_eq!(expect_literal.len(), super::Content::literal_len(&content));
         assert_eq!(expect_unescaped.is_some(), content.is_escaped());
         if let Some(expect) = expect_unescaped {
             assert_eq!(expect, content.unescaped().into_string());
+            assert_eq!(Ordering::Equal, content.unescaped_cmp(expect));
+            assert_eq!(
+                Ordering::Equal,
+                super::Content::unescaped_cmp(&content, expect)
+            );
         }
     }
 

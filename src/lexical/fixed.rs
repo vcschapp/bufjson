@@ -1039,12 +1039,18 @@ mod tests {
         let unescaped = unescaped.as_ref();
 
         assert_eq!(literal, content.literal());
-        assert_eq!(literal, content.to_string());
+        assert_eq!(literal, lexical::Content::literal(&content));
+        assert_eq!(literal, content.literal().to_string());
+        assert_eq!(literal, lexical::Content::literal(&content).to_string());
         assert_eq!(literal.len(), content.literal_len());
         assert_eq!(literal.len(), lexical::Content::literal_len(&content));
         assert_eq!(unescaped, content.unescaped());
         assert_eq!(unescaped, lexical::Content::unescaped(&content));
         assert_eq!(Ordering::Equal, content.unescaped_cmp(unescaped));
+        assert_eq!(
+            Ordering::Equal,
+            lexical::Content::unescaped_cmp(&content, unescaped)
+        );
     }
 
     #[rstest]
