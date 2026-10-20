@@ -1002,6 +1002,8 @@ impl Content {
     ///
     /// Since this method is marginally less efficient than comparing directly against the literal
     /// value, it is preferable to use it only when [`is_escaped`] returns `true`.
+    ///
+    /// [`is_escaped`]: method@Self::is_escaped
     #[inline(always)]
     pub fn unescaped_cmp(&self, other: &str) -> Ordering {
         unescaped_cmp(self.literal(), other)
