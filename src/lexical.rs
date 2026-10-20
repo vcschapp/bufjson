@@ -2093,7 +2093,8 @@ fn hex2u32(b: u8) -> u32 {
 ///
 /// # Panics
 ///
-/// Panics if the input contains an invalid or unterminated JSON escape sequence.
+/// Panics if the input contains an invalid or unterminated JSON escape sequence or begins with a
+/// double quote character but does not end with one.
 ///
 /// # Examples
 ///
@@ -2132,7 +2133,7 @@ pub fn unescape(literal: impl IntoBuf, dst: &mut impl Sink) {
     }
     dst.reserve(literal.remaining() - 1);
 
-    #[derive(Default)]
+    #[derive(Debug, Default)]
     struct Esc {
         len: u32, // Number of valid bytes, 1-5 (how many characters we have after first '\').
         hi: u32,  // High surrogate.
@@ -2140,11 +2141,28 @@ pub fn unescape(literal: impl IntoBuf, dst: &mut impl Sink) {
     }
     let mut esc: Option<Esc> = None;
 
+    let mut chunk = literal.chunk();
+    let quoted = if matches!(chunk, [b'"', ..]) {
+        literal.advance(1);
+        chunk = literal.chunk();
+        dst.push(b'"');
+
+        true
+    } else {
+        false
+    };
+
     loop {
-        let chunk = literal.chunk();
+        let last = !(chunk.len() < literal.remaining());
+        if quoted && last && matches!(chunk, [.., b'"']) {
+            chunk = &chunk[..chunk.len() - 1];
+        }
+        if chunk.is_empty() {
+            break;
+        }
         let (mut i, mut j) = (0usize, 0usize);
 
-        loop {
+        while j < chunk.len() {
             let b = chunk[j];
             match &mut esc {
                 None if b != b'\\' => j += 1,
@@ -2252,21 +2270,25 @@ pub fn unescape(literal: impl IntoBuf, dst: &mut impl Sink) {
 
                 _ => unreachable!(),
             }
-
-            if j == chunk.len() {
-                break;
-            }
         }
 
         dst.extend_from_slice(&chunk[i..j]);
         literal.advance(chunk.len());
-        if !literal.has_remaining() {
-            break;
-        }
+        chunk = literal.chunk();
     }
 
     if esc.is_some() {
-        panic!("unexpected end of input within Unicode escape sequence");
+        panic!("unterminated escape sequence");
+    } else if quoted {
+        let chunk = literal.chunk();
+        match chunk {
+            [b'"'] => dst.push(b'"'),
+            [b'\\'] => panic!("unterminated escape sequence"),
+            [] | [_] => panic!("unmatched starting quote"),
+            _ => unreachable!("last chunk len must be 0 or 1, but it is {}", chunk.len()),
+        }
+    } else {
+        debug_assert!(!literal.has_remaining());
     }
 }
 
@@ -2283,8 +2305,8 @@ pub fn unescape(literal: impl IntoBuf, dst: &mut impl Sink) {
 /// Note two important details. First, no unescaping is done on `other`, which is assumed to
 /// contain a string with escape sequences fully expanded. Second, apart from expanding escape
 /// sequences, `literal` is compared byte-for-byte against `other`, so if `literal` contains the
-/// content of a string token, then `other` will need to begin and end with a quotation mark
-/// character, `"` (U+0022) in order to compare equal.
+/// content of a string token, then `other` will need to begin and end with a double quotation mark
+/// character, `"` (U+0022), in order to compare equal.
 ///
 /// # Performance considerations
 ///
@@ -2958,7 +2980,7 @@ mod tests {
             unescape(input, &mut buf);
             let actual = String::from_utf8(buf).unwrap();
 
-            assert_eq!(actual, expect);
+            assert_eq!(expect, actual);
         }
 
         // Test with a non-empty buffer.
@@ -2969,7 +2991,116 @@ mod tests {
             unescape(input, &mut buf);
             let actual = String::from_utf8(buf).unwrap();
 
-            assert_eq!(actual, format!("foo{expect}"));
+            assert_eq!(format!("foo{expect}"), actual);
+        }
+
+        // Test without quotes.
+        {
+            let mut buf = Vec::new();
+
+            unescape(&input[1..input.len() - 1], &mut buf);
+            let actual = String::from_utf8(buf).unwrap();
+
+            assert_eq!(&expect[1..expect.len() - 1], actual);
+        }
+
+        // Test with arbitrary chunking.
+        for chunked_str in ChunkedStr::chunkify(input) {
+            let mut buf = Vec::new();
+
+            unescape(chunked_str, &mut buf);
+            let actual = String::from_utf8(buf).unwrap();
+
+            assert_eq!(expect, actual);
+        }
+    }
+
+    #[rstest]
+    #[case::quote(r#"""#)]
+    #[case::quote_slash_b(r#""\b"#)]
+    #[case::quote_slash_t(r#""\t"#)]
+    #[case::quote_slash_f(r#""\f"#)]
+    #[case::quote_slash_n(r#""\n"#)]
+    #[case::quote_slash_n(r#""\r"#)]
+    #[case::quote_slash_u_0000(r#""\u0000"#)]
+    #[case::quote_slash_u_d7ff(r#""\ud7ff"#)]
+    #[case::quote_slash_u_d800_u_dc00(r#""\ud800\udc00"#)]
+    #[case::quote_slash_u_dbff_u_dfff(r#""\udbff\udfff"#)]
+    #[case::quote_f(r#""f"#)]
+    #[case::quote_fo(r#""fo"#)]
+    #[case::quote_foo(r#""foo"#)]
+    #[case::quote_foo_slash_b(r#""foo \b"#)]
+    #[case::quote_foo_slash_t(r#""foo \t"#)]
+    #[case::quote_foo_slash_f(r#""foo \f"#)]
+    #[case::quote_foo_slash_n(r#""foo \n"#)]
+    #[case::quote_foo_slash_r(r#""foo \r"#)]
+    #[case::quote_foo_slash_u_0000(r#""foo \u0000"#)]
+    #[case::quote_foo_slash_u_d7ff(r#""foo \ud7ff"#)]
+    #[case::quote_foo_slash_u_d800_u_dc00(r#""foo \ud800\udc00"#)]
+    #[case::quote_foo_slash_u_dbff_u_dfff(r#""foo \udbff\udfff"#)]
+    #[should_panic(expected = "unmatched starting quote")]
+    fn test_unescape_panic_unmatched_starting_quote(
+        #[case] literal: &str,
+        #[values(None, Some(1), Some(2), Some(3), Some(4))] chunk_len: Option<usize>,
+    ) {
+        let mut buf = Vec::new();
+
+        match chunk_len {
+            None => unescape(literal, &mut buf),
+            Some(n) => unescape(ChunkedStr::new(literal, n), &mut buf),
+        }
+    }
+
+    #[rstest]
+    #[case::a_slash(r#"a\"#)]
+    #[case::slash(r#"\"#)]
+    #[case::slash_u(r#"\u"#)]
+    #[case::slash_u_0(r#"\u0"#)]
+    #[case::slash_u_00(r#"\u00"#)]
+    #[case::slash_u000(r#"\u000"#)]
+    #[case::slash_u0000_slash(r#"\u0000\"#)]
+    #[case::slash_u0000_slash_u(r#"\u0000\u"#)]
+    #[case::slash_u0000_slash_u_1(r#"\u0000\u1"#)]
+    #[case::slash_u0000_slash_u_11(r#"\u0000\u11"#)]
+    #[case::slash_u0000_slash_u_111(r#"\u0000\u111"#)]
+    #[case::slash_ud800_slash_u_111(r#"\ud800\u111"#)]
+    #[case::slash_udbff_slash_u_111(r#"\udbff\u111"#)]
+    #[case::quote_a_slash(r#"a"\"#)]
+    #[case::quote_slash(r#""\"#)]
+    #[case::quote_slash_u(r#""\u"#)]
+    #[case::quote_slash_u_0(r#""\u0"#)]
+    #[case::quote_slash_u_00(r#""\u00"#)]
+    #[case::quote_slash_u000(r#""\u000"#)]
+    #[case::quote_slash_u0000_slash(r#""\u0000\"#)]
+    #[case::quote_slash_u0000_slash_u(r#""\u0000\u"#)]
+    #[case::quote_slash_u0000_slash_u_1(r#""\u0000\u1"#)]
+    #[case::quote_slash_u0000_slash_u_11(r#""\u0000\u11"#)]
+    #[case::quote_slash_u0000_slash_u_111(r#""\u0000\u111"#)]
+    #[case::quote_slash_ud800_slash_u_111(r#""\ud800\u111"#)]
+    #[case::quote_slash_udbff_slash_u_111(r#""\udbff\u111"#)]
+    #[case::quote_a_slash_quote(r#"a"\"#)]
+    #[case::quote_slash_quote(r#""\""#)]
+    #[case::quote_slash_u_quote(r#""\u""#)]
+    #[case::quote_slash_u_0_quote(r#""\u0""#)]
+    #[case::quote_slash_u_00_quote(r#""\u00""#)]
+    #[case::quote_slash_u000_quote(r#""\u000""#)]
+    #[case::quote_slash_u0000_slash_quote(r#""\u0000\""#)]
+    #[case::quote_slash_u0000_slash_u_quote(r#""\u0000\u""#)]
+    #[case::quote_slash_u0000_slash_u_1_quote(r#""\u0000\u1""#)]
+    #[case::quote_slash_u0000_slash_u_11_quote(r#""\u0000\u11""#)]
+    #[case::quote_slash_u0000_slash_u_111_quote(r#""\u0000\u111""#)]
+    #[case::quote_slash_ud800_slash_u_111_quote(r#""\ud800\u111""#)]
+    #[case::quote_slash_udbff_slash_u_111_quote(r#""\udbff\u111""#)]
+    #[should_panic(expected = "unterminated escape sequence")]
+    fn test_unescape_panic_unterminated_esc(
+        #[case] literal: &str,
+        #[values(None, Some(1), Some(2), Some(3), Some(4))] chunk_len: Option<usize>,
+    ) {
+        let mut buf = Vec::new();
+
+        match chunk_len {
+            None => unescape(literal, &mut buf),
+            Some(n) => unescape(ChunkedStr::new(literal, n), &mut buf),
         }
     }
 
@@ -3031,26 +3162,6 @@ mod tests {
         expected = r#"expected '\u' to start low surrogate Unicode escape after high surrogate"#
     )]
     fn test_unescape_panic_high_surrogate_no_backslash_u(#[case] literal: &str) {
-        let mut buf = Vec::new();
-
-        unescape(literal, &mut buf);
-    }
-
-    #[rstest]
-    #[case(r#"\"#)]
-    #[case(r#"\u"#)]
-    #[case(r#"\u0"#)]
-    #[case(r#"\u00"#)]
-    #[case(r#"\u000"#)]
-    #[case(r#"\u0000\"#)]
-    #[case(r#"\u0000\u"#)]
-    #[case(r#"\u0000\u1"#)]
-    #[case(r#"\u0000\u11"#)]
-    #[case(r#"\u0000\u111"#)]
-    #[case(r#"\ud800\u111"#)]
-    #[case(r#"\udbff\u111"#)]
-    #[should_panic(expected = "unexpected end of input within Unicode escape sequence")]
-    fn test_unescape_panic_unexpected_eof(#[case] literal: &str) {
         let mut buf = Vec::new();
 
         unescape(literal, &mut buf);
