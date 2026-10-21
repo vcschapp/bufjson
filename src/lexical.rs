@@ -2314,7 +2314,7 @@ pub fn unescape(literal: impl IntoBuf, dst: &mut impl Sink) {
 ///
 /// # Panics
 ///
-/// Panics if `literal` contains an invalid escape sequence.
+/// Panics if `literal` contains an invalid escape sequence before it diverges from `other`.
 ///
 /// # Example
 ///
@@ -2332,6 +2332,8 @@ pub fn unescaped_cmp(literal: impl IntoBuf, other: &str) -> Ordering {
     let mut literal = literal.into_buf();
     let mut a = literal.chunk();
     let mut b = other.as_bytes();
+    let quoted = matches!(a, [b'"', ..]);
+    let mut last = a.len() == literal.remaining();
     loop {
         match a.iter().position(|&b| b == b'\\') {
             // No escape sequences detected in the current chunk of `literal`.
@@ -2344,6 +2346,7 @@ pub fn unescaped_cmp(literal: impl IntoBuf, other: &str) -> Ordering {
                 literal.advance(n);
                 a = literal.chunk();
                 b = &b[n..];
+                last = a.len() == literal.remaining();
             }
 
             // Found an escape sequence at position `j` in the current chunk of `literal`.
@@ -2357,12 +2360,14 @@ pub fn unescaped_cmp(literal: impl IntoBuf, other: &str) -> Ordering {
                 }
 
                 // Make sure we have the next byte following the `\` available in `a`.
-                let i = if j + 1 < a.len() {
+                let i = if j + 2 < a.len() || ((!quoted || !last) && j + 1 < a.len()) {
                     j + 1
                 } else {
                     literal.advance(j + 1);
                     a = literal.chunk();
-                    if a.is_empty() {
+                    last = a.len() == literal.remaining();
+
+                    if a.is_empty() || (quoted && last && a.len() < 2) {
                         panic!("unterminated escape sequence");
                     }
 
@@ -2380,7 +2385,7 @@ pub fn unescaped_cmp(literal: impl IntoBuf, other: &str) -> Ordering {
                     }
                     UnescapeByte::Unicode => {
                         literal.advance(i + 1);
-                        let (x, n) = unescape_unicode(&mut literal);
+                        let (x, n) = unescape_unicode(&mut literal, quoted);
                         let n = n as usize;
                         let o = x[..n].cmp(&b[j..j + n.min(b.len() - j)]);
                         if o != Ordering::Equal {
@@ -2431,27 +2436,51 @@ pub(crate) fn unescape_byte(b: u8) -> UnescapeByte {
     }
 }
 
-pub(crate) fn unescape_unicode(buf: &mut impl Buf) -> ([u8; 4], u32) {
+pub(crate) fn unescape_unicode(buf: &mut impl Buf, quoted: bool) -> ([u8; 4], u32) {
     let mut digits = [0u8; 4];
 
     // Consume the four hex digits that are immediately part of the escape sequence.
-    if buf.remaining() < 4 {
-        panic!(
-            "at least 4 hex digits are required to complete Unicode escape sequence, but only {} bytes remain",
-            buf.remaining()
-        );
+    macro_rules! before_ending_quote {
+        () => {
+            "before ending quote expected"
+        };
+    }
+    macro_rules! not_enough_digits {
+        () => {
+            "at least 4 hex digits are required to complete Unicode escape sequence, but only {} bytes remain"
+        };
+        ($suffix:expr) => {
+            concat!(not_enough_digits!(), " ", $suffix)
+        };
+    }
+    let rem = buf.remaining();
+    if rem < 4 && !quoted {
+        panic!(not_enough_digits!(), rem);
+    } else if rem < 5 && quoted {
+        panic!(not_enough_digits!(before_ending_quote!()), rem - 1);
     }
     buf.copy_to_slice(&mut digits);
     let mut code_point = digits.iter().fold(0u32, |acc, &b| acc << 4 | hex2u32(b));
 
     // If the code point is a high surrogate, then a low surrogate is expected afterward.
     if code_point & 0xfc00 == 0xd800 {
-        if buf.remaining() < 6 {
+        macro_rules! not_enough_digits {
+            () => {
+                r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\u{}", but only {} bytes remain"#
+            };
+            ($msg:expr) => {
+                concat!(not_enough_digits!(), " ", $msg)
+            };
+        }
+        let rem = buf.remaining();
+        if rem < 6 && !quoted {
+            panic!(not_enough_digits!(), str::from_utf8(&digits).unwrap(), rem);
+        } else if rem < 7 && quoted {
             panic!(
-                r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\u{}", but only {} bytes remain"#,
+                not_enough_digits!(before_ending_quote!()),
                 str::from_utf8(&digits).unwrap(),
-                buf.remaining(),
-            )
+                rem - 1,
+            );
         }
         let mut second = [0u8; 6];
         buf.copy_to_slice(&mut second);
@@ -3278,7 +3307,9 @@ mod tests {
     #[rstest]
     #[case::unterminated_1(r#"\"#, r#"\"#, "unterminated escape sequence")]
     #[case::unterminated_2(r#""\"#, r#""\"#, "unterminated escape sequence")]
-    #[case::unterminated_3(r#""hello\"#, r#""hello\"#, "unterminated escape sequence")]
+    #[case::unterminated_3(r#""\""#, r#"""anything"#, "unterminated escape sequence")]
+    #[case::unterminated_4(r#""hello\"#, r#""hello\"#, "unterminated escape sequence")]
+    #[case::unterminated_5(r#""hello\""#, r#""hello""#, "unterminated escape sequence")]
     #[case::invalid_single_byte_1(
         r#"\0"#,
         r#"a"#,
@@ -3289,36 +3320,148 @@ mod tests {
         r#""a"#,
         r#"invalid escape sequence: byte 0x61 cannot follow '\'"#
     )]
-    #[case::invalid_unicode_need_4(
+    #[case::invalid_unicode_need_4_quote_unmatched(
         r#""\u"#,
+        r#""a"#,
+        "unterminated escape sequence"
+    )]
+    #[case::invalid_unicode_need_4_quote_matched(
+        r#""\u""#,
         r#""a"#,
         "at least 4 hex digits are required to complete Unicode escape sequence, but only 0 bytes remain"
     )]
-    #[case::invalid_unicode_need_3(
+    #[case::invalid_unicode_need_4_unquoted(
+        r#"\u"#,
+        r#"a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 0 bytes remain"
+    )]
+    #[case::invalid_unicode_need_3_quote_unmatched(
         r#""\u0"#,
+        r#""a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 0 bytes remain"
+    )]
+    #[case::invalid_unicode_need_3_quote_matched(
+        r#""\u0""#,
         r#""a"#,
         "at least 4 hex digits are required to complete Unicode escape sequence, but only 1 bytes remain"
     )]
-    #[case::invalid_unicode_need_2(
+    #[case::invalid_unicode_need_3_unquoted(
+        r#"\u0"#,
+        r#"a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 1 bytes remain"
+    )]
+    #[case::invalid_unicode_need_2_quote_unmatched(
         r#""\u00"#,
+        r#""a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 1 bytes remain"
+    )]
+    #[case::invalid_unicode_need_2_quote_matched(
+        r#""\u00""#,
         r#""a"#,
         "at least 4 hex digits are required to complete Unicode escape sequence, but only 2 bytes remain"
     )]
-    #[case::invalid_unicode_need_1(
+    #[case::invalid_unicode_need_2_unquoted(
+        r#"\u00"#,
+        r#"a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 2 bytes remain"
+    )]
+    #[case::invalid_unicode_need_1_quote_unmatched(
         r#""\u000"#,
+        r#""a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 2 bytes remain"
+    )]
+    #[case::invalid_unicode_need_1_quote_matched(
+        r#""\u000""#,
         r#""a"#,
         "at least 4 hex digits are required to complete Unicode escape sequence, but only 3 bytes remain"
     )]
-    #[case::invalid_unicode_not_hex_1(r#""\uG000"#, r#""a"#, "byte 0x47 is not an ASCII hex digit")]
-    #[case::invalid_unicode_not_hex_2(r#""\u0H00"#, r#""a"#, "byte 0x48 is not an ASCII hex digit")]
-    #[case::invalid_unicode_not_hex_3(r#""\u00I0"#, r#""a"#, "byte 0x49 is not an ASCII hex digit")]
-    #[case::invalid_unicode_not_hex_4(r#""\u000J"#, r#""a"#, "byte 0x4a is not an ASCII hex digit")]
-    #[case::lo_surrogate_incomplete_1(r#"\ud800"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\ud800", but only 0 bytes remain"#)]
-    #[case::lo_surrogate_incomplete_2(r#"\uD801x"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD801", but only 1 bytes remain"#)]
-    #[case::lo_surrogate_incomplete_3(r#"\uD802xx"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD802", but only 2 bytes remain"#)]
-    #[case::lo_surrogate_incomplete_4(r#"\uD803xxx"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD803", but only 3 bytes remain"#)]
-    #[case::lo_surrogate_incomplete_5(r#"\udbfdxxxx"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\udbfd", but only 4 bytes remain"#)]
-    #[case::lo_surrogate_incomplete_6(r#"\uDBFExxxxx"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uDBFE", but only 5 bytes remain"#)]
+    #[case::invalid_unicode_need_1_unquoted(
+        r#"\u000"#,
+        r#"a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 3 bytes remain"
+    )]
+    #[case::invalid_unicode_not_hex_1_quote_unmatched(
+        r#""\uG000"#,
+        r#""a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 3 bytes remain before ending quote expected"
+    )]
+    #[case::invalid_unicode_not_hex_1_quote_matched(
+        r#""\uG000""#,
+        r#""a"#,
+        "byte 0x47 is not an ASCII hex digit"
+    )]
+    #[case::invalid_unicode_not_hex_1_unquoted(
+        r#"\uG000"#,
+        r#"a"#,
+        "byte 0x47 is not an ASCII hex digit"
+    )]
+    #[case::invalid_unicode_not_hex_2_quote_unmatched(
+        r#""\u0H00"#,
+        r#""a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 3 bytes remain before ending quote expected"
+    )]
+    #[case::invalid_unicode_not_hex_2_quote_matched(
+        r#""\u0H00""#,
+        r#""a"#,
+        "byte 0x48 is not an ASCII hex digit"
+    )]
+    #[case::invalid_unicode_not_hex_2_unquoted(
+        r#"\u0H00"#,
+        r#"a"#,
+        "byte 0x48 is not an ASCII hex digit"
+    )]
+    #[case::invalid_unicode_not_hex_3_quote_unmatched(
+        r#""\u00I0"#,
+        r#""a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 3 bytes remain before ending quote expected"
+    )]
+    #[case::invalid_unicode_not_hex_3_quote_matched(
+        r#""\u00I0""#,
+        r#""a"#,
+        "byte 0x49 is not an ASCII hex digit"
+    )]
+    #[case::invalid_unicode_not_hex_3_unquoted(
+        r#"\u00I0"#,
+        r#"a"#,
+        "byte 0x49 is not an ASCII hex digit"
+    )]
+    #[case::invalid_unicode_not_hex_4_quote_unmatched(
+        r#""\u000J"#,
+        r#""a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 3 bytes remain before ending quote expected"
+    )]
+    #[case::invalid_unicode_not_hex_4_quote_matched(
+        r#""\u000J""#,
+        r#""a"#,
+        "byte 0x4a is not an ASCII hex digit"
+    )]
+    #[case::invalid_unicode_not_hex_4_unquoted(
+        r#"\u000J"#,
+        r#"a"#,
+        "byte 0x4a is not an ASCII hex digit"
+    )]
+    #[case::lo_surrogate_incomplete_1_quote_unmatched(
+        r#""\ud800"#,
+        r#""a"#,
+        "at least 4 hex digits are required to complete Unicode escape sequence, but only 3 bytes remain before ending quote expected"
+    )]
+    #[case::lo_surrogate_incomplete_1_quote_matched(r#""\ud800""#, r#""a"#, r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\ud800", but only 0 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_1_unquoted(r#"\ud800"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\ud800", but only 0 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_2_quote_unmatched(r#""\uD801x"#, r#""a"#, r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD801", but only 0 bytes remain before ending quote expected"#)]
+    #[case::lo_surrogate_incomplete_2_quote_matched(r#""\uD801x""#, r#""a"#, r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD801", but only 1 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_2_unquoted(r#"\uD801x"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD801", but only 1 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_3_quote_unmatched(r#""\uD802xx"#, r#""a"#, r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD802", but only 1 bytes remain before ending quote expected"#)]
+    #[case::lo_surrogate_incomplete_3_quote_matched(r#""\uD802xx""#, r#""a"#, r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD802", but only 2 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_3_unquoted(r#"\uD802xx"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD802", but only 2 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_4_quote_unmatched(r#""\uD803xxx"#, r#""a"#, r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD803", but only 2 bytes remain before ending quote expected"#)]
+    #[case::lo_surrogate_incomplete_4_quote_matched(r#""\uD803xxx""#, r#""a"#, r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD803", but only 3 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_4_unquoted(r#"\uD803xxx"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uD803", but only 3 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_5_quote_unmatched(r#""\udbfdxxxx"#, r#""a"#, r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\udbfd", but only 3 bytes remain before ending quote expected"#)]
+    #[case::lo_surrogate_incomplete_5_quote_matched(r#""\udbfdxxxx""#, r#""a"#, r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\udbfd", but only 4 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_5_unquoted(r#"\udbfdxxxx"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\udbfd", but only 4 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_6_quote_unmatched(r#""\uDBFExxxxx"#, r#""a"#, r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uDBFE", but only 4 bytes remain before ending quote expected"#)]
+    #[case::lo_surrogate_incomplete_6_quote_matched(r#""\uDBFExxxxx""#, r#""a"#, r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uDBFE", but only 5 bytes remain"#)]
+    #[case::lo_surrogate_incomplete_6_unquoted(r#"\uDBFExxxxx"#, "a", r#"at least 6 bytes are required for Unicode low surrogate escape sequence that follows "\uDBFE", but only 5 bytes remain"#)]
     #[case::lo_surrogate_no_leading_bsol_u_1(
         r#"\udbFFxxxxxx"#,
         "a",

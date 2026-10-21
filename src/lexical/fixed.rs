@@ -223,7 +223,7 @@ impl<B: Deref<Target = [u8]> + fmt::Debug> Content<B> {
                         }
                         lexical::UnescapeByte::Unicode => {
                             a = &a[i + 2..];
-                            let (x, n) = lexical::unescape_unicode(&mut a);
+                            let (x, n) = lexical::unescape_unicode(&mut a, false);
                             let n = n as usize;
                             let o = x[..n].cmp(&b[i..i + n.min(b.len() - i)]);
                             if o != Ordering::Equal {
