@@ -112,7 +112,9 @@
 //! [rfc]: https://datatracker.ietf.org/doc/html/rfc8259
 //! [`syntax`]: crate::syntax
 
-use crate::{Buf, EqStr, IntoBuf, OrdStr, Pos, Sink, StringBuf, sink, sink::InlineSink};
+use crate::{Buf, EqStr, IntoBuf, OrdStr, Pos, Sink, StringBuf};
+#[cfg(feature = "num")]
+use crate::{sink, sink::InlineSink};
 use alloc::{string::String, vec::Vec};
 use core::{
     borrow::Borrow,
@@ -2670,119 +2672,6 @@ pub fn unescaped_cmp(literal: impl IntoBuf, other: &str) -> Ordering {
         if a.is_empty() {
             return 0.cmp(&b.len());
         }
-    }
-}
-
-/// Strips leading and trailing quotation marks from a string.
-///
-/// The unquoted string is appended to the given [`Sink`].
-///
-/// If the input string does not begin and end with the double quote character, `"` (U+0022), its
-/// value is appended to the destination sink unchanged. If it does begin and end with double
-/// quotes, only the characters between the beginning and ending quote are appended to the
-/// destination.
-///
-/// # Performance considerations
-///
-/// This function is strictly less efficient than [`Content::unquoted`]. At minimum, it requires a
-/// copy into the destination sink and whatever allocation that entails. In contrast,
-/// `Content::unquoted` is a zero cost abstraction and never allocates or copies. Consequently, the
-/// latter should be preferred whenever it is an option.
-///
-/// # Examples
-///
-/// Remove surrounding double quote characters from a string:
-///
-/// ```
-/// use bufjson::lexical::unquote;
-///
-/// let mut dst = Vec::new();
-/// unquote(r#""hello, world""#, &mut dst);
-/// assert_eq!(&b"hello, world"[..], &dst);
-/// ```
-///
-/// If the input isn't surrounded by double quotes, nothing changes...
-///
-/// ```
-/// use bufjson::lexical::unquote;
-///
-/// let mut dst = Vec::new();
-/// unquote("foo, bar", &mut dst);
-/// assert_eq!(&b"foo, bar"[..], &dst);
-/// ```
-///
-/// ...Even if there's a stray quote at the start or end:
-///
-/// ```
-/// use bufjson::lexical::unquote;
-///
-/// let mut dst = Vec::new();
-/// unquote("\" <-- stray", &mut dst);
-/// assert_eq!(&b"\" <-- stray"[..], &dst);
-/// unquote(" and stray --> \"", &mut dst);
-/// assert_eq!(&b"\" <-- stray and stray --> \""[..], &mut dst);
-/// ```
-pub fn unquote(literal: impl IntoBuf, dst: &mut impl Sink) {
-    let mut literal = literal.into_buf();
-
-    let chunk = literal.chunk();
-    match chunk {
-        [b'"', .., b'"'] if literal.remaining() == chunk.len() => {
-            dst.extend_from_slice(&chunk[1..chunk.len() - 1]);
-        }
-
-        [b'"', ..] => {
-            literal.advance(1);
-
-            const MAX_INLINE_BUF_LEN: usize = if cfg!(test) {
-                2
-            } else if cfg!(not(feature = "std")) {
-                128
-            } else if cfg!(target_os = "espidf") {
-                512
-            } else {
-                1024
-            };
-
-            // The extra copying and/or allocating in this arm is a bit painful, but it is also
-            // improbable, since in practice most string values won't span buffers.
-            //
-            // The choice to copy/allocate rather than, say, panic if the quotes don't match was
-            // made with eyes open for consistency with how literals work. The invariant in the
-            // crate is that a `Content` always has to contain valid JSON token text or the empty
-            // string, but a literal value (e.g., `lexical::read::Literal`) might not; because you
-            // are allowed to instantiate these values (e.g., `Literal::from_static`) and anyway,
-            // `fixed::Content::Literal` is just a `&str`. Since literal values are allowed to not
-            // be valid JSON, `Unquote` is forgiving of values that don't start and end with double
-            // quotes. Long story short, this is primarily a convenience function, and it is more
-            // valuable to keep it consistent with `Unquote` than it is to maximize performance in
-            // all cases.
-
-            if literal.remaining() <= MAX_INLINE_BUF_LEN {
-                let mut buf = InlineSink::<MAX_INLINE_BUF_LEN>::new();
-                sink(literal, &mut buf);
-                let rem = buf.as_slice();
-                if matches!(rem, [.., b'"']) {
-                    dst.extend_from_slice(&rem[..rem.len() - 1]);
-                } else {
-                    dst.reserve(1 + rem.len());
-                    dst.push(b'"');
-                    dst.extend_from_slice(rem);
-                }
-            } else {
-                let mut rem = Vec::with_capacity(literal.remaining());
-                sink(literal, &mut rem);
-                if matches!(rem.as_slice(), [.., b'"']) {
-                    dst.extend_from_slice(&rem[..rem.len() - 1]);
-                } else {
-                    dst.reserve(1 + rem.len());
-                    dst.push(b'"');
-                    dst.extend_from_slice(&rem);
-                }
-            }
-        }
-
-        _ => sink(literal, dst),
     }
 }
 

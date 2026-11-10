@@ -1032,6 +1032,7 @@ impl Sink for Vec<u8> {
     }
 }
 
+#[cfg(any(feature = "num", feature = "pointer"))]
 pub(crate) mod sink {
     use core::mem::MaybeUninit;
 
