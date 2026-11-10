@@ -196,6 +196,16 @@
 //!
 //! Contributions are welcome! See the contributing guidelines in
 //! [`CONTRIBUTING.md`](https://github.com/vcschapp/bufjson/blob/main/CONTRIBUTING.md).
+//!
+//! # 🌟 Star Us on GitHub
+//!
+//! If you're enjoying the crate so far, would you consider heading over to
+//! [our GitHub repo](https://github.com/vcschapp/bufjson) and dropping us a star? This would give
+//! a better understanding of usage/interest that can help drive decisions on whether and how to
+//! invest further.
+//!
+//! Even better: if you have a feature you'd like to see, a bug to report, or any API friction you
+//! would like to see improved, posting an issue on GitHub has incredible value.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
