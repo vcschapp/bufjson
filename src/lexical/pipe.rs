@@ -153,6 +153,7 @@ impl Buf for MultiBytes {
             let mut pos = self.pos_escaped.get_usize();
             while pos < self.arr.len() && self.arr[pos].len() <= n {
                 n -= self.arr[pos].len();
+                self.arr[pos] = Bytes::new(); // Drop reference to exhausted `Bytes`.
                 pos += 1;
             }
             if n > 0 {
@@ -189,9 +190,9 @@ impl Buf for MultiBytes {
             self.rem -= dst.len();
             let mut pos = self.pos_escaped.get_usize();
             while pos < self.arr.len() && self.arr[pos].len() <= dst.len() {
-                let b = &self.arr[pos];
+                let b = core::mem::take(&mut self.arr[pos]); // Drop reference to exhausted `Bytes`.
                 let m = b.len();
-                dst[0..m].copy_from_slice(b);
+                dst[0..m].copy_from_slice(&b);
                 dst = &mut dst[m..];
                 pos += 1;
             }
