@@ -197,7 +197,7 @@
 //! Contributions are welcome! See the contributing guidelines in
 //! [`CONTRIBUTING.md`](https://github.com/vcschapp/bufjson/blob/main/CONTRIBUTING.md).
 //!
-//! # 🌟 Star Us on GitHub
+//! # 🌟 Star us on GitHub
 //!
 //! If you're enjoying the crate so far, would you consider heading over to
 //! [our GitHub repo](https://github.com/vcschapp/bufjson) and dropping us a star? This would give
