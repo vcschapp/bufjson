@@ -1491,9 +1491,9 @@ impl<T: Content> Unquoted<T> {
         if self.0.is_escaped() {
             let mut dst = Vec::with_capacity(self.literal_len());
             unescape(self.literal(), &mut dst);
-
-            // SAFETY: The input was valid UTF-8 and unescaping preserves UTF-8 validity.
-            Unescaped::Expanded(unsafe { String::from_utf8_unchecked(dst) })
+            Unescaped::Expanded(
+                String::from_utf8(dst).expect("literal value of content must be valid UTF-8"),
+            )
         } else {
             Unescaped::Literal(self.literal())
         }
