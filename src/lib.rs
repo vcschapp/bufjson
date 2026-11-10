@@ -216,6 +216,7 @@ use alloc::{string::String, vec::Vec};
 use core::{cmp::Ordering, fmt};
 
 pub mod lexical;
+mod path; // KEEP PRIVATE UNTIL READY. Coming soon-ish: limited streaming JSONPath support.
 #[cfg(feature = "pointer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "pointer")))]
 pub mod pointer;
