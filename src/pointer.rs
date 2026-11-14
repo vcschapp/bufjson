@@ -29,7 +29,7 @@ use core::{borrow::Borrow, fmt, ops::Deref, str::FromStr};
 /// 3. Every tilde in a JSON Pointer must be followed by either `'0'` or `'1'` and failing this
 ///    requirement results in [`PointerError::NakedTilde`], which includes the byte index of the
 ///    offending tilde.
-#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum PointerError {
     /// The input string is not empty and does not start with `'/'`.
     NoSlash,
