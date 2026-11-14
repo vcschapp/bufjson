@@ -88,7 +88,40 @@ impl Expr {
         panic!("implement `Expr::from_static`")
     }
 
-    pub fn from_owned(p: impl Into<String>) -> Result<Self, PathError> {
+    pub fn from_owned(e: impl Into<String>) -> Result<Self, PathError> {
         todo!("implement `Expr::from_owned`")
+    }
+
+    const fn parse(e: &str, segments: &mut [usize], full_action: usize) -> Result<Self, usize> {
+        // No form of "pass in a reallocator only for non-const" will work in
+        // stable Rust. This seems to knock out the recursive descent "pass me a
+        // mutable slice to put output in and a reallocate that would panic in const
+        // context" idea.
+        //
+        // Can't call trait methods in const context in stable Rust and that
+        // includes closures and `const fn`'s.
+        //
+        // The idea of the current sketch signature is:
+        // - segments becomes &mut[Segment];
+        // - full_action becomes `enum FullAction { Continue, Break }
+        //
+        // In const context you would just pass an empty slice with `full_action: Continue`
+        // which tells the parser to just keep parsing and don't bother storing segments once
+        // the segments array is full, which it immediately is since it starts out that way.
+        //
+        // This could ALSO be done in `from_owned` since you don't need the segments in that
+        // context.
+        //
+        // In non-const context where you do need the segments, which would be when building a
+        // `Group`, you would maintain a SmallVec<Segment> outside the function call and
+        // pass its mut slice with `full_action: Break`. If it fills up, it would stop parsing
+        // and return some internal error that indicates "I filled up the buffer and this is
+        // how much of the input is left". Then the outer function would scale up the SmallVec
+        // perhaps semi-intelligently based on remaining input and just restart the parse with the
+        // bigger buffer.
+        //
+        // This ideally gets us a single not-monomorphized generic recursive descent parser that
+        // uses the same basic parsing code in all usages.
+        panic!("implement parse")
     }
 }
