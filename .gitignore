@@ -2,8 +2,9 @@
 tarpaulin-report*
 test-cfg-param
 /.vscode/
-/*.svg
 /*.data
+/*.pdf
+/*.svg
 *.swp
 *.patch
 
